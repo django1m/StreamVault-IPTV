@@ -53,6 +53,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "OFFICIAL_APPLICATION_ID", "\"com.streamvault.app\"")
         buildConfigField("String", "OFFICIAL_SIGNING_CERT_SHA256", "\"$officialSigningCertSha256\"")
+        val fuziontvBaseUrl = providers.gradleProperty("FUZIONTV_BASE_URL")
+            .getOrElse("https://admin.fuziontv.app")
+        buildConfigField("String", "FUZIONTV_BASE_URL", "\"$fuziontvBaseUrl\"")
     }
 
     signingConfigs {

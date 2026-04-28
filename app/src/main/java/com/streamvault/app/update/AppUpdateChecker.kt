@@ -1,5 +1,6 @@
 package com.streamvault.app.update
 
+import com.streamvault.app.BuildConfig
 import com.streamvault.domain.model.Result
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,17 +32,17 @@ class AppUpdateChecker @Inject constructor(
     private val okHttpClient: OkHttpClient
 ) {
     private companion object {
-        private const val RELEASES_LATEST_URL = "https://api.github.com/repos/Davidona/StreamVault-IPTV/releases/latest"
         private const val MAX_RESPONSE_BYTES = 512 * 1024L
-        private val STRUCTURED_TAG_REGEX = Regex("""^v?(.+?)\+(\d+)$""", RegexOption.IGNORE_CASE)
     }
 
     suspend fun fetchLatestRelease(): Result<AppUpdateInfo> = withContext(Dispatchers.IO) {
         try {
+            val baseUrl = BuildConfig.FUZIONTV_BASE_URL.trimEnd('/')
+            val url = "$baseUrl/api/v1/updates/latest?current=0"
             val request = Request.Builder()
-                .url(RELEASES_LATEST_URL)
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "StreamVault-Update-Checker")
+                .url(url)
+                .header("Accept", "application/json")
+                .header("User-Agent", "FuzionTV-Update-Checker")
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
@@ -56,31 +57,45 @@ class AppUpdateChecker @Inject constructor(
                     Result.Loading -> ""
                 }
                 if (body.isBlank()) {
-                    return@withContext Result.error("Update check failed: empty GitHub release response")
+                    return@withContext Result.error("Update check failed: empty release response")
                 }
 
                 val json = JSONObject(body)
-                val parsedTag = parseTagVersionInfo(json.optString("tag_name"))
-                if (parsedTag.versionName.isBlank()) {
-                    return@withContext Result.error("Update check failed: latest release tag is missing")
+                val updateAvailable = json.optBoolean("updateAvailable", false)
+
+                if (!updateAvailable) {
+                    return@withContext if (json.has("versionCode")) {
+                        Result.error("Update check failed: no newer release available")
+                    } else {
+                        Result.error("Update check failed: no published release on server")
+                    }
                 }
 
-                val notes = json.optString("body").trim()
-                val assets = json.optJSONArray("assets")
-                val releaseUrl = json.optString("html_url").takeIf(::isHttpsUrl).orEmpty()
-                if (releaseUrl.isBlank()) {
-                    return@withContext Result.error("Update check failed: latest release URL is not HTTPS")
+                val versionCode = if (json.has("versionCode") && !json.isNull("versionCode")) {
+                    json.optInt("versionCode")
+                } else {
+                    null
                 }
-                val downloadUrl = findApkAssetUrl(assets)
+                val versionName = json.optString("versionName").trim()
+                val downloadUrl = json.optString("url").trim()
+                val releaseNotes = if (json.has("releaseNotes") && !json.isNull("releaseNotes")) {
+                    json.optString("releaseNotes")
+                } else {
+                    null
+                }
+
+                if (versionName.isBlank() || versionCode == null) {
+                    return@withContext Result.error("Update check failed: malformed update response")
+                }
 
                 return@withContext Result.success(
                     AppUpdateInfo(
-                        versionName = parsedTag.versionName,
-                        versionCode = parsedTag.versionCode,
-                        releaseUrl = releaseUrl,
+                        versionName = versionName,
+                        versionCode = versionCode,
+                        releaseUrl = downloadUrl,
                         downloadUrl = downloadUrl,
-                        releaseNotes = notes,
-                        publishedAt = json.optString("published_at").takeIf { it.isNotBlank() }
+                        releaseNotes = releaseNotes ?: "",
+                        publishedAt = null
                     )
                 )
             }
@@ -94,7 +109,7 @@ class AppUpdateChecker @Inject constructor(
     private fun readResponseBodyCapped(body: ResponseBody): Result<String> {
         val contentLength = body.contentLength()
         if (contentLength > MAX_RESPONSE_BYTES) {
-            return Result.error("Update check failed: GitHub release response exceeded 512 KB")
+            return Result.error("Update check failed: response exceeded 512 KB")
         }
 
         val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
@@ -109,7 +124,7 @@ class AppUpdateChecker @Inject constructor(
 
                 totalBytesRead += bytesRead
                 if (totalBytesRead > MAX_RESPONSE_BYTES) {
-                    return Result.error("Update check failed: GitHub release response exceeded 512 KB")
+                    return Result.error("Update check failed: response exceeded 512 KB")
                 }
 
                 output.write(buffer, 0, bytesRead)
@@ -117,40 +132,6 @@ class AppUpdateChecker @Inject constructor(
         }
 
         return Result.success(output.toString(charset.name()))
-    }
-
-    private fun findApkAssetUrl(assets: org.json.JSONArray?): String? {
-        if (assets == null) return null
-        var fallback: String? = null
-        for (index in 0 until assets.length()) {
-            val asset = assets.optJSONObject(index) ?: continue
-            val name = asset.optString("name")
-            val url = asset.optString("browser_download_url").takeIf { it.isNotBlank() } ?: continue
-            if (!isHttpsUrl(url)) continue
-            if (name.equals("StreamVault.apk", ignoreCase = true)) {
-                return url
-            }
-            if (fallback == null && name.endsWith(".apk", ignoreCase = true)) {
-                fallback = url
-            }
-        }
-        return fallback
-    }
-
-    private fun parseTagVersionInfo(rawTagName: String): ParsedTagVersion {
-        val normalizedTag = rawTagName.trim()
-        val structuredMatch = STRUCTURED_TAG_REGEX.matchEntire(normalizedTag)
-        if (structuredMatch != null) {
-            return ParsedTagVersion(
-                versionName = structuredMatch.groupValues[1].trim(),
-                versionCode = structuredMatch.groupValues[2].toIntOrNull()
-            )
-        }
-
-        return ParsedTagVersion(
-            versionName = normalizedTag.removePrefix("v").trim(),
-            versionCode = null
-        )
     }
 
     private fun isHttpsUrl(url: String): Boolean {
@@ -162,8 +143,3 @@ class AppUpdateChecker @Inject constructor(
         }.getOrDefault(false)
     }
 }
-
-private data class ParsedTagVersion(
-    val versionName: String,
-    val versionCode: Int?
-)
