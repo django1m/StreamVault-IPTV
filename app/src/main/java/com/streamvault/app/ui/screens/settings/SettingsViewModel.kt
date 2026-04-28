@@ -13,8 +13,8 @@ import com.streamvault.app.ui.model.VodViewMode
 import com.streamvault.app.update.AppUpdateDownloadState
 import com.streamvault.app.update.AppUpdateDownloadStatus
 import com.streamvault.app.update.AppUpdateInstaller
-import com.streamvault.app.update.GitHubReleaseChecker
-import com.streamvault.app.update.GitHubReleaseInfo
+import com.streamvault.app.update.AppUpdateChecker
+import com.streamvault.app.update.AppUpdateInfo
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.data.sync.SyncRepairSection
@@ -81,7 +81,7 @@ class SettingsViewModel @Inject constructor(
     private val tvInputChannelSyncManager: TvInputChannelSyncManager,
     private val syncProvider: SyncProvider,
     private val epgSourceRepository: com.streamvault.domain.repository.EpgSourceRepository,
-    private val gitHubReleaseChecker: GitHubReleaseChecker,
+    private val appUpdateChecker: AppUpdateChecker,
     private val appUpdateInstaller: AppUpdateInstaller,
     private val getCustomCategories: GetCustomCategories
 ) : ViewModel() {
@@ -95,7 +95,7 @@ class SettingsViewModel @Inject constructor(
     private val appUpdateActions = SettingsAppUpdateActions(
         appContext = application,
         preferencesRepository = preferencesRepository,
-        gitHubReleaseChecker = gitHubReleaseChecker,
+        appUpdateChecker = appUpdateChecker,
         appUpdateInstaller = appUpdateInstaller,
         uiState = _uiState
     )

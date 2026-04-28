@@ -149,7 +149,7 @@ class AppUpdateInstaller @Inject constructor(
         }
     }
 
-    suspend fun startDownload(releaseInfo: GitHubReleaseInfo): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun startDownload(releaseInfo: AppUpdateInfo): Result<Unit> = withContext(Dispatchers.IO) {
         val downloadUrl = releaseInfo.downloadUrl
             ?: return@withContext Result.error("Update download is unavailable for this release")
         if (!isHttpsUrl(downloadUrl)) {

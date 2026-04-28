@@ -7,14 +7,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.streamvault.app.R
 import com.streamvault.app.update.AppUpdateInstaller
-import com.streamvault.app.update.GitHubReleaseChecker
+import com.streamvault.app.update.AppUpdateChecker
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.model.Result
 
 internal class SettingsAppUpdateActions(
     private val appContext: Application,
     private val preferencesRepository: PreferencesRepository,
-    private val gitHubReleaseChecker: GitHubReleaseChecker,
+    private val appUpdateChecker: AppUpdateChecker,
     private val appUpdateInstaller: AppUpdateInstaller,
     private val uiState: MutableStateFlow<SettingsUiState>
 ) {
@@ -42,7 +42,7 @@ internal class SettingsAppUpdateActions(
                 )
             }
             preferencesRepository.setLastAppUpdateCheckTimestamp(checkedAt)
-            when (val result = gitHubReleaseChecker.fetchLatestRelease()) {
+            when (val result = appUpdateChecker.fetchLatestRelease()) {
                 is Result.Error -> {
                     uiState.update {
                         it.copy(

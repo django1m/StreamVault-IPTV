@@ -13,7 +13,7 @@ import java.net.URI
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class GitHubReleaseInfo(
+data class AppUpdateInfo(
     val versionName: String,
     val versionCode: Int?,
     val releaseUrl: String,
@@ -22,8 +22,12 @@ data class GitHubReleaseInfo(
     val publishedAt: String?
 )
 
+/**
+ * Fetches the latest published APK from the FuzionTV admin backend
+ * (`/api/v1/updates/latest`).
+ */
 @Singleton
-class GitHubReleaseChecker @Inject constructor(
+class AppUpdateChecker @Inject constructor(
     private val okHttpClient: OkHttpClient
 ) {
     private companion object {
@@ -32,7 +36,7 @@ class GitHubReleaseChecker @Inject constructor(
         private val STRUCTURED_TAG_REGEX = Regex("""^v?(.+?)\+(\d+)$""", RegexOption.IGNORE_CASE)
     }
 
-    suspend fun fetchLatestRelease(): Result<GitHubReleaseInfo> = withContext(Dispatchers.IO) {
+    suspend fun fetchLatestRelease(): Result<AppUpdateInfo> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url(RELEASES_LATEST_URL)
@@ -70,7 +74,7 @@ class GitHubReleaseChecker @Inject constructor(
                 val downloadUrl = findApkAssetUrl(assets)
 
                 return@withContext Result.success(
-                    GitHubReleaseInfo(
+                    AppUpdateInfo(
                         versionName = parsedTag.versionName,
                         versionCode = parsedTag.versionCode,
                         releaseUrl = releaseUrl,

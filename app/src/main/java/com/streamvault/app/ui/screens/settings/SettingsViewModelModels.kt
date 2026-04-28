@@ -8,7 +8,7 @@ import com.streamvault.app.ui.model.LiveTvQuickFilterVisibilityMode
 import com.streamvault.app.ui.model.VodViewMode
 import com.streamvault.app.update.AppUpdateDownloadState
 import com.streamvault.app.update.AppUpdateDownloadStatus
-import com.streamvault.app.update.GitHubReleaseInfo
+import com.streamvault.app.update.AppUpdateInfo
 import com.streamvault.domain.manager.BackupImportPlan
 import com.streamvault.domain.manager.BackupPreview
 import com.streamvault.domain.model.ActiveLiveSource
@@ -180,10 +180,10 @@ data class SettingsUiState(
     val appUpdate: AppUpdateUiModel = AppUpdateUiModel()
 )
 
-internal fun AppUpdateUiModel.toReleaseInfoOrNull(): GitHubReleaseInfo? {
+internal fun AppUpdateUiModel.toReleaseInfoOrNull(): AppUpdateInfo? {
     val versionName = latestVersionName ?: return null
     val releaseUrl = releaseUrl ?: return null
-    return GitHubReleaseInfo(
+    return AppUpdateInfo(
         versionName = versionName,
         versionCode = latestVersionCode,
         releaseUrl = releaseUrl,

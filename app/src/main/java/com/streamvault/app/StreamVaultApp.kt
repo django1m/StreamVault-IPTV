@@ -8,7 +8,7 @@ import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
 import com.streamvault.app.diagnostics.RuntimeDiagnosticsManager
-import com.streamvault.app.update.GitHubReleaseChecker
+import com.streamvault.app.update.AppUpdateChecker
 import com.streamvault.app.ui.accessibility.isReducedMotionEnabled
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.model.Result
@@ -37,7 +37,7 @@ class StreamVaultApp : Application(), SingletonImageLoader.Factory {
     lateinit var preferencesRepository: PreferencesRepository
 
     @Inject
-    lateinit var gitHubReleaseChecker: GitHubReleaseChecker
+    lateinit var appUpdateChecker: AppUpdateChecker
 
     override fun onCreate() {
         super.onCreate()
@@ -87,7 +87,7 @@ class StreamVaultApp : Application(), SingletonImageLoader.Factory {
         }
 
         preferencesRepository.setLastAppUpdateCheckTimestamp(now)
-        when (val result = gitHubReleaseChecker.fetchLatestRelease()) {
+        when (val result = appUpdateChecker.fetchLatestRelease()) {
             is Result.Success -> {
                 preferencesRepository.setCachedAppUpdateRelease(
                     versionName = result.data.versionName,
