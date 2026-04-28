@@ -49,6 +49,9 @@ dependencies {
     // OkHttp (for custom data source)
     implementation(libs.okhttp)
 
+    // LibVLC (fallback player engine)
+    implementation(libs.libvlc.all)
+
     // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

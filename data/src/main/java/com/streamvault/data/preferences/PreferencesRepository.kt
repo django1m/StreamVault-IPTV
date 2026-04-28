@@ -115,6 +115,7 @@ class PreferencesRepository @Inject constructor(
         val APP_UPDATE_DOWNLOAD_URL = stringPreferencesKey("app_update_download_url")
         val APP_UPDATE_RELEASE_NOTES = stringPreferencesKey("app_update_release_notes")
         val APP_UPDATE_PUBLISHED_AT = stringPreferencesKey("app_update_published_at")
+        val DISMISSED_UPDATE_VERSION_CODE = intPreferencesKey("dismissed_update_version_code")
     }
 
     private object ParentalSessionKeys {
@@ -400,6 +401,20 @@ class PreferencesRepository @Inject constructor(
 
     val cachedAppUpdatePublishedAt: Flow<String?> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.APP_UPDATE_PUBLISHED_AT]?.takeIf { it.isNotBlank() }
+    }
+
+    val dismissedUpdateVersionCode: Flow<Int?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.DISMISSED_UPDATE_VERSION_CODE]
+    }
+
+    suspend fun setDismissedUpdateVersionCode(versionCode: Int?) {
+        context.dataStore.edit { preferences ->
+            if (versionCode == null) {
+                preferences.remove(PreferencesKeys.DISMISSED_UPDATE_VERSION_CODE)
+            } else {
+                preferences[PreferencesKeys.DISMISSED_UPDATE_VERSION_CODE] = versionCode
+            }
+        }
     }
 
     suspend fun setPreventStandbyDuringPlayback(prevent: Boolean) {

@@ -112,6 +112,10 @@
     <string name="dashboard_provider_no_expiry">No expiry reported</string>
     <string name="dashboard_warning_title">Provider Needs Attention</string>
     <string name="dashboard_warning_review">Open Provider Details</string>
+    <string name="app_update_available_title">Mise à jour disponible</string>
+    <string name="app_update_available_body">FuzionTV %1$s est prête à installer.</string>
+    <string name="app_update_install">Installer</string>
+    <string name="app_update_later">Plus tard</string>
     <string name="dashboard_update_title">StreamVault %1$s is available</string>
     <string name="dashboard_update_available">A newer app release is cached and ready to review from Settings.</string>
     <string name="dashboard_update_install_ready">The latest update has already been downloaded. Open Settings to install it.</string>
