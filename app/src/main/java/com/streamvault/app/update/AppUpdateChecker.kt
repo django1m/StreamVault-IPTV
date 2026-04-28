@@ -87,6 +87,9 @@ class AppUpdateChecker @Inject constructor(
                 if (versionName.isBlank() || versionCode == null) {
                     return@withContext Result.error("Update check failed: malformed update response")
                 }
+                if (!isHttpsUrl(downloadUrl)) {
+                    return@withContext Result.error("Update check failed: download URL is not HTTPS")
+                }
 
                 return@withContext Result.success(
                     AppUpdateInfo(
