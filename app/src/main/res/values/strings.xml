@@ -116,6 +116,8 @@
     <string name="app_update_available_body">FuzionTV %1$s est prête à installer.</string>
     <string name="app_update_install">Installer</string>
     <string name="app_update_later">Plus tard</string>
+    <string name="startup_sync_started">Synchronisation de la playlist…</string>
+    <string name="startup_sync_success">Playlist à jour</string>
     <string name="startup_sync_failed">Synchronisation impossible</string>
     <string name="dashboard_update_title">StreamVault %1$s is available</string>
     <string name="dashboard_update_available">A newer app release is cached and ready to review from Settings.</string>

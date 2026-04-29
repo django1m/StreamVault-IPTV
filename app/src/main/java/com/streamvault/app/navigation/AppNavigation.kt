@@ -1,8 +1,18 @@
 package com.streamvault.app.navigation
 
 import android.net.Uri
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.dropUnlessResumed
@@ -11,22 +21,28 @@ import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.repository.ChannelRepository
+import com.streamvault.app.MainActivity
+import com.streamvault.app.R
+import com.streamvault.app.startup.SyncSnackbarEvent
+import com.streamvault.app.startup.SyncSnackbarHolderViewModel
 import com.streamvault.app.ui.screens.dashboard.DashboardScreen
-import com.streamvault.app.ui.screens.multiview.MultiViewScreen
 import com.streamvault.app.ui.screens.home.HomeScreen
 import com.streamvault.app.ui.screens.movies.MoviesScreen
+import com.streamvault.app.ui.screens.multiview.MultiViewScreen
 import com.streamvault.app.ui.screens.player.PlayerScreen
 import com.streamvault.app.ui.screens.provider.ProviderSetupScreen
 import com.streamvault.app.ui.screens.series.SeriesScreen
 import com.streamvault.app.ui.screens.settings.SettingsScreen
+import com.streamvault.app.ui.screens.update.AppUpdateStartupDialog
+import com.streamvault.app.ui.screens.update.AppUpdateStartupViewModel
 import com.streamvault.app.ui.screens.welcome.WelcomeScreen
-import com.streamvault.app.MainActivity
 import java.io.Serializable
 
 
@@ -250,6 +266,36 @@ fun AppNavigation(mainActivity: MainActivity) {
         }
     }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    val syncStartedMessage = stringResource(R.string.startup_sync_started)
+    val syncSuccessMessage = stringResource(R.string.startup_sync_success)
+    val syncFailedMessage = stringResource(R.string.startup_sync_failed)
+    val snackbarHolderVm: SyncSnackbarHolderViewModel = hiltViewModel()
+
+    LaunchedEffect(snackbarHolderVm) {
+        snackbarHolderVm.controller.events.collect { event ->
+            val message = when (event) {
+                SyncSnackbarEvent.SyncStarted -> syncStartedMessage
+                SyncSnackbarEvent.SyncSuccess -> syncSuccessMessage
+                is SyncSnackbarEvent.SyncFailed -> syncFailedMessage
+            }
+            snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    val updateViewModel: AppUpdateStartupViewModel = hiltViewModel()
+    val pendingUpdate by updateViewModel.pendingUpdate.collectAsStateWithLifecycle()
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    val isBlockedForUpdate = currentRoute == Routes.WELCOME
+    pendingUpdate?.takeUnless { isBlockedForUpdate }?.let { update ->
+        AppUpdateStartupDialog(
+            update = update,
+            onInstall = { updateViewModel.install() },
+            onLater = { updateViewModel.dismissForThisVersion(update.versionCode) }
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
         startDestination = Routes.WELCOME
@@ -652,5 +698,10 @@ fun AppNavigation(mainActivity: MainActivity) {
                 onBack = { navController.popBackStack() }
             )
         }
+    }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
