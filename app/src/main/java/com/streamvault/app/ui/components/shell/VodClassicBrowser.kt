@@ -16,11 +16,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
@@ -66,63 +68,12 @@ fun VodClassicSplitLayout(
             onSearchValueChange = onRailSearchValueChange,
             searchPlaceholder = railSearchPlaceholder,
             modifier = Modifier
-                .width(320.dp)
+                .width(300.dp)
                 .fillMaxHeight(),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             items(categories, key = { it.key }) { category ->
-                TvClickableSurface(
-                    onClick = category.onClick,
-                    onLongClick = category.onLongClick,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(14.dp)),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = if (category.isSelected) AppColors.Brand.copy(alpha = 0.22f) else AppColors.SurfaceElevated,
-                        focusedContainerColor = AppColors.SurfaceEmphasis,
-                        contentColor = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
-                        focusedContentColor = AppColors.TextPrimary
-                    ),
-                    border = ClickableSurfaceDefaults.border(
-                        focusedBorder = Border(
-                            border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                    ),
-                    scale = ClickableSurfaceDefaults.scale(focusedScale = FocusSpec.FocusedScale)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = category.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (category.isLocked) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = stringResource(R.string.home_locked_short),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = AppColors.BrandStrong
-                            )
-                        }
-                        if (category.count > 0) {
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = category.count.toString(),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AppColors.TextSecondary
-                            )
-                        }
-                    }
-                }
+                VodClassicCategoryRow(category = category)
             }
         }
 
@@ -130,10 +81,102 @@ fun VodClassicSplitLayout(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .background(AppColors.Canvas, RoundedCornerShape(28.dp))
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            AppColors.CanvasElevated,
+                            AppColors.Canvas
+                        )
+                    ),
+                    shape = RoundedCornerShape(28.dp)
+                )
+                .padding(horizontal = 18.dp, vertical = 16.dp)
         ) {
             content()
+        }
+    }
+}
+
+@Composable
+private fun VodClassicCategoryRow(
+    category: VodClassicCategoryOption,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(36.dp)
+                .background(
+                    color = if (category.isSelected) AppColors.Brand else AppColors.Brand.copy(alpha = 0f),
+                    shape = RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp)
+                )
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        TvClickableSurface(
+            onClick = category.onClick,
+            onLongClick = category.onLongClick,
+            modifier = Modifier.weight(1f),
+            shape = ClickableSurfaceDefaults.shape(shape),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = if (category.isSelected) AppColors.Brand.copy(alpha = 0.18f) else AppColors.SurfaceElevated.copy(alpha = 0.6f),
+                focusedContainerColor = AppColors.SurfaceEmphasis,
+                contentColor = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
+                focusedContentColor = AppColors.TextPrimary
+            ),
+            border = ClickableSurfaceDefaults.border(
+                focusedBorder = Border(
+                    border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
+                    shape = shape
+                )
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = FocusSpec.FocusedScale)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = category.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (category.isLocked) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.home_locked_short),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppColors.BrandStrong
+                    )
+                }
+                if (category.count > 0) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = if (category.isSelected) AppColors.Brand.copy(alpha = 0.30f) else AppColors.SurfaceAccent.copy(alpha = 0.7f),
+                                shape = CircleShape
+                            )
+                            .padding(horizontal = 9.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = category.count.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (category.isSelected) AppColors.BrandStrong else AppColors.TextSecondary
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -150,9 +193,19 @@ fun VodClassicContentHeader(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .height(36.dp)
+                .background(
+                    color = AppColors.Brand,
+                    shape = RoundedCornerShape(4.dp)
+                )
+        )
+        Spacer(modifier = Modifier.width(2.dp))
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
                 text = title,

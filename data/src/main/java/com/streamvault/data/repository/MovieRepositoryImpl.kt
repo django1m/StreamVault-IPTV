@@ -38,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
@@ -50,7 +51,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -409,6 +412,37 @@ class MovieRepositoryImpl @Inject constructor(
 
     override suspend fun refreshMovies(providerId: Long): Result<Unit> =
         Result.success(Unit) // Handled by ProviderRepository
+
+    override suspend fun preloadAllCategories(providerId: Long): Result<Unit> = try {
+        val provider = providerDao.getById(providerId)
+        if (provider == null || provider.type != ProviderType.XTREAM_CODES) {
+            Result.success(Unit)
+        } else {
+            val categories = categoryDao.getByProviderAndTypeSync(providerId, ContentType.MOVIE.name)
+            val semaphore = Semaphore(permits = 2)
+            coroutineScope {
+                categories.forEach { category ->
+                    launch {
+                        semaphore.withPermit {
+                            try {
+                                ensureXtreamCategoryLoaded(
+                                    providerId = providerId,
+                                    categoryId = category.categoryId,
+                                    fetchIfMissing = true,
+                                    refreshStaleInBackground = false
+                                )
+                            } catch (_: Exception) {
+                                // Per-category failure shouldn't abort the whole preload.
+                            }
+                        }
+                    }
+                }
+            }
+            Result.success(Unit)
+        }
+    } catch (e: Exception) {
+        Result.error("Failed to preload movie categories", e)
+    }
 
     override suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit> = try {
         movieDao.updateWatchProgress(movieId, progress)

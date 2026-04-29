@@ -2,11 +2,9 @@ package com.streamvault.app
 
 import android.app.SearchManager
 import android.content.Intent
-import android.app.PictureInPictureParams
 import android.os.Bundle
 import android.os.Build
 import android.os.StrictMode
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -56,12 +54,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_EXTERNAL_ROUTE = "com.streamvault.app.extra.EXTERNAL_ROUTE"
     }
 
-    private data class PlayerPictureInPictureState(
-        val enabled: Boolean = false,
-        val isPlaying: Boolean = false,
-        val aspectRatio: Rational? = null
-    )
-
     @Inject
     lateinit var preferencesRepository: PreferencesRepository
 
@@ -77,14 +69,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var castManager: CastManager
 
-    private val _pictureInPictureModeFlow = MutableStateFlow(false)
-    val pictureInPictureModeFlow: StateFlow<Boolean> = _pictureInPictureModeFlow.asStateFlow()
-
     private val _externalNavigationRequestFlow = MutableStateFlow<ExternalNavigationRequest?>(null)
     val externalNavigationRequestFlow: StateFlow<ExternalNavigationRequest?> =
         _externalNavigationRequestFlow.asStateFlow()
-
-    private var playerPictureInPictureState = PlayerPictureInPictureState()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         if (BuildConfig.DEBUG) {
@@ -100,7 +87,6 @@ class MainActivity : ComponentActivity() {
         // This fixes keyboard-covers-input-field on API 30+ where adjustResize is
         // ignored when the theme sets windowFullscreen=true.
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        _pictureInPictureModeFlow.value = isInPictureInPictureMode
         handleExternalIntent(intent)
         if (isTelevisionDevice()) {
             lifecycleScope.launch {
@@ -164,38 +150,6 @@ class MainActivity : ComponentActivity() {
         handleExternalIntent(intent)
     }
 
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        enterPlayerPictureInPictureModeIfEligible()
-    }
-
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: Configuration
-    ) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        _pictureInPictureModeFlow.value = isInPictureInPictureMode
-    }
-
-    fun updatePlayerPictureInPictureState(
-        enabled: Boolean,
-        isPlaying: Boolean,
-        videoWidth: Int,
-        videoHeight: Int
-    ) {
-        playerPictureInPictureState = PlayerPictureInPictureState(
-            enabled = enabled,
-            isPlaying = isPlaying,
-            aspectRatio = videoAspectRatioOrNull(videoWidth, videoHeight)
-        )
-        applyPlayerPictureInPictureParams()
-    }
-
-    fun clearPlayerPictureInPictureState() {
-        playerPictureInPictureState = PlayerPictureInPictureState()
-        applyPlayerPictureInPictureParams()
-    }
-
     fun clearExternalNavigationRequest() {
         _externalNavigationRequestFlow.value = null
     }
@@ -204,46 +158,8 @@ class MainActivity : ComponentActivity() {
         _externalNavigationRequestFlow.value = ExternalNavigationRequest.Player(request)
     }
 
-    fun enterPlayerPictureInPictureModeFromPlayer(): Boolean {
-        return enterPlayerPictureInPictureModeIfEligible(requirePlaying = false)
-    }
-
     fun openCastRouteChooser() {
         startActivity(Intent(this, CastRouteChooserActivity::class.java))
-    }
-
-    private fun enterPlayerPictureInPictureModeIfEligible(requirePlaying: Boolean = true): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isInPictureInPictureMode) {
-            return false
-        }
-        val state = playerPictureInPictureState
-        if (!state.enabled || (requirePlaying && !state.isPlaying)) {
-            return false
-        }
-        val params = buildPlayerPictureInPictureParams(state)
-        setPictureInPictureParams(params)
-        return enterPictureInPictureMode(params)
-    }
-
-    private fun applyPlayerPictureInPictureParams() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        setPictureInPictureParams(buildPlayerPictureInPictureParams(playerPictureInPictureState))
-    }
-
-    private fun buildPlayerPictureInPictureParams(
-        state: PlayerPictureInPictureState
-    ): PictureInPictureParams {
-        val builder = PictureInPictureParams.Builder()
-        state.aspectRatio?.let { builder.setAspectRatio(it) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setAutoEnterEnabled(state.enabled && state.isPlaying)
-        }
-        return builder.build()
-    }
-
-    private fun videoAspectRatioOrNull(videoWidth: Int, videoHeight: Int): Rational? {
-        if (videoWidth <= 0 || videoHeight <= 0) return null
-        return Rational(videoWidth, videoHeight)
     }
 
     private fun handleExternalIntent(intent: Intent?) {

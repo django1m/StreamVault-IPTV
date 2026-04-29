@@ -86,6 +86,15 @@
     <fields>;
 }
 
+# ── libVLC ─────────────────────────────────────────────────
+# Le code natif libvlcjni.so résout des classes/méthodes Java via JNI sur
+# leurs noms exacts → R8 ne doit ni renommer, ni élider, ni shrinker ces
+# classes (sinon UnsatisfiedLinkError au LibVLC.loadLibrary).
+-keep class org.videolan.libvlc.** { *; }
+-keep interface org.videolan.libvlc.** { *; }
+-keepclassmembers class org.videolan.libvlc.** { *; }
+-dontwarn org.videolan.libvlc.**
+
 # ── General ─────────────────────────────────────────────────
 -keepattributes SourceFile,LineNumberTable       # Better crash reports
 -renamesourcefileattribute SourceFile

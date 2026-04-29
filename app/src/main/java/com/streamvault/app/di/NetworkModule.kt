@@ -10,6 +10,10 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.OkHttpXtreamApiService
 import com.streamvault.data.remote.xtream.XtreamUrlFactory
 import com.streamvault.data.parser.XmltvParser
+import com.streamvault.app.BuildConfig
+import com.streamvault.data.remote.fuziontv.FuziontvApi
+import com.streamvault.data.repository.FuziontvDeviceRepositoryImpl
+import com.streamvault.player.LibVlcPlayerEngine
 import com.streamvault.player.Media3PlayerEngine
 import com.streamvault.player.PlayerEngine
 import dagger.Module
@@ -62,6 +66,18 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideFuziontvApi(okHttpClient: OkHttpClient): FuziontvApi =
+        FuziontvApi(okHttpClient, BuildConfig.FUZIONTV_BASE_URL.trimEnd('/'))
+
+    @Provides
+    @Singleton
+    fun provideFuziontvDeviceRepository(
+        @ApplicationContext context: Context,
+        api: FuziontvApi,
+    ): FuziontvDeviceRepositoryImpl = FuziontvDeviceRepositoryImpl(context, api)
+
+    @Provides
+    @Singleton
     fun provideXtreamApiService(okHttpClient: OkHttpClient, xtreamJson: Json): XtreamApiService =
         OkHttpXtreamApiService(okHttpClient, xtreamJson)
 
@@ -82,13 +98,16 @@ object NetworkModule {
     @Singleton
     fun provideGson(): Gson = GsonBuilder().create()
 
+    // POC libVLC : on force libVLC sur le main engine pour valider qu'il lit
+    // les MP4 où Mp4Extractor de Media3 plante (Tulsa King S02E01-E04).
+    // Si OK, phase 2 = router PROGRESSIVE→libVLC, autres→Media3.
     @Provides
     @Singleton
     @MainPlayerEngine
     fun provideMainPlayerEngine(
         @ApplicationContext context: Context,
-        okHttpClient: OkHttpClient
-    ): PlayerEngine = Media3PlayerEngine(context, okHttpClient)
+        @Suppress("UNUSED_PARAMETER") okHttpClient: OkHttpClient
+    ): PlayerEngine = LibVlcPlayerEngine(context)
 
     /**
      * Factory binding for preview and multiview playback.

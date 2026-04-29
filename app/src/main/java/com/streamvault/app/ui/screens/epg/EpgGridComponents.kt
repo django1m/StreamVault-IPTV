@@ -30,6 +30,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
@@ -311,6 +315,7 @@ private fun GuideTimelineHeader(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun EpgRow(
     channel: Channel,
@@ -434,6 +439,9 @@ fun EpgRow(
 
         Spacer(modifier = Modifier.width(timelineGap))
 
+        val nowProgramRequester = remember { FocusRequester() }
+        val hasNowProgram = currentProgram != null
+
         Box(
             modifier = Modifier
                 .width(timelineViewportWidth)
@@ -450,6 +458,15 @@ fun EpgRow(
                     modifier = Modifier
                         .width(totalTimelineWidth)
                         .fillMaxHeight()
+                        .focusProperties {
+                            // When focus enters this row from another row,
+                            // snap it onto the currently-airing program so it
+                            // doesn't drift to whichever item happens to be
+                            // vertically aligned with the previous focus.
+                            enter = {
+                                if (hasNowProgram) nowProgramRequester else FocusRequester.Default
+                            }
+                        }
                 ) {
                 val markers = remember(windowStart, windowEnd, markerStepMs) {
                     buildList {
@@ -476,6 +493,9 @@ fun EpgRow(
                     }
                 } else {
                     programs.forEach { program ->
+                        val isCurrent = currentProgram != null &&
+                            program.startTime == currentProgram!!.startTime &&
+                            program.endTime == currentProgram!!.endTime
                         ProgramItem(
                             program = program,
                             density = density,
@@ -483,7 +503,8 @@ fun EpgRow(
                             windowEnd = windowEnd,
                             totalTimelineWidth = totalTimelineWidth,
                             onClick = { onProgramClick(program) },
-                            onFocused = { onProgramFocused(program) }
+                            onFocused = { onProgramFocused(program) },
+                            modifier = if (isCurrent) Modifier.focusRequester(nowProgramRequester) else Modifier
                         )
                     }
                 }
@@ -501,7 +522,8 @@ fun ProgramItem(
     windowEnd: Long,
     totalTimelineWidth: Dp,
     onClick: () -> Unit,
-    onFocused: () -> Unit
+    onFocused: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val now = currentGuideNow()
@@ -566,7 +588,7 @@ fun ProgramItem(
 
     TvClickableSurface(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .padding(start = itemStart, top = outerVerticalPadding, bottom = outerVerticalPadding)
             .width(itemWidth)
             .fillMaxHeight()

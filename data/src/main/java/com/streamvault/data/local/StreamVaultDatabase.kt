@@ -42,7 +42,7 @@ import com.streamvault.data.local.entity.*
         RecordingRunEntity::class,
         RecordingStorageEntity::class
     ],
-    version = 30,
+    version = 31,
     exportSchema = true   // ← was false; schema JSON now tracked in version control
 )
 @TypeConverters(RoomEnumConverters::class)
@@ -1326,6 +1326,14 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+            }
+        }
+
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Désactive fast-sync pour tous les providers existants afin que la
+                // prochaine sync télécharge le catalogue complet (recherche globale).
+                database.execSQL("UPDATE providers SET xtream_fast_sync_enabled = 0")
             }
         }
 

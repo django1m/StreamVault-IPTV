@@ -42,9 +42,17 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.exoplayer.rtsp)  // PE-H03: RTSP stream support
+    implementation(libs.media3.exoplayer.smoothstreaming)  // MSS streams
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.session)
     implementation(libs.media3.ui)
+
+    // FFmpeg software decoders for IPTV codecs (AC3, E-AC3, DTS, MP2, Opus, Vorbis, etc.)
+    implementation(libs.nextlib.media3ext)
+
+    // libVLC : moteur de lecture pour les MP4/MKV progressive là où Mp4Extractor
+    // de Media3 plante sur des muxes mal formés (moov atom à la fin avec offsets stco invalides).
+    implementation(libs.libvlc.all)
 
     // OkHttp (for custom data source)
     implementation(libs.okhttp)

@@ -334,7 +334,12 @@ fun SearchScreen(
         subtitle = stringResource(R.string.search_screen_subtitle),
         navigationChrome = AppNavigationChrome.TopBar,
         compactHeader = true,
-        showScreenHeader = false
+        showScreenHeader = false,
+        backdrop = {
+            com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                palette = com.streamvault.app.ui.design.AmbientPalette.Default
+            ) { }
+        }
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),

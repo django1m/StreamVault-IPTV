@@ -325,6 +325,6 @@ data class ProviderSetupState(
     val pendingCombinedAttachProfileId: Long? = null,
     val pendingCombinedAttachProfileName: String? = null,
     val epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.UPFRONT,
-    val xtreamFastSyncEnabled: Boolean = true,
+    val xtreamFastSyncEnabled: Boolean = false,
     val m3uVodClassificationEnabled: Boolean = true
 )

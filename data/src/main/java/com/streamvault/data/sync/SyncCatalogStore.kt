@@ -11,9 +11,11 @@ import com.streamvault.data.local.entity.MovieEntity
 import com.streamvault.data.local.entity.MovieImportStageEntity
 import com.streamvault.data.local.entity.SeriesEntity
 import com.streamvault.data.local.entity.SeriesImportStageEntity
-import java.net.URI
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 internal class SyncCatalogStore(
     private val movieDao: MovieDao,
@@ -21,7 +23,6 @@ internal class SyncCatalogStore(
     private val transactionRunner: DatabaseTransactionRunner
 ) {
     private val sessionIds = AtomicLong(System.currentTimeMillis())
-    private val digest = ThreadLocal.withInitial { MessageDigest.getInstance("SHA-256") }
 
     fun newSessionId(): Long = sessionIds.incrementAndGet()
 
@@ -114,15 +115,24 @@ internal class SyncCatalogStore(
     }
 
     suspend fun stageChannelBatch(providerId: Long, sessionId: Long, channels: List<ChannelEntity>) {
-        insertStageRows(buildChannelStages(providerId, sessionId, channels), catalogSyncDao::insertChannelStages)
+        val rows = buildChannelStages(providerId, sessionId, channels)
+        transactionRunner.inTransaction {
+            insertStageRows(rows, catalogSyncDao::insertChannelStages)
+        }
     }
 
     suspend fun stageMovieBatch(providerId: Long, sessionId: Long, movies: List<MovieEntity>) {
-        insertStageRows(buildMovieStages(providerId, sessionId, movies), catalogSyncDao::insertMovieStages)
+        val rows = buildMovieStages(providerId, sessionId, movies)
+        transactionRunner.inTransaction {
+            insertStageRows(rows, catalogSyncDao::insertMovieStages)
+        }
     }
 
     suspend fun stageSeriesBatch(providerId: Long, sessionId: Long, series: List<SeriesEntity>) {
-        insertStageRows(buildSeriesStages(providerId, sessionId, series), catalogSyncDao::insertSeriesStages)
+        val rows = buildSeriesStages(providerId, sessionId, series)
+        transactionRunner.inTransaction {
+            insertStageRows(rows, catalogSyncDao::insertSeriesStages)
+        }
     }
 
     suspend fun stageCategories(providerId: Long, sessionId: Long, categories: List<CategoryEntity>) {
@@ -210,104 +220,113 @@ internal class SyncCatalogStore(
         catalogSyncDao.clearCategoryStages(providerId, sessionId)
     }
 
-    private fun buildChannelStages(
+    private suspend fun buildChannelStages(
         providerId: Long,
         sessionId: Long,
         channels: List<ChannelEntity>
     ): List<ChannelImportStageEntity> {
-        return channels
-            .distinctBy { it.streamId }
-            .map { channel ->
-                ChannelImportStageEntity(
-                    sessionId = sessionId,
-                    providerId = providerId,
-                    streamId = channel.streamId,
-                    name = channel.name,
-                    logoUrl = channel.logoUrl,
-                    groupTitle = channel.groupTitle,
-                    categoryId = channel.categoryId,
-                    categoryName = channel.categoryName,
-                    streamUrl = channel.streamUrl,
-                    epgChannelId = channel.epgChannelId,
-                    number = channel.number,
-                    catchUpSupported = channel.catchUpSupported,
-                    catchUpDays = channel.catchUpDays,
-                    catchUpSource = channel.catchUpSource,
-                    isAdult = channel.isAdult,
-                    logicalGroupId = channel.logicalGroupId,
-                    errorCount = channel.errorCount,
-                    syncFingerprint = channelFingerprint(channel)
-                )
-            }
+        val distinct = channels.distinctBy { it.streamId }
+        return parallelMap(distinct) { channel ->
+            ChannelImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                streamId = channel.streamId,
+                name = channel.name,
+                logoUrl = channel.logoUrl,
+                groupTitle = channel.groupTitle,
+                categoryId = channel.categoryId,
+                categoryName = channel.categoryName,
+                streamUrl = channel.streamUrl,
+                epgChannelId = channel.epgChannelId,
+                number = channel.number,
+                catchUpSupported = channel.catchUpSupported,
+                catchUpDays = channel.catchUpDays,
+                catchUpSource = channel.catchUpSource,
+                isAdult = channel.isAdult,
+                logicalGroupId = channel.logicalGroupId,
+                errorCount = channel.errorCount,
+                syncFingerprint = channelFingerprint(channel)
+            )
+        }
     }
 
-    private fun buildMovieStages(
+    private suspend fun buildMovieStages(
         providerId: Long,
         sessionId: Long,
         movies: List<MovieEntity>
     ): List<MovieImportStageEntity> {
-        return movies
-            .distinctBy { it.streamId }
-            .map { movie ->
-                MovieImportStageEntity(
-                    sessionId = sessionId,
-                    providerId = providerId,
-                    streamId = movie.streamId,
-                    name = movie.name,
-                    posterUrl = movie.posterUrl,
-                    backdropUrl = movie.backdropUrl,
-                    categoryId = movie.categoryId,
-                    categoryName = movie.categoryName,
-                    streamUrl = movie.streamUrl,
-                    containerExtension = movie.containerExtension,
-                    plot = movie.plot,
-                    cast = movie.cast,
-                    director = movie.director,
-                    genre = movie.genre,
-                    releaseDate = movie.releaseDate,
-                    duration = movie.duration,
-                    durationSeconds = movie.durationSeconds,
-                    rating = movie.rating,
-                    year = movie.year,
-                    tmdbId = movie.tmdbId,
-                    youtubeTrailer = movie.youtubeTrailer,
-                    isAdult = movie.isAdult,
-                    syncFingerprint = movieFingerprint(movie)
-                )
-            }
+        val distinct = movies.distinctBy { it.streamId }
+        return parallelMap(distinct) { movie ->
+            MovieImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                streamId = movie.streamId,
+                name = movie.name,
+                posterUrl = movie.posterUrl,
+                backdropUrl = movie.backdropUrl,
+                categoryId = movie.categoryId,
+                categoryName = movie.categoryName,
+                streamUrl = movie.streamUrl,
+                containerExtension = movie.containerExtension,
+                plot = movie.plot,
+                cast = movie.cast,
+                director = movie.director,
+                genre = movie.genre,
+                releaseDate = movie.releaseDate,
+                duration = movie.duration,
+                durationSeconds = movie.durationSeconds,
+                rating = movie.rating,
+                year = movie.year,
+                tmdbId = movie.tmdbId,
+                youtubeTrailer = movie.youtubeTrailer,
+                isAdult = movie.isAdult,
+                syncFingerprint = movieFingerprint(movie)
+            )
+        }
     }
 
-    private fun buildSeriesStages(
+    private suspend fun buildSeriesStages(
         providerId: Long,
         sessionId: Long,
         series: List<SeriesEntity>
     ): List<SeriesImportStageEntity> {
-        return series
-            .distinctBy { it.seriesId }
-            .map { item ->
-                SeriesImportStageEntity(
-                    sessionId = sessionId,
-                    providerId = providerId,
-                    seriesId = item.seriesId,
-                    name = item.name,
-                    posterUrl = item.posterUrl,
-                    backdropUrl = item.backdropUrl,
-                    categoryId = item.categoryId,
-                    categoryName = item.categoryName,
-                    plot = item.plot,
-                    cast = item.cast,
-                    director = item.director,
-                    genre = item.genre,
-                    releaseDate = item.releaseDate,
-                    rating = item.rating,
-                    tmdbId = item.tmdbId,
-                    youtubeTrailer = item.youtubeTrailer,
-                    episodeRunTime = item.episodeRunTime,
-                    lastModified = item.lastModified,
-                    isAdult = item.isAdult,
-                    syncFingerprint = seriesFingerprint(item)
-                )
-            }
+        val distinct = series.distinctBy { it.seriesId }
+        return parallelMap(distinct) { item ->
+            SeriesImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                seriesId = item.seriesId,
+                name = item.name,
+                posterUrl = item.posterUrl,
+                backdropUrl = item.backdropUrl,
+                categoryId = item.categoryId,
+                categoryName = item.categoryName,
+                plot = item.plot,
+                cast = item.cast,
+                director = item.director,
+                genre = item.genre,
+                releaseDate = item.releaseDate,
+                rating = item.rating,
+                tmdbId = item.tmdbId,
+                youtubeTrailer = item.youtubeTrailer,
+                episodeRunTime = item.episodeRunTime,
+                lastModified = item.lastModified,
+                isAdult = item.isAdult,
+                syncFingerprint = seriesFingerprint(item)
+            )
+        }
+    }
+
+    private suspend fun <T, R> parallelMap(items: List<T>, transform: (T) -> R): List<R> {
+        if (items.size < 500) {
+            return items.map(transform)
+        }
+        val chunkSize = (items.size + FINGERPRINT_PARALLELISM - 1) / FINGERPRINT_PARALLELISM
+        return coroutineScope {
+            items.chunked(chunkSize).map { chunk ->
+                async(Dispatchers.Default) { chunk.map(transform) }
+            }.awaitAll().flatten()
+        }
     }
 
     private suspend fun stageMovieSequence(
@@ -510,51 +529,24 @@ internal class SyncCatalogStore(
     }
 
     private fun fingerprint(vararg values: String): String {
-        val messageDigest = requireNotNull(digest.get())
-        messageDigest.reset()
+        var hash = 1L
         values.forEach { value ->
-            messageDigest.update(value.toByteArray(Charsets.UTF_8))
-            messageDigest.update(0)
+            hash = hash * 31L + value.hashCode()
         }
-        return messageDigest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        return hash.toString(16)
     }
 
     private fun normalizeText(value: String?): String {
-        return value
-            .orEmpty()
-            .trim()
-            .replace(Regex("\\s+"), " ")
-            .lowercase()
+        return value?.trim()?.lowercase().orEmpty()
     }
 
     private fun normalizeUrl(value: String?): String {
-        val url = value?.trim().orEmpty()
-        if (url.isEmpty()) {
-            return ""
-        }
-        val parsed = runCatching { URI(url) }.getOrNull()
-        val scheme = parsed?.scheme?.lowercase().orEmpty()
-        val host = parsed?.host?.lowercase().orEmpty()
-        val path = parsed?.path.orEmpty().trimEnd('/')
-        val query = parsed?.query
-            ?.split('&')
-            ?.mapNotNull { pair ->
-                val key = pair.substringBefore('=').lowercase()
-                val normalizedValue = pair.substringAfter('=', "")
-                when (key) {
-                    "token", "auth", "password", "username" -> null
-                    else -> "$key=$normalizedValue"
-                }
-            }
-            ?.sorted()
-            ?.joinToString("&")
-            .orEmpty()
-        return listOf(scheme, host, path, query)
-            .joinToString("|")
-            .ifBlank { url.lowercase() }
+        return value?.trim()?.lowercase().orEmpty()
     }
 
     private companion object {
         private const val STAGE_BATCH_SIZE = 500
+        private val WHITESPACE_REGEX = Regex("\\s+")
+        private val FINGERPRINT_PARALLELISM = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
     }
 }

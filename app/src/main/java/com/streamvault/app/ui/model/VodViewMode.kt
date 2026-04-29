@@ -6,6 +6,6 @@ enum class VodViewMode(val storageValue: String) {
 
     companion object {
         fun fromStorage(value: String?): VodViewMode =
-            entries.firstOrNull { it.storageValue.equals(value, ignoreCase = true) } ?: MODERN
+            entries.firstOrNull { it.storageValue.equals(value, ignoreCase = true) } ?: CLASSIC
     }
 }

@@ -15,7 +15,7 @@ data class Provider(
     val apiVersion: String? = null,
     val allowedOutputFormats: List<String> = emptyList(),
     val epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.UPFRONT,
-    val xtreamFastSyncEnabled: Boolean = true,
+    val xtreamFastSyncEnabled: Boolean = false,
     val m3uVodClassificationEnabled: Boolean = true,
     val status: ProviderStatus = ProviderStatus.UNKNOWN,
     val lastSyncedAt: Long = 0L,

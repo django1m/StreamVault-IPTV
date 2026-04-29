@@ -48,9 +48,10 @@ internal class SyncManagerXtreamMovieStrategy(
         existingMetadata: SyncMetadata,
         onProgress: ((String) -> Unit)?
     ): MovieCatalogSyncResult {
+        val tSyncStart = System.currentTimeMillis()
         Log.i(
             XTREAM_MOVIE_STRATEGY_TAG,
-            "Xtream movies strategy start for provider ${provider.id}. previousMode=${existingMetadata.movieSyncMode} rememberSequential=${existingMetadata.movieParallelFailuresRemembered}"
+            "FzSync MOVIES start provider=${provider.id} fastFlag=${provider.xtreamFastSyncEnabled} previousMode=${existingMetadata.movieSyncMode}"
         )
         val rawVodCategories = fetchXtreamVodCategories(provider)
         val resolvedCategories = rawVodCategories
@@ -108,7 +109,13 @@ internal class SyncManagerXtreamMovieStrategy(
         }
 
         progress(provider.id, onProgress, "Checking Movies full catalog...")
+        val tFullStart = System.currentTimeMillis()
+        Log.i(XTREAM_MOVIE_STRATEGY_TAG, "FzSync MOVIES full START")
         fullPayload = loadXtreamMoviesFull(provider, api)
+        Log.i(
+            XTREAM_MOVIE_STRATEGY_TAG,
+            "FzSync MOVIES full END elapsedMs=${System.currentTimeMillis() - tFullStart} result=${fullPayload.catalogResult::class.simpleName} stagedCount=${fullPayload.stagedAcceptedCount}"
+        )
         when (val fullResult = fullPayload.catalogResult) {
             is CatalogStrategyResult.Success -> return MovieCatalogSyncResult(
                 catalogResult = fullResult,
@@ -125,7 +132,7 @@ internal class SyncManagerXtreamMovieStrategy(
             ).also {
                 Log.i(
                     XTREAM_MOVIE_STRATEGY_TAG,
-                    "Xtream movies strategy selected FULL for provider ${provider.id} with ${fullPayload.stagedAcceptedCount} items."
+                    "FzSync MOVIES done totalMs=${System.currentTimeMillis() - tSyncStart} via=full items=${fullPayload.stagedAcceptedCount}"
                 )
             }
             is CatalogStrategyResult.Partial -> return MovieCatalogSyncResult(
@@ -143,7 +150,7 @@ internal class SyncManagerXtreamMovieStrategy(
             ).also {
                 Log.w(
                     XTREAM_MOVIE_STRATEGY_TAG,
-                    "Xtream movies strategy selected FULL(partial) for provider ${provider.id} with ${fullPayload.stagedAcceptedCount} items."
+                    "FzSync MOVIES done totalMs=${System.currentTimeMillis() - tSyncStart} via=full(partial) items=${fullPayload.stagedAcceptedCount}"
                 )
             }
             else -> Unit
@@ -151,12 +158,18 @@ internal class SyncManagerXtreamMovieStrategy(
 
         if (!resolvedCategories.isNullOrEmpty()) {
             progress(provider.id, onProgress, "Preparing Movies category sync...")
+            val tCatStart = System.currentTimeMillis()
+            Log.i(XTREAM_MOVIE_STRATEGY_TAG, "FzSync MOVIES category-bulk START categories=${resolvedCategories.size}")
             categoryPayload = loadXtreamMoviesByCategory(
                 provider = provider,
                 api = api,
                 rawCategories = rawVodCategories.orEmpty(),
                 onProgress = onProgress,
                 preferSequential = existingMetadata.movieParallelFailuresRemembered
+            )
+            Log.i(
+                XTREAM_MOVIE_STRATEGY_TAG,
+                "FzSync MOVIES category-bulk END elapsedMs=${System.currentTimeMillis() - tCatStart} result=${categoryPayload.catalogResult::class.simpleName} stagedCount=${categoryPayload.stagedAcceptedCount}"
             )
         }
         when (val categoryResult = categoryPayload.catalogResult) {
@@ -482,13 +495,15 @@ internal class SyncManagerXtreamMovieStrategy(
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.MOVIE)
         var sessionId: Long? = null
         var acceptedCount = 0
-        finalOutcomes
+        val allMovieItems = finalOutcomes
             .filterIsInstance<CategoryFetchOutcome.Success<Movie>>()
-            .forEach { success ->
-                val staged = stageMovieItems(provider.id, success.items, seenStreamIds, fallbackCollector, sessionId)
-                sessionId = staged.sessionId
-                acceptedCount += staged.acceptedCount
-            }
+            .flatMap { it.items }
+        if (allMovieItems.isNotEmpty()) {
+            progress(provider.id, onProgress, "Saving ${allMovieItems.size} movies to database...")
+            val staged = stageMovieItems(provider.id, allMovieItems, seenStreamIds, fallbackCollector, sessionId)
+            sessionId = staged.sessionId
+            acceptedCount = staged.acceptedCount
+        }
         val failedCategories = finalOutcomes.count { it is CategoryFetchOutcome.Failure }
         val emptyCategories = finalOutcomes.count { it is CategoryFetchOutcome.Empty }
         val successfulCategories = finalOutcomes.count { it is CategoryFetchOutcome.Success }

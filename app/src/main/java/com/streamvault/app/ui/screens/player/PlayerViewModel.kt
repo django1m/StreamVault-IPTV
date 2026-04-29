@@ -238,6 +238,10 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private val progressiveSeekController = ProgressiveSeekController(scope = viewModelScope)
+
+    val isProgressiveSeekActive: StateFlow<Boolean> = progressiveSeekController.isActive
+
     init {
         viewModelScope.launch {
             playerEngine.error.collect { error ->
@@ -323,6 +327,14 @@ class PlayerViewModel @Inject constructor(
                 if (!hasRetriedWithSoftwareDecoder) {
                     playerEngine.setDecoderMode(mode)
                     updateDecoderMode(mode)
+                }
+            }
+        }
+        viewModelScope.launch {
+            progressiveSeekController.ticks.collect { tick ->
+                when (tick.direction) {
+                    SeekDirection.FORWARD  -> playerEngine.seekForward(tick.stepMs)
+                    SeekDirection.BACKWARD -> playerEngine.seekBackward(tick.stepMs)
                 }
             }
         }
@@ -703,6 +715,12 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun playNextEpisode() {
+        _nextEpisode.value?.let { episode ->
+            playEpisode(episode, showResumePrompt = false)
+        }
+    }
+
     private fun currentPlaybackIdentityUrl(): String =
         currentResolvedPlaybackUrl.ifBlank { currentStreamUrl }
 
@@ -1045,25 +1063,30 @@ class PlayerViewModel @Inject constructor(
                 }
             }
             
-            // Fetch Channel for tracking alternative streams (video qualities)
-            viewModelScope.launch {
-                val channel = channelRepository.getChannel(internalChannelId)
-                if (!isActivePlaybackSession(requestVersion, streamUrl)) return@launch
-                currentChannelFlow.value = channel
-                refreshCurrentChannelRecording()
-                if (channel != null) {
-                    currentTitle = channel.name.ifBlank { currentTitle }
-                    playbackTitleFlow.value = currentTitle
-                    currentStreamUrl = if (currentStreamClassLabel == "Catch-up") currentStreamUrl else channel.streamUrl
-                    updateStreamClass(
-                        when {
-                            currentStreamClassLabel == "Catch-up" -> "Catch-up"
-                            streamUrl == channel.streamUrl -> "Primary"
-                            channel.alternativeStreams.contains(streamUrl) -> "Alternate"
-                            else -> "Direct"
-                        }
-                    )
-                    if (currentContentType == ContentType.LIVE) {
+            // Fetch Channel — LIVE only. For MOVIE / SERIES_EPISODE the
+            // internalChannelId is a VOD id that can collide with an unrelated
+            // channel id in the DB; fetching the channel and writing its
+            // streamUrl/title back onto currentStreamUrl/currentTitle both
+            // defeats isActivePlaybackSession (hence no prepare() call) and
+            // shows a stray live-channel name over the film.
+            if (currentContentType == ContentType.LIVE) {
+                viewModelScope.launch {
+                    val channel = channelRepository.getChannel(internalChannelId)
+                    if (!isActivePlaybackSession(requestVersion, streamUrl)) return@launch
+                    currentChannelFlow.value = channel
+                    refreshCurrentChannelRecording()
+                    if (channel != null) {
+                        currentTitle = channel.name.ifBlank { currentTitle }
+                        playbackTitleFlow.value = currentTitle
+                        currentStreamUrl = if (currentStreamClassLabel == "Catch-up") currentStreamUrl else channel.streamUrl
+                        updateStreamClass(
+                            when {
+                                currentStreamClassLabel == "Catch-up" -> "Catch-up"
+                                streamUrl == channel.streamUrl -> "Primary"
+                                channel.alternativeStreams.contains(streamUrl) -> "Alternate"
+                                else -> "Direct"
+                            }
+                        )
                         recordLivePlayback(channel)
                         requestEpg(
                             providerId = currentProviderId,
@@ -1071,9 +1094,13 @@ class PlayerViewModel @Inject constructor(
                             streamId = channel.streamId,
                             internalChannelId = channel.id
                         )
+                        updateChannelDiagnostics(channel)
                     }
-                    updateChannelDiagnostics(channel)
                 }
+            } else {
+                // Clear any stale live channel state so the player UI doesn't
+                // leak the previous channel's name / EPG into the movie view.
+                currentChannelFlow.value = null
             }
         }
 
@@ -1087,14 +1114,14 @@ class PlayerViewModel @Inject constructor(
 
         progressTrackingJob = viewModelScope.launch {
             while (true) {
-                delay(5000) // Track every 5 seconds
+                delay(30_000)
                 if (!isAppInForeground || !playerEngine.isPlaying.value) continue
                 persistPlaybackProgress()
             }
         }
     }
 
-    private suspend fun persistPlaybackProgress() {
+    private suspend fun persistPlaybackProgress(refreshShelves: Boolean = false) {
         val pos = playerEngine.currentPosition.value
         val dur = playerEngine.duration.value
 
@@ -1102,10 +1129,12 @@ class PlayerViewModel @Inject constructor(
             val history = buildPlaybackHistorySnapshot(pos, dur) ?: return
             logRepositoryFailure(
                 operation = "Persist playback resume position",
-                result = playbackHistoryRepository.updateResumePosition(history)
+                result = playbackHistoryRepository.updateResumePosition(history, syncDenormalized = refreshShelves)
             )
-            watchNextManager.refreshWatchNext()
-            launcherRecommendationsManager.refreshRecommendations()
+            if (refreshShelves) {
+                watchNextManager.refreshWatchNext()
+                launcherRecommendationsManager.refreshRecommendations()
+            }
         }
     }
 
@@ -1117,7 +1146,7 @@ class PlayerViewModel @Inject constructor(
             playerEngine.pause()
         }
         if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress() }
+            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
         }
     }
 
@@ -1132,13 +1161,13 @@ class PlayerViewModel @Inject constructor(
 
     fun onPlayerScreenDisposed() {
         if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress() }
+            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
         }
     }
 
     fun handOffPlaybackToMultiView() {
         if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress() }
+            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
         }
         playerEngine.release()
     }
@@ -1708,6 +1737,20 @@ class PlayerViewModel @Inject constructor(
     fun pause() = playerEngine.pause()
     fun seekForward() = playerEngine.seekForward()
     fun seekBackward() = playerEngine.seekBackward()
+
+    fun startProgressiveSeek(direction: SeekDirection) {
+        if (currentContentType == ContentType.LIVE) return
+        if (playerEngine.playbackState.value == PlaybackState.ERROR) return
+        if (progressiveSeekController.isActive.value) return
+        playerEngine.pause()
+        progressiveSeekController.start(direction)
+    }
+
+    fun stopProgressiveSeek() {
+        if (!progressiveSeekController.isActive.value) return
+        progressiveSeekController.stop()
+        playerEngine.play()
+    }
 
     fun playEpisode(episode: Episode, showResumePrompt: Boolean = true) {
         prepare(

@@ -76,6 +76,8 @@ class AppUpdateInstaller @Inject constructor(
     }
 
     suspend fun refreshState(): AppUpdateDownloadState = withContext(Dispatchers.IO) {
+        pruneStaleDownloadIfNeeded()
+
         val downloadId = preferencesRepository.appUpdateDownloadId.first()
         val downloadedVersionName = preferencesRepository.downloadedAppUpdateVersionName.first()
         val apkFile = downloadedVersionName?.let(::apkFileForVersion)
@@ -169,8 +171,8 @@ class AppUpdateInstaller @Inject constructor(
             }
 
             val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                .setTitle("StreamVault ${releaseInfo.versionName}")
-                .setDescription("Downloading the latest StreamVault update")
+                .setTitle("FuzionTV ${releaseInfo.versionName}")
+                .setDescription("Downloading the latest FuzionTV update")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setMimeType("application/vnd.android.package-archive")
                 .setAllowedOverMetered(true)
@@ -261,6 +263,25 @@ class AppUpdateInstaller @Inject constructor(
         }
     }
 
+    /**
+     * Deletes the locally downloaded APK if its versionName no longer matches the
+     * latest release cached from the backend. Without this, an obsolete file left
+     * on disk from a previous release keeps `refreshState()` returning Downloaded,
+     * so the Settings UI shows "Ready to install" and reinstalls the same version
+     * that is already running — the user then sees no change after "Install".
+     */
+    private suspend fun pruneStaleDownloadIfNeeded() {
+        val downloadedVersionName = preferencesRepository.downloadedAppUpdateVersionName.first()
+            ?: return
+        val cachedVersionName = preferencesRepository.cachedAppUpdateVersionName.first()
+            ?: return
+        if (downloadedVersionName == cachedVersionName) return
+
+        apkFileForVersion(downloadedVersionName).delete()
+        preferencesRepository.setDownloadedAppUpdateVersionName(null)
+        preferencesRepository.setAppUpdateDownloadId(null)
+    }
+
     private fun isHttpsUrl(url: String): Boolean {
         val normalized = url.trim()
         if (normalized.isBlank()) return false
@@ -286,7 +307,7 @@ class AppUpdateInstaller @Inject constructor(
         val sanitizedVersion = versionName.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?: File(context.cacheDir, "downloads")
-        return File(downloadsDir, "StreamVault-$sanitizedVersion.apk")
+        return File(downloadsDir, "FuzionTV-$sanitizedVersion.apk")
     }
 
     private fun registerDownloadReceiver() {

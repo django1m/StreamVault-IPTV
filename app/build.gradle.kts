@@ -48,14 +48,16 @@ android {
         applicationId = "com.streamvault.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 484
+        versionName = "1.2.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "OFFICIAL_APPLICATION_ID", "\"com.streamvault.app\"")
         buildConfigField("String", "OFFICIAL_SIGNING_CERT_SHA256", "\"$officialSigningCertSha256\"")
-        val fuziontvBaseUrl = providers.gradleProperty("FUZIONTV_BASE_URL")
-            .getOrElse("https://admin.fuziontv.app")
-        buildConfigField("String", "FUZIONTV_BASE_URL", "\"$fuziontvBaseUrl\"")
+        buildConfigField(
+            "String",
+            "FUZIONTV_BASE_URL",
+            "\"${project.findProperty("FUZIONTV_BASE_URL") ?: "https://admin.fuziontv.app"}\""
+        )
     }
 
     signingConfigs {
@@ -81,6 +83,13 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+        debug {
+            // Use release signing so debug APKs can be installed over release
+            // APKs without wiping user data (playlists / preferences).
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     compileOptions {
@@ -102,6 +111,12 @@ kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+composeCompiler {
+    stabilityConfigurationFiles.add(
+        rootProject.layout.projectDirectory.file("compose_compiler_config.conf")
+    )
 }
 
 kover {
@@ -136,8 +151,12 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.exoplayer.rtsp)
+    implementation(libs.media3.exoplayer.smoothstreaming)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.ui)
+
+    // FFmpeg software decoders for IPTV codecs
+    implementation(libs.nextlib.media3ext)
 
     // Room
     implementation(libs.room.runtime)
@@ -173,6 +192,12 @@ dependencies {
     // Image Loading
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
+
+    // Palette extraction for ambient backgrounds
+    implementation(libs.palette)
+
+    // Baseline profile runtime installer
+    implementation(libs.profileinstaller)
 
     // Core
     implementation(libs.core.ktx)

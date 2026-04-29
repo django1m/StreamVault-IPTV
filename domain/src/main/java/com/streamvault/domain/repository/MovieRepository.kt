@@ -28,6 +28,7 @@ interface MovieRepository {
     suspend fun getMovieDetails(providerId: Long, movieId: Long): Result<Movie>
     suspend fun getStreamInfo(movie: Movie): Result<StreamInfo>
     suspend fun refreshMovies(providerId: Long): Result<Unit>
+    suspend fun preloadAllCategories(providerId: Long): Result<Unit>
     suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit>
     suspend fun getWatchProgress(movieId: Long): Long? = null
 }

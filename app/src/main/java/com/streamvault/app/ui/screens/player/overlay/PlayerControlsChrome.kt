@@ -38,7 +38,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,8 +74,6 @@ import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.RecordingStatus
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -114,6 +111,10 @@ fun PlayerControlsOverlay(
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
     onSeekForward: () -> Unit,
+    onSeekBackwardHoldStart: () -> Unit = {},
+    onSeekBackwardHoldStop: () -> Unit = {},
+    onSeekForwardHoldStart: () -> Unit = {},
+    onSeekForwardHoldStop: () -> Unit = {},
     onRestartProgram: () -> Unit,
     onOpenArchive: () -> Unit,
     onStartRecording: () -> Unit,
@@ -126,10 +127,9 @@ fun PlayerControlsOverlay(
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
     onOpenPlaybackSpeed: () -> Unit = {},
-    showEpisodesAction: Boolean = false,
-    onOpenEpisodes: () -> Unit = {},
+    hasNextEpisode: Boolean = false,
+    onPlayNextEpisode: () -> Unit = {},
     onOpenSplitScreen: () -> Unit,
-    onEnterPictureInPicture: () -> Unit = {},
     onToggleMute: () -> Unit,
     isCastConnected: Boolean = false,
     onCast: () -> Unit = {},
@@ -205,10 +205,9 @@ fun PlayerControlsOverlay(
                 onOpenAudioTracks = onOpenAudioTracks,
                 onOpenVideoTracks = onOpenVideoTracks,
                 onOpenPlaybackSpeed = onOpenPlaybackSpeed,
-                showEpisodesAction = showEpisodesAction,
-                onOpenEpisodes = onOpenEpisodes,
+                hasNextEpisode = hasNextEpisode,
+                onPlayNextEpisode = onPlayNextEpisode,
                 onOpenSplitScreen = onOpenSplitScreen,
-                onEnterPictureInPicture = onEnterPictureInPicture,
                 onToggleMute = onToggleMute,
                 isCastConnected = isCastConnected,
                 onCast = onCast,
@@ -216,6 +215,10 @@ fun PlayerControlsOverlay(
                 onTogglePlayPause = onTogglePlayPause,
                 onSeekBackward = onSeekBackward,
                 onSeekForward = onSeekForward,
+                onSeekBackwardHoldStart = onSeekBackwardHoldStart,
+                onSeekBackwardHoldStop = onSeekBackwardHoldStop,
+                onSeekForwardHoldStart = onSeekForwardHoldStart,
+                onSeekForwardHoldStop = onSeekForwardHoldStop,
                 onSeekToPosition = onSeekToPosition,
                 onSetScrubbingMode = onSetScrubbingMode,
                 seekPreview = seekPreview,
@@ -522,10 +525,9 @@ private fun PlayerBottomBar(
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
     onOpenPlaybackSpeed: () -> Unit,
-    showEpisodesAction: Boolean,
-    onOpenEpisodes: () -> Unit,
+    hasNextEpisode: Boolean,
+    onPlayNextEpisode: () -> Unit,
     onOpenSplitScreen: () -> Unit,
-    onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
     isCastConnected: Boolean,
     onCast: () -> Unit,
@@ -533,6 +535,10 @@ private fun PlayerBottomBar(
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
     onSeekForward: () -> Unit,
+    onSeekBackwardHoldStart: () -> Unit = {},
+    onSeekBackwardHoldStop: () -> Unit = {},
+    onSeekForwardHoldStart: () -> Unit = {},
+    onSeekForwardHoldStop: () -> Unit = {},
     onSeekToPosition: (Long) -> Unit,
     onSetScrubbingMode: (Boolean) -> Unit,
     seekPreview: SeekPreviewState,
@@ -606,7 +612,6 @@ private fun PlayerBottomBar(
                         onOpenAudioTracks = onOpenAudioTracks,
                         onOpenVideoTracks = onOpenVideoTracks,
                         onOpenSplitScreen = onOpenSplitScreen,
-                        onEnterPictureInPicture = onEnterPictureInPicture,
                         onToggleMute = onToggleMute,
                         isCastConnected = isCastConnected,
                         onCast = onCast,
@@ -634,9 +639,8 @@ private fun PlayerBottomBar(
                         onOpenAudioTracks = onOpenAudioTracks,
                         onOpenVideoTracks = onOpenVideoTracks,
                         onOpenPlaybackSpeed = onOpenPlaybackSpeed,
-                        showEpisodesAction = showEpisodesAction,
-                        onOpenEpisodes = onOpenEpisodes,
-                        onEnterPictureInPicture = onEnterPictureInPicture,
+                        hasNextEpisode = hasNextEpisode,
+                        onPlayNextEpisode = onPlayNextEpisode,
                         onToggleMute = onToggleMute,
                         isCastConnected = isCastConnected,
                         onCast = onCast,
@@ -644,6 +648,10 @@ private fun PlayerBottomBar(
                         onTogglePlayPause = onTogglePlayPause,
                         onSeekBackward = onSeekBackward,
                         onSeekForward = onSeekForward,
+                        onSeekBackwardHoldStart = onSeekBackwardHoldStart,
+                        onSeekBackwardHoldStop = onSeekBackwardHoldStop,
+                        onSeekForwardHoldStart = onSeekForwardHoldStart,
+                        onSeekForwardHoldStop = onSeekForwardHoldStop,
                         seekPreview = seekPreview,
                         onSeekPreviewPositionChanged = onSeekPreviewPositionChanged
                     )
@@ -679,7 +687,6 @@ private fun PlayerLiveInfo(
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
     onOpenSplitScreen: () -> Unit,
-    onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
     isCastConnected: Boolean,
     onCast: () -> Unit,
@@ -694,7 +701,6 @@ private fun PlayerLiveInfo(
             stringResource(if (isCastConnected) R.string.player_stop_casting else R.string.player_cast),
             if (isCastConnected) onStopCasting else onCast
         ))
-        add(PlayerActionSpec(stringResource(R.string.player_picture_in_picture), onEnterPictureInPicture))
         if (currentProgram?.hasArchive == true) {
             add(PlayerActionSpec(stringResource(R.string.player_restart), onRestartProgram))
             add(PlayerActionSpec(stringResource(R.string.player_archive), onOpenArchive))
@@ -719,7 +725,6 @@ private fun PlayerLiveInfo(
         if (videoQualityCount > 0) {
             add(PlayerActionSpec(stringResource(R.string.player_video_quality), onOpenVideoTracks))
         }
-        add(PlayerActionSpec(stringResource(R.string.multiview_nav), onOpenSplitScreen))
     }
 
     Row(verticalAlignment = Alignment.Top) {
@@ -828,9 +833,8 @@ private fun PlayerVodInfo(
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
     onOpenPlaybackSpeed: () -> Unit,
-    showEpisodesAction: Boolean,
-    onOpenEpisodes: () -> Unit,
-    onEnterPictureInPicture: () -> Unit,
+    hasNextEpisode: Boolean,
+    onPlayNextEpisode: () -> Unit,
     onToggleMute: () -> Unit,
     isCastConnected: Boolean,
     onCast: () -> Unit,
@@ -838,6 +842,10 @@ private fun PlayerVodInfo(
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
     onSeekForward: () -> Unit,
+    onSeekBackwardHoldStart: () -> Unit = {},
+    onSeekBackwardHoldStop: () -> Unit = {},
+    onSeekForwardHoldStart: () -> Unit = {},
+    onSeekForwardHoldStop: () -> Unit = {},
     seekPreview: SeekPreviewState,
     onSeekPreviewPositionChanged: (Long?) -> Unit
 ) {
@@ -888,8 +896,8 @@ private fun PlayerVodInfo(
         if (videoQualityCount > 0) {
             add(PlayerActionSpec(stringResource(R.string.player_video_quality), onOpenVideoTracks))
         }
-        if (showEpisodesAction) {
-            add(PlayerActionSpec(stringResource(R.string.player_episodes), onOpenEpisodes))
+        if (hasNextEpisode) {
+            add(PlayerActionSpec(stringResource(R.string.player_next_episode), onPlayNextEpisode))
         }
         if (audioTrackCount > 0) {
             add(PlayerActionSpec(stringResource(R.string.player_audio), onOpenAudioTracks))
@@ -904,7 +912,6 @@ private fun PlayerVodInfo(
             stringResource(if (isCastConnected) R.string.player_stop_casting else R.string.player_cast),
             if (isCastConnected) onStopCasting else onCast
         ))
-        add(PlayerActionSpec(stringResource(R.string.player_picture_in_picture), onEnterPictureInPicture))
         add(PlayerActionSpec(stringResource(R.string.player_aspect_ratio_label, aspectRatioLabel), onToggleAspectRatio))
     }
     var sliderValue by remember(duration, currentPosition) {
@@ -982,6 +989,8 @@ private fun PlayerVodInfo(
                         label = "\u23EA",
                         contentDescription = stringResource(R.string.player_rewind),
                         onClick = onSeekBackward,
+                        onHoldStart = onSeekBackwardHoldStart,
+                        onHoldStop = onSeekBackwardHoldStop,
                         buttonSize = transportButtonSize,
                         modifier = Modifier.focusProperties {
                             down = quickActionsFocusRequester
@@ -1023,6 +1032,8 @@ private fun PlayerVodInfo(
                         label = "\u23E9",
                         contentDescription = stringResource(R.string.player_forward),
                         onClick = onSeekForward,
+                        onHoldStart = onSeekForwardHoldStart,
+                        onHoldStop = onSeekForwardHoldStop,
                         buttonSize = transportButtonSize,
                         modifier = Modifier.focusProperties {
                             down = quickActionsFocusRequester
@@ -1247,33 +1258,14 @@ private fun PlayerTransportButton(
     label: String,
     contentDescription: String,
     onClick: () -> Unit,
+    onHoldStart: () -> Unit = {},
+    onHoldStop: () -> Unit = {},
     buttonSize: androidx.compose.ui.unit.Dp = 56.dp,
     modifier: Modifier = Modifier
 ) {
-    val coroutineScope = rememberCoroutineScope()
-    val latestOnClick by rememberUpdatedState(onClick)
-    var repeatJob by remember { mutableStateOf<Job?>(null) }
-
-    fun stopRepeating() {
-        repeatJob?.cancel()
-        repeatJob = null
-    }
-
-    fun performSeekStep() {
-        latestOnClick()
-    }
-
-    fun startRepeating() {
-        if (repeatJob?.isActive == true) return
-        performSeekStep()
-        repeatJob = coroutineScope.launch {
-            delay(350L)
-            while (true) {
-                performSeekStep()
-                delay(180L)
-            }
-        }
-    }
+    val latestOnHoldStart by rememberUpdatedState(onHoldStart)
+    val latestOnHoldStop by rememberUpdatedState(onHoldStop)
+    var holdActive by remember { mutableStateOf(false) }
 
     TvClickableSurface(
         onClick = onClick,
@@ -1291,12 +1283,26 @@ private fun PlayerTransportButton(
                     android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                         when (event.nativeKeyEvent.action) {
                             android.view.KeyEvent.ACTION_DOWN -> {
-                                startRepeating()
-                                true
+                                if (event.nativeKeyEvent.repeatCount == 0) {
+                                    // Tap: do nothing here — the surface's onClick fires for tap.
+                                    false
+                                } else if (event.nativeKeyEvent.repeatCount == 1 && !holdActive) {
+                                    holdActive = true
+                                    latestOnHoldStart()
+                                    true
+                                } else {
+                                    // Subsequent repeats absorbed.
+                                    true
+                                }
                             }
                             android.view.KeyEvent.ACTION_UP -> {
-                                stopRepeating()
-                                true
+                                if (holdActive) {
+                                    holdActive = false
+                                    latestOnHoldStop()
+                                    true
+                                } else {
+                                    false
+                                }
                             }
                             else -> false
                         }
@@ -1316,7 +1322,12 @@ private fun PlayerTransportButton(
     }
 
     DisposableEffect(Unit) {
-        onDispose { stopRepeating() }
+        onDispose {
+            if (holdActive) {
+                holdActive = false
+                latestOnHoldStop()
+            }
+        }
     }
 }
 

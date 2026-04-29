@@ -221,7 +221,12 @@ fun FullEpgScreen(
         navigationChrome = AppNavigationChrome.TopBar,
         topBarVisible = topNavVisible,
         compactHeader = true,
-        showScreenHeader = false
+        showScreenHeader = false,
+        backdrop = {
+            com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                palette = com.streamvault.app.ui.design.AmbientPalette.Default
+            ) { }
+        }
     ) {
         Column(
             modifier = Modifier
@@ -353,12 +358,12 @@ fun FullEpgScreen(
                                     onPlayChannel(channel, returnRoute)
                                 }
                             },
-                            onProgramClick = { channel, program ->
+                            onProgramClick = { channel, _ ->
                                 topNavVisible = false
                                 if (isGuideChannelLocked(channel, categoriesById, uiState.parentalControlLevel)) {
-                                    requestLockedGuideAction(LockedGuideAction.OpenProgram(channel, program))
+                                    requestLockedGuideAction(LockedGuideAction.PlayChannel(channel, returnRoute))
                                 } else {
-                                    selectedProgram = channel to program
+                                    onPlayChannel(channel, returnRoute)
                                 }
                             },
                             onChannelFocused = { channel, currentProgram, isFirstRow ->

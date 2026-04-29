@@ -112,6 +112,11 @@ fun ParentalControlGroupScreen(
         navigationChrome = AppNavigationChrome.TopBar,
         compactHeader = true,
         showScreenHeader = false,
+        backdrop = {
+            com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                palette = com.streamvault.app.ui.design.AmbientPalette.Default
+            ) { }
+        },
         header = {
             Row(
                 modifier = Modifier.fillMaxWidth(),

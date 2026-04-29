@@ -18,7 +18,9 @@ import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.VirtualCategoryIds
 import com.streamvault.domain.model.VodSyncMode
 import com.streamvault.domain.repository.CategoryRepository
+import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.ProviderRepository
+import com.streamvault.domain.repository.SeriesRepository
 import com.streamvault.domain.repository.SyncMetadataRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -73,7 +75,7 @@ internal fun observeSettingsPreferenceSnapshot(
             liveTvCategoryFilters = emptyList(),
             liveTvQuickFilterVisibilityMode = LiveTvQuickFilterVisibilityMode.ALWAYS_VISIBLE,
             liveChannelNumberingMode = ChannelNumberingMode.GROUP,
-            vodViewMode = VodViewMode.MODERN,
+            vodViewMode = VodViewMode.CLASSIC,
             guideDefaultCategoryId = VirtualCategoryIds.FAVORITES,
             guideDefaultCategoryOptions = emptyList(),
             preventStandbyDuringPlayback = true,
@@ -221,6 +223,8 @@ internal fun SettingsUiState.applyPreferenceSnapshot(snapshot: SettingsPreferenc
 internal fun observeProviderDiagnostics(
     providerRepository: ProviderRepository,
     syncMetadataRepository: SyncMetadataRepository,
+    movieRepository: MovieRepository,
+    seriesRepository: SeriesRepository,
     application: Application
 ): Flow<Map<Long, ProviderDiagnosticsUiModel>> {
     return providerRepository.getProviders()
@@ -230,7 +234,17 @@ internal fun observeProviderDiagnostics(
             } else {
                 combine(
                     providers.map { provider ->
-                        syncMetadataRepository.observeMetadata(provider.id).map { metadata ->
+                        // Live count comes from metadata (reliable on this app),
+                        // but movie / series counts are derived from the actual DB
+                        // — metadata.movieCount / seriesCount can go stale if a
+                        // sync gets skipped, fails silently, or is replaced by
+                        // an incremental "empty valid" refresh. The DB count is
+                        // the source of truth for what the user can actually see.
+                        combine(
+                            syncMetadataRepository.observeMetadata(provider.id),
+                            movieRepository.getLibraryCount(provider.id),
+                            seriesRepository.getLibraryCount(provider.id)
+                        ) { metadata, liveMovieCount, liveSeriesCount ->
                             provider.id to ProviderDiagnosticsUiModel(
                                 lastSyncStatus = metadata?.lastSyncStatus ?: "NONE",
                                 lastLiveSync = metadata?.lastLiveSync ?: 0L,
@@ -241,8 +255,10 @@ internal fun observeProviderDiagnostics(
                                 lastSeriesSync = metadata?.lastSeriesSync ?: 0L,
                                 lastEpgSync = metadata?.lastEpgSync ?: 0L,
                                 liveCount = metadata?.liveCount ?: 0,
-                                movieCount = metadata?.movieCount ?: 0,
-                                seriesCount = metadata?.seriesCount ?: 0,
+                                movieCount = liveMovieCount.takeIf { it > 0 }
+                                    ?: (metadata?.movieCount ?: 0),
+                                seriesCount = liveSeriesCount.takeIf { it > 0 }
+                                    ?: (metadata?.seriesCount ?: 0),
                                 epgCount = metadata?.epgCount ?: 0,
                                 movieSyncMode = metadata?.movieSyncMode ?: VodSyncMode.UNKNOWN,
                                 movieWarningsCount = metadata?.movieWarningsCount ?: 0,

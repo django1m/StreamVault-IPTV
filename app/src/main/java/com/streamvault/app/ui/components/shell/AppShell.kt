@@ -70,10 +70,13 @@ import com.streamvault.app.navigation.Routes
 import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.AppMotion
 import com.streamvault.app.ui.design.FocusSpec
-import com.streamvault.app.ui.interaction.mouseClickable
-import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
+import com.streamvault.app.ui.components.cinematic.focusGlow
+import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppShapes
 import com.streamvault.app.ui.design.LocalAppSpacing
+import com.streamvault.app.ui.design.glassSurface
+import com.streamvault.app.ui.interaction.mouseClickable
+import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
 
 enum class AppNavigationChrome {
     Rail,
@@ -93,6 +96,13 @@ fun AppScreenScaffold(
     showScreenHeader: Boolean = true,
     header: (@Composable ColumnScope.() -> Unit)? = null,
     contentPadding: PaddingValues = PaddingValues(),
+    topBarFocusRequester: FocusRequester? = null,
+    /**
+     * Cinematic backdrop drawn behind the rail + content (full-bleed). Leave null
+     * on screens that bring their own surface; set it for Dashboard / detail screens
+     * that want an ambient hero image behind the chrome.
+     */
+    backdrop: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val spacing = LocalAppSpacing.current
@@ -110,6 +120,13 @@ fun AppScreenScaffold(
                 )
             )
     ) {
+        if (backdrop != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(-1f)
+            ) { backdrop() }
+        }
         if (navigationChrome == AppNavigationChrome.Rail) {
             Row(modifier = Modifier.fillMaxSize()) {
                 DestinationRail(
@@ -167,6 +184,7 @@ fun AppScreenScaffold(
                     TopNavigationBar(
                         currentRoute = currentRoute,
                         onNavigate = onNavigate,
+                        focusRequester = topBarFocusRequester,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(10.dp))
@@ -241,34 +259,38 @@ fun AppScreenHeader(
 private fun TopNavigationBar(
     currentRoute: String,
     onNavigate: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null
 ) {
     val items = remember { buildDestinationItems() }
     val scrollState = rememberScrollState()
 
     val focusRequesters = remember { mutableMapOf<String, FocusRequester>() }
-    
+
     Surface(
-        modifier = modifier.focusProperties {
-            onEnter = {
-                val activeItem = findActiveDestinationItem(items, currentRoute)
-                focusRequesters[activeItem?.route] ?: FocusRequester.Default
+        modifier = modifier
+            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+            .focusProperties {
+                onEnter = {
+                    val activeItem = findActiveDestinationItem(items, currentRoute)
+                    focusRequesters[activeItem?.route] ?: FocusRequester.Default
+                }
             }
-        },
+            .glassSurface(level = GlassLevel.Medium, shape = RoundedCornerShape(18.dp)),
         shape = RoundedCornerShape(18.dp),
-        colors = SurfaceDefaults.colors(containerColor = AppColors.Surface.copy(alpha = 0.9f))
+        colors = SurfaceDefaults.colors(containerColor = Color.Transparent)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 10.dp),
+                .height(64.dp)
+                .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleMedium,
                 color = AppColors.TextPrimary,
                 modifier = Modifier.wrapContentWidth(Alignment.Start)
             )
@@ -311,8 +333,8 @@ private fun TopNavigationButton(
     var isFocused by remember { mutableStateOf(false) }
     val sounds = rememberTvInteractionSounds()
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) FocusSpec.FocusedScale else 1f,
-        animationSpec = AppMotion.FocusSpec,
+        targetValue = if (isFocused) 1.06f else 1f,
+        animationSpec = AppMotion.ScaleSpring,
         label = "topNavScale"
     )
 
@@ -330,7 +352,7 @@ private fun TopNavigationButton(
                     onClick()
                 }
             )
-            .zIndex(if (isFocused) 1f else 0f) // Keep focused button on top
+            .zIndex(if (isFocused) 1f else 0f)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -343,8 +365,11 @@ private fun TopNavigationButton(
             },
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(14.dp)),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (selected) AppColors.BrandMuted else Color.Transparent,
-            focusedContainerColor = AppColors.SurfaceEmphasis
+            // Top-nav tabs stay fully transparent. Selection = gradient
+            // underline. Focus = white border only (no fill, no halo).
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
+            pressedContainerColor = Color.Transparent
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
@@ -353,22 +378,37 @@ private fun TopNavigationButton(
             )
         )
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (selected) AppColors.Brand else AppColors.TextSecondary,
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (selected) AppColors.TextPrimary else AppColors.TextSecondary
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = if (selected) AppColors.Brand else AppColors.TextSecondary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) AppColors.TextPrimary else AppColors.TextSecondary
+                )
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 22.dp, height = 2.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            Brush.horizontalGradient(listOf(AppColors.BrandStrong, AppColors.Brand))
+                        )
+                )
+            }
         }
     }
 }
@@ -660,8 +700,9 @@ private fun DestinationRail(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        AppColors.SurfaceElevated,
-                        AppColors.Surface
+                        AppColors.CanvasElevated,
+                        AppColors.Surface.copy(alpha = 0.92f),
+                        AppColors.Canvas.copy(alpha = 0.88f)
                     )
                 )
             )
@@ -672,6 +713,21 @@ private fun DestinationRail(
                 }
             }
     ) {
+        // Premium right-edge accent — a hairline sheen to separate rail from content.
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(1.dp)
+                .align(Alignment.CenterEnd)
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        0.2f to AppColors.GlassLight,
+                        0.8f to AppColors.GlassLight,
+                        1f to Color.Transparent
+                    )
+                )
+        )
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -718,8 +774,8 @@ private fun RailButton(
     var isFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) FocusSpec.FocusedScale else 1f,
-        animationSpec = AppMotion.FocusSpec,
+        targetValue = if (isFocused) FocusSpec.FocusedScaleCinematic else 1f,
+        animationSpec = AppMotion.ScaleSpring,
         label = "railButtonScale"
     )
 
@@ -732,6 +788,7 @@ private fun RailButton(
                 onClick = onClick
             )
             .fillMaxWidth()
+            .focusGlow(isFocused = isFocused, color = AppColors.GlowBrand)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -756,6 +813,16 @@ private fun RailButton(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 3.dp, height = 22.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            Brush.verticalGradient(listOf(AppColors.BrandStrong, AppColors.Brand))
+                        )
+                )
+            }
             Icon(
                 imageVector = icon,
                 contentDescription = label,

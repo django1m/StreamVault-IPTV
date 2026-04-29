@@ -27,8 +27,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -83,6 +86,15 @@ import java.util.Locale
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.components.cinematic.AmbientBackground
+import com.streamvault.app.ui.components.cinematic.HeroBackdrop
+import com.streamvault.app.ui.components.cinematic.HeroBackdropContent
+import com.streamvault.app.ui.components.cinematic.HeroCarousel
+import com.streamvault.app.ui.components.cinematic.SpringButton
+import com.streamvault.app.ui.design.AmbientPalette
+import com.streamvault.app.ui.design.ambientPaletteFrom
+import coil3.compose.LocalPlatformContext
+import coil3.SingletonImageLoader
 
 @Composable
 fun DashboardScreen(
@@ -107,6 +119,23 @@ fun DashboardScreen(
         }
     }
 
+    val heroItems by remember(uiState.recentMovies, uiState.recentSeries) {
+        derivedStateOf { buildHeroItemsFrom(uiState.recentMovies, uiState.recentSeries) }
+    }
+    var activeHeroIndex by remember { mutableStateOf(0) }
+    var ambientPalette by remember { mutableStateOf(AmbientPalette.Default) }
+    val context = LocalPlatformContext.current
+    val imageLoader = remember(context) { SingletonImageLoader.get(context) }
+
+    LaunchedEffect(heroItems, activeHeroIndex) {
+        val item = heroItems.getOrNull(activeHeroIndex)
+        ambientPalette = if (item != null) {
+            ambientPaletteFrom(item.backdropUrl, context, imageLoader)
+        } else {
+            AmbientPalette.Default
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AppScreenScaffold(
             currentRoute = currentRoute,
@@ -115,7 +144,10 @@ fun DashboardScreen(
             subtitle = provider?.name,
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            backdrop = {
+                AmbientBackground(palette = ambientPalette) { }
+            }
         ) {
             if (provider == null) {
                 EmptyDashboard(
@@ -130,6 +162,57 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 28.dp)
             ) {
+                if (heroItems.isNotEmpty()) {
+                    item(key = "cinematic_hero_carousel", contentType = "hero") {
+                        HeroCarousel(
+                            pageCount = heroItems.size,
+                            heroHeight = 480.dp,
+                            onPageChanged = { idx -> activeHeroIndex = idx }
+                        ) { idx ->
+                            val item = heroItems[idx]
+                            HeroBackdrop(
+                                imageUrl = item.backdropUrl,
+                                height = 480.dp,
+                                accentTint = ambientPalette.shadow
+                            ) {
+                                HeroBackdropContent(
+                                    title = item.title,
+                                    subtitle = item.subtitle,
+                                    eyebrow = item.eyebrow,
+                                    meta = item.meta,
+                                    actions = {
+                                        SpringButton(
+                                            onClick = {
+                                                when (item.source) {
+                                                    HeroItem.Source.MOVIE -> {
+                                                        val movieId = item.id.removePrefix("movie-").toLongOrNull()
+                                                        if (movieId != null) {
+                                                            val movie = uiState.recentMovies.firstOrNull { it.id == movieId }
+                                                            if (movie != null) onMovieClick(movie)
+                                                        }
+                                                    }
+                                                    HeroItem.Source.SERIES -> {
+                                                        val seriesId = item.id.removePrefix("series-").toLongOrNull()
+                                                        if (seriesId != null) {
+                                                            val series = uiState.recentSeries.firstOrNull { it.id == seriesId }
+                                                            if (series != null) onSeriesClick(series)
+                                                        }
+                                                    }
+                                                    else -> Unit
+                                                }
+                                            }
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.action_watch_now),
+                                                style = MaterialTheme.typography.titleSmall
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 if (uiState.isLoading && orderedSections.isEmpty()) {
                     item(key = "dashboard_loading") {
                         Box(
@@ -159,7 +242,7 @@ fun DashboardScreen(
                         )
                     }
                 }
-                items(orderedSections, key = { it.name }) { section ->
+                items(orderedSections, key = { it.name }, contentType = { it.name }) { section ->
                     when (section) {
                     DashboardHomeSection.LIVE_SHORTCUTS -> DashboardShortcutRow(
                         title = stringResource(R.string.dashboard_live_shortcuts),
@@ -851,7 +934,7 @@ private fun FavoriteChannelsRow(
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(channels, key = { it.id }) { channel ->
+            items(channels, key = { it.id }, contentType = { "channel" }) { channel ->
                 FavoriteChannelLogoCard(
                     channel = channel,
                     onClick = { onChannelClick(channel) }

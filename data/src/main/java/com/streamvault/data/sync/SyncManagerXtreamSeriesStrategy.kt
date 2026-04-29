@@ -47,7 +47,8 @@ internal class SyncManagerXtreamSeriesStrategy(
         existingMetadata: SyncMetadata,
         onProgress: ((String) -> Unit)?
     ): CatalogSyncPayload<Series> {
-        Log.i(XTREAM_SERIES_STRATEGY_TAG, "Xtream series strategy start for provider ${provider.id}.")
+        val tSyncStart = System.currentTimeMillis()
+        Log.i(XTREAM_SERIES_STRATEGY_TAG, "FzSync SERIES start provider=${provider.id} fastFlag=${provider.xtreamFastSyncEnabled}")
         val rawSeriesCategories = when (val attempt = xtreamSupport.attemptNonCancellation {
             xtreamSupport.withSeriesRequestTimeout("series categories") {
                 xtreamSupport.retryXtreamCatalogTransient(provider.id) {
@@ -115,6 +116,8 @@ internal class SyncManagerXtreamSeriesStrategy(
 
         if (!resolvedCategories.isNullOrEmpty()) {
             progress(provider.id, onProgress, "Preparing Series category sync...")
+            val tCatStart = System.currentTimeMillis()
+            Log.i(XTREAM_SERIES_STRATEGY_TAG, "FzSync SERIES category-bulk START categories=${resolvedCategories.size}")
             categoryPayload = loadXtreamSeriesByCategory(
                 provider,
                 api,
@@ -122,22 +125,29 @@ internal class SyncManagerXtreamSeriesStrategy(
                 onProgress,
                 preferSequential = existingMetadata.seriesSequentialFailuresRemembered
             )
+            Log.i(
+                XTREAM_SERIES_STRATEGY_TAG,
+                "FzSync SERIES category-bulk END elapsedMs=${System.currentTimeMillis() - tCatStart} result=${categoryPayload.catalogResult::class.simpleName} stagedCount=${categoryPayload.stagedAcceptedCount}"
+            )
             when (val categoryResult = categoryPayload.catalogResult) {
-                is CatalogStrategyResult.Success, is CatalogStrategyResult.Partial -> return CatalogSyncPayload(
-                    catalogResult = categoryResult,
-                    categories = catalogStrategySupport.mergePreferredAndFallbackCategories(resolvedCategories, categoryPayload.categories),
-                    warnings = catalogStrategySupport.strategyWarnings(fullPayload.catalogResult),
-                    strategyFeedback = XtreamStrategyFeedback(
-                        preferredSegmentedFirst = true,
-                        segmentedStressDetected = catalogStrategySupport.sawSegmentedStress(
-                            warnings = catalogStrategySupport.strategyWarnings(fullPayload.catalogResult),
-                            result = categoryResult,
-                            sequentialWarnings = setOf(categorySequentialModeWarning)
-                        )
-                    ),
-                    stagedSessionId = categoryPayload.stagedSessionId,
-                    stagedAcceptedCount = categoryPayload.stagedAcceptedCount
-                )
+                is CatalogStrategyResult.Success, is CatalogStrategyResult.Partial -> {
+                    Log.i(XTREAM_SERIES_STRATEGY_TAG, "FzSync SERIES done totalMs=${System.currentTimeMillis() - tSyncStart} via=category_bulk")
+                    return CatalogSyncPayload(
+                        catalogResult = categoryResult,
+                        categories = catalogStrategySupport.mergePreferredAndFallbackCategories(resolvedCategories, categoryPayload.categories),
+                        warnings = catalogStrategySupport.strategyWarnings(fullPayload.catalogResult),
+                        strategyFeedback = XtreamStrategyFeedback(
+                            preferredSegmentedFirst = true,
+                            segmentedStressDetected = catalogStrategySupport.sawSegmentedStress(
+                                warnings = catalogStrategySupport.strategyWarnings(fullPayload.catalogResult),
+                                result = categoryResult,
+                                sequentialWarnings = setOf(categorySequentialModeWarning)
+                            )
+                        ),
+                        stagedSessionId = categoryPayload.stagedSessionId,
+                        stagedAcceptedCount = categoryPayload.stagedAcceptedCount
+                    )
+                }
                 else -> Unit
             }
         }
@@ -403,10 +413,14 @@ internal class SyncManagerXtreamSeriesStrategy(
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.SERIES)
         var sessionId: Long? = null
         var acceptedCount = 0
-        finalOutcomes.filterIsInstance<CategoryFetchOutcome.Success<Series>>().forEach { success ->
-            val staged = stageSeriesItems(provider.id, success.items, seenSeriesIds, fallbackCollector, sessionId)
+        val allSeriesItems = finalOutcomes
+            .filterIsInstance<CategoryFetchOutcome.Success<Series>>()
+            .flatMap { it.items }
+        if (allSeriesItems.isNotEmpty()) {
+            progress(provider.id, onProgress, "Saving ${allSeriesItems.size} series to database...")
+            val staged = stageSeriesItems(provider.id, allSeriesItems, seenSeriesIds, fallbackCollector, sessionId)
             sessionId = staged.sessionId
-            acceptedCount += staged.acceptedCount
+            acceptedCount = staged.acceptedCount
         }
         val failedCategories = finalOutcomes.count { it is CategoryFetchOutcome.Failure }
         val emptyCategories = finalOutcomes.count { it is CategoryFetchOutcome.Empty }

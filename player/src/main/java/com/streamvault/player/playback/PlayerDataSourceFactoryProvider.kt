@@ -1,8 +1,8 @@
 package com.streamvault.player.playback
 
 import android.content.Context
-import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.streamvault.domain.model.StreamInfo
 import java.util.concurrent.ConcurrentHashMap
@@ -32,10 +32,18 @@ class PlayerDataSourceFactoryProvider(
                 .writeTimeout(profile.writeTimeoutMs, TimeUnit.MILLISECONDS)
                 .build()
         }
-        val upstreamFactory = OkHttpDataSource.Factory(client).apply {
+        val httpFactory = OkHttpDataSource.Factory(client).apply {
             if (headers.isNotEmpty()) {
                 setDefaultRequestProperties(headers)
             }
+        }
+        // Progressive (VOD/series MP4/MKV) : on chunke les requêtes HTTP en
+        // Range bornées car le CDN Xtream coupe les longues connexions
+        // open-ended après ~30s, ce qui fait planter Mp4Extractor avec EOFException.
+        val upstreamFactory: DataSource.Factory = if (resolvedStreamType == ResolvedStreamType.PROGRESSIVE) {
+            ChunkingDataSource.Factory(httpFactory)
+        } else {
+            httpFactory
         }
         val factory = DefaultDataSource.Factory(context, upstreamFactory)
         return profile to factory

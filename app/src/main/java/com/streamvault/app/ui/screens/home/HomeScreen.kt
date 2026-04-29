@@ -269,6 +269,17 @@ fun HomeScreen(
         scope = scope
     )
 
+    var ambientPalette by remember { mutableStateOf(com.streamvault.app.ui.design.AmbientPalette.Default) }
+    val ambientContext = androidx.compose.ui.platform.LocalContext.current
+    val ambientLoader = remember(ambientContext) { coil3.SingletonImageLoader.get(ambientContext) }
+    LaunchedEffect(previewChannel?.logoUrl, previewChannel?.id) {
+        ambientPalette = com.streamvault.app.ui.design.ambientPaletteFrom(
+            previewChannel?.logoUrl,
+            ambientContext,
+            ambientLoader
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AppScreenScaffold(
             currentRoute = currentRoute,
@@ -277,7 +288,12 @@ fun HomeScreen(
             subtitle = uiState.activeLiveSourceTitle.ifBlank { uiState.provider?.name },
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            backdrop = {
+                com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                    palette = ambientPalette
+                ) { }
+            }
         ) {
             if (isReorderMode) {
                 ReorderTopBar(
@@ -762,7 +778,8 @@ fun HomeScreen(
 
                         items(
                             items = visibleCategories,
-                            key = { it.id }
+                            key = { it.id },
+                            contentType = { "category" }
                         ) { category ->
                             val isLocked = isCategoryLocked(category)
                             val categoryFocusRequester = categoryFocusRequesters.getOrPut(category.id) { FocusRequester() }
@@ -905,7 +922,7 @@ fun HomeScreen(
 
                         Crossfade(
                             targetState = uiState.selectedCategory?.id,
-                            animationSpec = tween(durationMillis = 200),
+                            animationSpec = tween(durationMillis = 80),
                             label = "category_content_transition"
                         ) { _ ->
                         if (uiState.isLoading) {
@@ -1077,7 +1094,8 @@ fun HomeScreen(
                             ) {
                                 items(
                                     items = uiState.filteredChannels,
-                                    key = { it.id }
+                                    key = { it.id },
+                                    contentType = { "channel" }
                                 ) { channel ->
                                     val isLocked = isChannelLocked(channel)
                                     val isDraggingThis = draggingChannel == channel

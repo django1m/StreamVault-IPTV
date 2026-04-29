@@ -16,7 +16,11 @@ import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,48 +30,61 @@ class WatchNextManager @Inject constructor(
     private val playbackHistoryRepository: PlaybackHistoryRepository
 ) {
 
-    suspend fun refreshWatchNext() {
-        if (!context.isTelevisionDevice()) return
-        val historyEntries = playbackHistoryRepository.getRecentlyWatched(limit = 40)
-            .first()
-            .asSequence()
-            .filter(::isEligibleForWatchNext)
-            .distinctBy(::watchNextKey)
-            .sortedByDescending { it.lastWatchedAt }
-            .take(MAX_WATCH_NEXT_ITEMS)
-            .toList()
+    private val refreshMutex = Mutex()
+    @Volatile
+    private var lastRefreshAtMs: Long = 0L
 
-        runCatching {
-            val existingEntries = loadExistingEntries()
-            val targetKeys = historyEntries.mapTo(mutableSetOf(), ::watchNextKey)
+    suspend fun refreshWatchNext() = withContext(Dispatchers.IO) {
+        if (!context.isTelevisionDevice()) return@withContext
 
-            existingEntries
-                .filterKeys { it !in targetKeys }
-                .values
-                .forEach { rowId ->
-                    context.contentResolver.delete(
-                        ContentUris.withAppendedId(TvContract.WatchNextPrograms.CONTENT_URI, rowId),
-                        null,
-                        null
-                    )
-                }
-
-            historyEntries.forEach { history ->
-                val values = buildWatchNextValues(history)
-                val existingId = existingEntries[watchNextKey(history)]
-                if (existingId == null) {
-                    context.contentResolver.insert(TvContract.WatchNextPrograms.CONTENT_URI, values)
-                } else {
-                    context.contentResolver.update(
-                        ContentUris.withAppendedId(TvContract.WatchNextPrograms.CONTENT_URI, existingId),
-                        values,
-                        null,
-                        null
-                    )
-                }
+        refreshMutex.withLock {
+            val now = System.currentTimeMillis()
+            if (lastRefreshAtMs > 0L && now - lastRefreshAtMs < MIN_REFRESH_INTERVAL_MS) {
+                return@withLock
             }
-        }.onFailure { throwable ->
-            Log.w(TAG, "Watch Next sync failed", throwable)
+
+            val historyEntries = playbackHistoryRepository.getRecentlyWatched(limit = 40)
+                .first()
+                .asSequence()
+                .filter(::isEligibleForWatchNext)
+                .distinctBy(::watchNextKey)
+                .sortedByDescending { it.lastWatchedAt }
+                .take(MAX_WATCH_NEXT_ITEMS)
+                .toList()
+
+            runCatching {
+                val existingEntries = loadExistingEntries()
+                val targetKeys = historyEntries.mapTo(mutableSetOf(), ::watchNextKey)
+
+                existingEntries
+                    .filterKeys { it !in targetKeys }
+                    .values
+                    .forEach { rowId ->
+                        context.contentResolver.delete(
+                            ContentUris.withAppendedId(TvContract.WatchNextPrograms.CONTENT_URI, rowId),
+                            null,
+                            null
+                        )
+                    }
+
+                historyEntries.forEach { history ->
+                    val values = buildWatchNextValues(history)
+                    val existingId = existingEntries[watchNextKey(history)]
+                    if (existingId == null) {
+                        context.contentResolver.insert(TvContract.WatchNextPrograms.CONTENT_URI, values)
+                    } else {
+                        context.contentResolver.update(
+                            ContentUris.withAppendedId(TvContract.WatchNextPrograms.CONTENT_URI, existingId),
+                            values,
+                            null,
+                            null
+                        )
+                    }
+                }
+                lastRefreshAtMs = now
+            }.onFailure { throwable ->
+                Log.w(TAG, "Watch Next sync failed", throwable)
+            }
         }
     }
 
@@ -151,6 +168,7 @@ class WatchNextManager @Inject constructor(
         const val TAG = "WatchNextManager"
         const val MAX_WATCH_NEXT_ITEMS = 12
         const val WATCH_NEXT_COMPLETION_THRESHOLD = 0.95f
+        const val MIN_REFRESH_INTERVAL_MS = 60 * 1000L
         const val COLUMN_INTERNAL_PROVIDER_ID = "internal_provider_id"
         const val COLUMN_TYPE = "type"
         const val COLUMN_TITLE = "title"

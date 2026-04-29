@@ -5,11 +5,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import com.streamvault.app.ui.components.shell.InfiniteScrollEffect
 import androidx.compose.foundation.text.BasicTextField
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.*
@@ -60,7 +61,6 @@ import androidx.compose.ui.res.stringResource
 import com.streamvault.app.R
 import androidx.compose.foundation.border
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import com.streamvault.app.ui.components.ReorderTopBar
@@ -101,6 +101,7 @@ fun SeriesScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val initialContentFocusRequester = remember { FocusRequester() }
+    val topBarFocusRequester = remember { FocusRequester() }
     var showPinDialog by remember { mutableStateOf(false) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var pendingSeriesId by remember { mutableStateOf<Long?>(null) }
@@ -115,6 +116,13 @@ fun SeriesScreen(
 
     BackHandler(enabled = uiState.selectedCategory != null && !uiState.isReorderMode) {
         viewModel.selectCategory(null)
+    }
+
+    BackHandler(enabled = uiState.selectedCategory == null && !uiState.isReorderMode) {
+        topBarFocusRequester.requestFocusSafely(
+            tag = "SeriesScreen",
+            target = "Top navigation bar"
+        )
     }
 
     ProtectedVodPinDialog(
@@ -154,7 +162,13 @@ fun SeriesScreen(
             subtitle = null,
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            topBarFocusRequester = topBarFocusRequester,
+            backdrop = {
+                com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                    palette = com.streamvault.app.ui.design.AmbientPalette.Default
+                ) { }
+            }
         ) {
         if (uiState.isReorderMode && uiState.reorderCategory != null) {
             ReorderTopBar(
@@ -620,7 +634,7 @@ private fun SeriesVodContent(
                 }
             }
             }
-            items(catEntries, key = { it.key }) { entry ->
+            items(catEntries, key = { it.key }, contentType = { "category" }) { entry ->
                 val categoryName = entry.key
                 val seriesList = entry.value
                 val matchedCategory = categoryByName[categoryName]
@@ -674,6 +688,13 @@ private fun SeriesVodContent(
     var showBrowseOptions by rememberSaveable(uiState.selectedCategory) { mutableStateOf(false) }
     var showSearchBar by rememberSaveable(uiState.selectedCategory) { mutableStateOf(searchQuery.isNotBlank()) }
     val initialGridSeriesId = filteredGridSeries.firstOrNull()?.id
+    val gridState = rememberLazyGridState()
+
+    InfiniteScrollEffect(
+        gridState = gridState,
+        canLoadMore = !uiState.isReorderMode && uiState.canLoadMoreSelectedCategory && !uiState.isLoadingSelectedCategory,
+        onLoadMore = onLoadMore
+    )
 
     if (showBrowseOptions) {
         VodBrowseOptionsDialog(
@@ -695,6 +716,7 @@ private fun SeriesVodContent(
     }
 
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Adaptive(minSize = 136.dp),
         modifier = Modifier
             .fillMaxSize()
@@ -831,16 +853,18 @@ private fun SeriesVodContent(
             }
 
             if (!uiState.isReorderMode && uiState.canLoadMoreSelectedCategory) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    LoadMoreCard(
-                        label = stringResource(
-                            R.string.library_load_more,
-                            uiState.selectedCategoryLoadedCount,
-                            uiState.selectedCategoryTotalCount
-                        ),
-                        onClick = onLoadMore,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 24.dp)
-                    )
+                item(key = "series_modern_loading_indicator", span = { GridItemSpan(maxLineSpan) }) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color.White.copy(alpha = 0.75f),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
             }
         }
@@ -925,10 +949,17 @@ private fun SeriesVodClassicContent(
     }
     var draggingSeries by remember { mutableStateOf<Series?>(null) }
     val initialGridSeriesId = filteredGridSeries.firstOrNull()?.id
+    val classicGridState = rememberLazyGridState()
+
+    InfiniteScrollEffect(
+        gridState = classicGridState,
+        canLoadMore = !uiState.isReorderMode && uiState.canLoadMoreSelectedCategory && !uiState.isLoadingSelectedCategory,
+        onLoadMore = onLoadMore
+    )
 
     LaunchedEffect(uiState.vodViewMode, uiState.selectedCategory, uiState.isReorderMode) {
         if (uiState.vodViewMode == VodViewMode.CLASSIC && uiState.selectedCategory == null && !uiState.isReorderMode) {
-            onSelectCategory(uiState.favoriteCategoryName)
+            onSelectFullLibraryBrowse()
         }
     }
 
@@ -1090,6 +1121,7 @@ private fun SeriesVodClassicContent(
             }
 
             LazyVerticalGrid(
+                state = classicGridState,
                 columns = GridCells.Adaptive(minSize = 136.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1154,16 +1186,18 @@ private fun SeriesVodClassicContent(
                     }
 
                     if (!uiState.isReorderMode && uiState.canLoadMoreSelectedCategory) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            LoadMoreCard(
-                                label = stringResource(
-                                    R.string.library_load_more,
-                                    uiState.selectedCategoryLoadedCount,
-                                    uiState.selectedCategoryTotalCount
-                                ),
-                                onClick = onLoadMore,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
+                        item(key = "series_classic_loading_indicator", span = { GridItemSpan(maxLineSpan) }) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 16.dp, bottom = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
                         }
                     }
                 }

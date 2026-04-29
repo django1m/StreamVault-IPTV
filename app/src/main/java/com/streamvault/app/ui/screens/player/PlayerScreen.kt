@@ -140,11 +140,6 @@ fun PlayerScreen(
         400.dp
     }
     val mainActivity = LocalContext.current.findMainActivity()
-    val isInPictureInPictureMode = mainActivity
-        ?.pictureInPictureModeFlow
-        ?.collectAsState(initial = mainActivity.isInPictureInPictureMode)
-        ?.value
-        ?: false
     val playbackState by viewModel.playerEngine.playbackState.collectAsStateWithLifecycle()
     val isPlaying by viewModel.playerEngine.isPlaying.collectAsStateWithLifecycle()
     val showControls by viewModel.showControls.collectAsStateWithLifecycle()
@@ -156,6 +151,7 @@ fun PlayerScreen(
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
     val currentSeries by viewModel.currentSeries.collectAsStateWithLifecycle()
     val currentEpisode by viewModel.currentEpisode.collectAsStateWithLifecycle()
+    val nextEpisode by viewModel.nextEpisode.collectAsStateWithLifecycle()
     val playbackTitle by viewModel.playbackTitle.collectAsStateWithLifecycle()
     val resumePrompt by viewModel.resumePrompt.collectAsStateWithLifecycle()
     val currentSeriesSeasons = remember(currentSeries) {
@@ -191,12 +187,17 @@ fun PlayerScreen(
     val castConnectionState by viewModel.castConnectionState.collectAsStateWithLifecycle()
     val seekPreview by viewModel.seekPreview.collectAsStateWithLifecycle()
     val preventStandbyDuringPlayback by viewModel.preventStandbyDuringPlayback.collectAsStateWithLifecycle()
+    val currentPositionMs by viewModel.playerEngine.currentPosition.collectAsStateWithLifecycle()
 
     var showTrackSelection by remember { mutableStateOf<TrackType?>(null) }
     var showSpeedSelection by remember { mutableStateOf(false) }
     var showProgramHistory by remember { mutableStateOf(false) }
     var showSplitDialog by remember { mutableStateOf(false) }
     var showEpisodePicker by remember { mutableStateOf(false) }
+
+    // ─── Cinematic player extras ──────────────────────────────────────
+    var showOptionsPanel by remember { mutableStateOf(false) }
+    var showMiniGuide by remember { mutableStateOf(false) }
     
     val focusRequester = remember { FocusRequester() }
     val channelListFocusRequester = remember { FocusRequester() }
@@ -208,34 +209,9 @@ fun PlayerScreen(
     var lastFocusedEpgProgramToken by rememberSaveable { mutableStateOf<Long?>(null) }
     val layoutDirection = LocalLayoutDirection.current
     val isRtl = layoutDirection == LayoutDirection.Rtl
-    val currentPictureInPictureMode by rememberUpdatedState(isInPictureInPictureMode)
-    val enterPictureInPicture = remember(mainActivity) {
-        {
-            mainActivity?.enterPlayerPictureInPictureModeFromPlayer()
-            Unit
-        }
-    }
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
-    }
-
-    LaunchedEffect(mainActivity, streamUrl, playbackState, isPlaying, videoFormat.width, videoFormat.height) {
-        mainActivity?.updatePlayerPictureInPictureState(
-            enabled = streamUrl.isNotBlank() && playbackState != PlaybackState.ERROR,
-            isPlaying = isPlaying,
-            videoWidth = videoFormat.width,
-            videoHeight = videoFormat.height
-        )
-    }
-
-    LaunchedEffect(isInPictureInPictureMode) {
-        if (isInPictureInPictureMode) {
-            viewModel.closeOverlays()
-            if (showControls) {
-                viewModel.toggleControls()
-            }
-        }
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
@@ -243,16 +219,11 @@ fun PlayerScreen(
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        if (currentPictureInPictureMode) {
-            viewModel.closeOverlays()
-        } else {
-            viewModel.onAppBackgrounded()
-        }
+        viewModel.onAppBackgrounded()
     }
 
     DisposableEffect(mainActivity) {
         onDispose {
-            mainActivity?.clearPlayerPictureInPictureState()
             viewModel.onPlayerScreenDisposed()
         }
     }
@@ -322,7 +293,7 @@ fun PlayerScreen(
         }
     }
 
-    if (!isInPictureInPictureMode && showProgramHistory) {
+    if (showProgramHistory) {
         ProgramHistoryDialog(
             programs = programHistory,
             onDismiss = { showProgramHistory = false },
@@ -497,6 +468,52 @@ fun PlayerScreen(
                 }
             }
             .onKeyEvent { event ->
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) {
+                    val keyCode = event.nativeKeyEvent.keyCode
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                        if (viewModel.isProgressiveSeekActive.value) {
+                            viewModel.stopProgressiveSeek()
+                            return@onKeyEvent true
+                        }
+                    }
+                    // Fall through to the existing handler so other ACTION_UP behaviour is unaffected.
+                }
+                // Cinematic options panel — MENU key toggles (works on most TV remotes
+                // that don't have a dedicated button). Open → consume; close handled
+                // via the back handler below.
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                ) {
+                    if (!anyOverlayVisible) {
+                        showOptionsPanel = !showOptionsPanel
+                        return@onKeyEvent true
+                    }
+                }
+                // Mini-guide toggle on KEYCODE_GUIDE (dedicated TV guide remote button).
+                // Only meaningful on live content; defer to the full EPG overlay path
+                // if any classic overlay is already on screen.
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_GUIDE &&
+                    contentType == "LIVE" && !anyOverlayVisible && !showOptionsPanel
+                ) {
+                    showMiniGuide = !showMiniGuide
+                    return@onKeyEvent true
+                }
+                // Hold-OK detection — DPAD_CENTER / ENTER held long enough to fire
+                // at least 2 repeat key events opens the options panel. A short
+                // tap has repeatCount == 0 and is left alone so the existing
+                // handlers below (play/pause, channel info, etc.) still run.
+                val keyCode = event.nativeKeyEvent.keyCode
+                val isOkKey = keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                    keyCode == KeyEvent.KEYCODE_ENTER ||
+                    keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                if (isOkKey && !anyOverlayVisible && !showOptionsPanel &&
+                    event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    event.nativeKeyEvent.repeatCount >= 2
+                ) {
+                    showOptionsPanel = true
+                    return@onKeyEvent true
+                }
                 // Only handle KeyDown to avoid double actions
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     if (showTrackSelection != null || showSpeedSelection) {
@@ -532,7 +549,11 @@ fun PlayerScreen(
                         }
                     }
                     when (event.nativeKeyEvent.keyCode) {
-                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            if (viewModel.isProgressiveSeekActive.value) {
+                                viewModel.stopProgressiveSeek()
+                                return@onKeyEvent true
+                            }
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
@@ -563,7 +584,21 @@ fun PlayerScreen(
                                 if (isRtl) viewModel.openEpgOverlay() else viewModel.openChannelListOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showCategoryListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
-                                if (isRtl) viewModel.seekForward() else viewModel.seekBackward()
+                                val direction = if (isRtl) SeekDirection.FORWARD else SeekDirection.BACKWARD
+                                when (event.nativeKeyEvent.repeatCount) {
+                                    0 -> {
+                                        // Single tap: seek 10 s as today
+                                        if (direction == SeekDirection.FORWARD) viewModel.seekForward()
+                                        else viewModel.seekBackward()
+                                    }
+                                    1 -> {
+                                        // First repeat → user is holding; start progressive seek
+                                        viewModel.startProgressiveSeek(direction)
+                                    }
+                                    else -> {
+                                        // Subsequent repeats are absorbed by the controller
+                                    }
+                                }
                                 true
                             } else {
                                 false
@@ -578,7 +613,17 @@ fun PlayerScreen(
                                 if (isRtl) viewModel.openChannelListOverlay() else viewModel.openEpgOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
-                                if (isRtl) viewModel.seekBackward() else viewModel.seekForward()
+                                val direction = if (isRtl) SeekDirection.BACKWARD else SeekDirection.FORWARD
+                                when (event.nativeKeyEvent.repeatCount) {
+                                    0 -> {
+                                        if (direction == SeekDirection.FORWARD) viewModel.seekForward()
+                                        else viewModel.seekBackward()
+                                    }
+                                    1 -> {
+                                        viewModel.startProgressiveSeek(direction)
+                                    }
+                                    else -> { /* absorbed */ }
+                                }
                                 true
                             } else {
                                 false
@@ -615,6 +660,10 @@ fun PlayerScreen(
                             true
                         }
                         KeyEvent.KEYCODE_BACK -> {
+                            if (viewModel.isProgressiveSeekActive.value) {
+                                viewModel.stopProgressiveSeek()
+                                // Continue into the existing back-handler so the overlay still closes.
+                            }
                             handleBackPress()
                             true
                         }
@@ -836,8 +885,12 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
             onClose = viewModel::toggleControls,
             onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
-            onSeekBackward = viewModel::seekBackward,
-            onSeekForward = viewModel::seekForward,
+            onSeekBackward = { viewModel.seekBackward() },
+            onSeekForward = { viewModel.seekForward() },
+            onSeekBackwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.BACKWARD) },
+            onSeekBackwardHoldStop = { viewModel.stopProgressiveSeek() },
+            onSeekForwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.FORWARD) },
+            onSeekForwardHoldStop = { viewModel.stopProgressiveSeek() },
             onRestartProgram = viewModel::restartCurrentProgram,
             onOpenArchive = { showProgramHistory = true },
             onStartRecording = viewModel::startManualRecording,
@@ -850,10 +903,9 @@ fun PlayerScreen(
             onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
             onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
             onOpenPlaybackSpeed = { showSpeedSelection = true },
-            showEpisodesAction = canOpenEpisodePicker,
-            onOpenEpisodes = { showEpisodePicker = true },
+            hasNextEpisode = nextEpisode != null,
+            onPlayNextEpisode = viewModel::playNextEpisode,
             onOpenSplitScreen = { showSplitDialog = true },
-            onEnterPictureInPicture = enterPictureInPicture,
             onToggleMute = viewModel::toggleMute,
             isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
             onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
@@ -890,7 +942,7 @@ fun PlayerScreen(
         )
         
         // Resume Prompt Dialog
-        if (!isInPictureInPictureMode && resumePrompt.show) {
+        if (resumePrompt.show) {
             PlayerResumePrompt(
                 title = resumePrompt.title,
                 onStartOver = { viewModel.dismissResumePrompt(resume = false) },
@@ -899,39 +951,37 @@ fun PlayerScreen(
         }
         
         // Track Selection Dialog
-        if (!isInPictureInPictureMode) {
-            PlayerTrackSelectionDialog(
-                trackType = showTrackSelection,
-                audioTracks = availableAudioTracks,
-                subtitleTracks = availableSubtitleTracks,
-                videoTracks = availableVideoQualities,
-                onDismiss = { showTrackSelection = null },
-                onSelectAudio = viewModel::selectAudioTrack,
-                onSelectVideo = viewModel::selectVideoQuality,
-                onSelectSubtitle = viewModel::selectSubtitleTrack
-            )
-            PlayerSpeedSelectionDialog(
-                visible = showSpeedSelection,
-                selectedSpeed = playbackSpeed,
-                onDismiss = { showSpeedSelection = false },
-                onSelectSpeed = viewModel::setPlaybackSpeed
-            )
-            PlayerEpisodeSelectionDialog(
-                visible = showEpisodePicker,
-                seriesTitle = currentSeries?.name ?: playbackTitle.ifBlank { title },
-                seasons = currentSeriesSeasons.orEmpty(),
-                currentEpisodeId = currentEpisode?.id ?: internalChannelId,
-                currentSeasonNumber = currentEpisode?.seasonNumber ?: seasonNumber,
-                onDismiss = { showEpisodePicker = false },
-                onSelectEpisode = { episode ->
-                    showEpisodePicker = false
-                    viewModel.playEpisode(episode)
-                }
-            )
-        }
+        PlayerTrackSelectionDialog(
+            trackType = showTrackSelection,
+            audioTracks = availableAudioTracks,
+            subtitleTracks = availableSubtitleTracks,
+            videoTracks = availableVideoQualities,
+            onDismiss = { showTrackSelection = null },
+            onSelectAudio = viewModel::selectAudioTrack,
+            onSelectVideo = viewModel::selectVideoQuality,
+            onSelectSubtitle = viewModel::selectSubtitleTrack
+        )
+        PlayerSpeedSelectionDialog(
+            visible = showSpeedSelection,
+            selectedSpeed = playbackSpeed,
+            onDismiss = { showSpeedSelection = false },
+            onSelectSpeed = viewModel::setPlaybackSpeed
+        )
+        PlayerEpisodeSelectionDialog(
+            visible = showEpisodePicker,
+            seriesTitle = currentSeries?.name ?: playbackTitle.ifBlank { title },
+            seasons = currentSeriesSeasons.orEmpty(),
+            currentEpisodeId = currentEpisode?.id ?: internalChannelId,
+            currentSeasonNumber = currentEpisode?.seasonNumber ?: seasonNumber,
+            onDismiss = { showEpisodePicker = false },
+            onSelectEpisode = { episode ->
+                showEpisodePicker = false
+                viewModel.playEpisode(episode)
+            }
+        )
 
         // --- Overlays ---
-        if (!isInPictureInPictureMode && showDiagnostics) {
+        if (showDiagnostics) {
             val playerStats by viewModel.playerStats.collectAsStateWithLifecycle()
             DiagnosticsOverlay(
                 stats = playerStats,
@@ -1064,12 +1114,134 @@ fun PlayerScreen(
                     onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
                     onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
                     onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
-                    onEnterPictureInPicture = enterPictureInPicture,
                     isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
                     onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
                     onStopCasting = viewModel::stopCasting
                 )
             }
+        }
+
+        // ─── Cinematic overlays ───────────────────────────────────────
+        // NowPlayingChip: glass pill announcing what's playing, fades after 3s.
+        // Re-triggered each time the stream URL or episode changes.
+        val nowPlayingKey = remember(streamUrl, currentEpisode?.id) {
+            "$streamUrl|${currentEpisode?.id ?: 0}"
+        }
+        val nowPlayingSubtitle = currentEpisode?.let { ep ->
+            val season = ep.seasonNumber.takeIf { it > 0 }
+            val number = ep.episodeNumber.takeIf { it > 0 }
+            if (season != null && number != null) "S$season · E$number" else null
+        } ?: currentChannel?.let { channel ->
+            currentProgram?.title?.takeIf { it.isNotBlank() }
+        }
+        com.streamvault.app.ui.screens.player.overlay.components.NowPlayingChip(
+            title = playbackTitle.takeIf { it.isNotBlank() } ?: title,
+            subtitle = nowPlayingSubtitle,
+            key = nowPlayingKey,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 40.dp, start = 40.dp)
+        )
+
+        // SkipIntroButton: only on series episodes, and only while we're plausibly
+        // in the opening titles window. Hidden the moment any overlay is visible.
+        val inIntroWindow = contentType == "SERIES_EPISODE" &&
+            currentPositionMs in 45_000L..150_000L &&
+            !anyOverlayVisible &&
+            !showControls
+        com.streamvault.app.ui.screens.player.overlay.components.SkipIntroButton(
+            visible = inIntroWindow,
+            onSkip = { viewModel.seekTo(150_000L) },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 48.dp, bottom = 48.dp)
+        )
+
+        // PlayerOptionsPanel: triggered by KEYCODE_MENU or a ≥700 ms hold on OK.
+        // Dismissed by the BackHandler just below. Fed directly from the player
+        // engine's track and quality lists so ordering matches the native player.
+        val speedPresets = remember { listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f) }
+        com.streamvault.app.ui.screens.player.overlay.components.PlayerOptionsPanel(
+            visible = showOptionsPanel,
+            audioOptions = availableAudioTracks.map { track ->
+                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                    id = track.id,
+                    label = track.name.ifBlank { track.language ?: track.id },
+                    selected = track.isSelected
+                )
+            },
+            subtitleOptions = availableSubtitleTracks.map { track ->
+                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                    id = track.id,
+                    label = track.name.ifBlank { track.language ?: track.id },
+                    selected = track.isSelected
+                )
+            },
+            speedOptions = speedPresets.map { preset ->
+                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                    id = preset.toString(),
+                    label = if (preset == 1.0f) "1×" else "${preset}×",
+                    selected = kotlin.math.abs(playbackSpeed - preset) < 0.01f
+                )
+            },
+            qualityOptions = availableVideoQualities.map { track ->
+                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                    id = track.id,
+                    label = track.name.ifBlank { track.id },
+                    selected = track.isSelected
+                )
+            },
+            onAudioSelected = { id ->
+                viewModel.selectAudioTrack(id)
+                showOptionsPanel = false
+            },
+            onSubtitleSelected = { id ->
+                viewModel.selectSubtitleTrack(id.takeUnless { it.isBlank() })
+                showOptionsPanel = false
+            },
+            onSpeedSelected = { id ->
+                id.toFloatOrNull()?.let { viewModel.setPlaybackSpeed(it) }
+                showOptionsPanel = false
+            },
+            onQualitySelected = { id ->
+                viewModel.selectVideoQuality(id)
+                showOptionsPanel = false
+            },
+            onDismiss = { showOptionsPanel = false },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth(0.78f)
+                .padding(bottom = 36.dp)
+        )
+
+        // MiniGuideFloating: a glass sidebar for the "up next" strip. Exposed
+        // behind an explicit state so it never competes with the classic EPG
+        // overlay — opened on demand only.
+        val miniGuideEntries = remember(upcomingPrograms, currentProgram) {
+            val now = System.currentTimeMillis()
+            upcomingPrograms.map { program ->
+                com.streamvault.app.ui.screens.player.overlay.components.MiniGuideEntry(
+                    program = program,
+                    isLive = now in program.startTime until program.endTime,
+                    isCurrent = program.id == currentProgram?.id
+                )
+            }
+        }
+        com.streamvault.app.ui.screens.player.overlay.components.MiniGuideFloating(
+            visible = showMiniGuide && contentType == "LIVE" && !anyOverlayVisible,
+            entries = miniGuideEntries,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 24.dp)
+                .fillMaxHeight(0.72f)
+        )
+    }
+
+    // Close the options panel / mini-guide on Back before the regular back handler.
+    BackHandler(enabled = showOptionsPanel || showMiniGuide) {
+        when {
+            showOptionsPanel -> showOptionsPanel = false
+            showMiniGuide -> showMiniGuide = false
         }
     }
 }
@@ -1119,6 +1291,10 @@ private fun PlayerControlsOverlayHost(
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
     onSeekForward: () -> Unit,
+    onSeekBackwardHoldStart: () -> Unit = {},
+    onSeekBackwardHoldStop: () -> Unit = {},
+    onSeekForwardHoldStart: () -> Unit = {},
+    onSeekForwardHoldStop: () -> Unit = {},
     onRestartProgram: () -> Unit,
     onOpenArchive: () -> Unit,
     onStartRecording: () -> Unit,
@@ -1131,10 +1307,9 @@ private fun PlayerControlsOverlayHost(
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
     onOpenPlaybackSpeed: () -> Unit,
-    showEpisodesAction: Boolean,
-    onOpenEpisodes: () -> Unit,
+    hasNextEpisode: Boolean,
+    onPlayNextEpisode: () -> Unit,
     onOpenSplitScreen: () -> Unit,
-    onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
     isCastConnected: Boolean,
     onCast: () -> Unit,
@@ -1173,6 +1348,10 @@ private fun PlayerControlsOverlayHost(
         onTogglePlayPause = onTogglePlayPause,
         onSeekBackward = onSeekBackward,
         onSeekForward = onSeekForward,
+        onSeekBackwardHoldStart = onSeekBackwardHoldStart,
+        onSeekBackwardHoldStop = onSeekBackwardHoldStop,
+        onSeekForwardHoldStart = onSeekForwardHoldStart,
+        onSeekForwardHoldStop = onSeekForwardHoldStop,
         onRestartProgram = onRestartProgram,
         onOpenArchive = onOpenArchive,
         onStartRecording = onStartRecording,
@@ -1185,10 +1364,9 @@ private fun PlayerControlsOverlayHost(
         onOpenAudioTracks = onOpenAudioTracks,
         onOpenVideoTracks = onOpenVideoTracks,
         onOpenPlaybackSpeed = onOpenPlaybackSpeed,
-        showEpisodesAction = showEpisodesAction,
-        onOpenEpisodes = onOpenEpisodes,
+        hasNextEpisode = hasNextEpisode,
+        onPlayNextEpisode = onPlayNextEpisode,
         onOpenSplitScreen = onOpenSplitScreen,
-        onEnterPictureInPicture = onEnterPictureInPicture,
         onToggleMute = onToggleMute,
         isCastConnected = isCastConnected,
         onCast = onCast,

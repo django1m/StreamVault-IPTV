@@ -188,7 +188,6 @@ fun ChannelInfoOverlay(
     onOpenSubtitleTracks: () -> Unit = {},
     onOpenAudioTracks: () -> Unit = {},
     onOpenVideoTracks: () -> Unit = {},
-    onEnterPictureInPicture: () -> Unit = {},
     isCastConnected: Boolean = false,
     onCast: () -> Unit = {},
     onStopCasting: () -> Unit = {}
@@ -530,17 +529,6 @@ fun ChannelInfoOverlay(
                         onClick = {
                             onOverlayInteracted()
                             if (isCastConnected) onStopCasting() else onCast()
-                        },
-                        onInteraction = onOverlayInteracted
-                    )
-                }
-                item {
-                    QuickActionButton(
-                        icon = stringResource(R.string.player_action_pip),
-                        label = stringResource(R.string.player_pip_short),
-                        onClick = {
-                            onOverlayInteracted()
-                            onEnterPictureInPicture()
                         },
                         onInteraction = onOverlayInteracted
                     )

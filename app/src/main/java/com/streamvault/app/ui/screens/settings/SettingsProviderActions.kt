@@ -183,8 +183,8 @@ internal class SettingsProviderActions(
             }
             try {
                 when (syncMode) {
-                    SettingsProviderSyncMode.QUICK -> runQuickSync(providerId, providerName)
-                    SettingsProviderSyncMode.FULL -> runFullSync(providerId, providerName)
+                    SettingsProviderSyncMode.QUICK -> runQuickSync(scope, providerId, providerName)
+                    SettingsProviderSyncMode.FULL -> runFullSync(scope, providerId, providerName)
                 }
             } catch (e: Exception) {
                 uiState.update {
@@ -199,7 +199,7 @@ internal class SettingsProviderActions(
         }
     }
 
-    private suspend fun runQuickSync(providerId: Long, providerName: String?) {
+    private suspend fun runQuickSync(scope: CoroutineScope, providerId: Long, providerName: String?) {
         val provider = providerRepository.getProvider(providerId)
         val pendingXtreamTextRefreshGeneration = provider
             ?.takeIf { it.type == ProviderType.XTREAM_CODES }
@@ -238,13 +238,9 @@ internal class SettingsProviderActions(
                 afterMetadata.lastSeriesSync > beforeMetadata.lastSeriesSync
 
             if (liveRefreshed) {
-                uiState.update { state ->
-                    state.copy(
-                        syncProgress = "Updating TV integration...",
-                        syncingProviderName = providerName
-                    )
-                }
-                tvInputChannelSyncManager.refreshTvInputCatalog()
+                // Fire-and-forget: TV input refresh walks 16k+ channels and can
+                // take minutes. Don't make the user wait behind it.
+                scope.launch { tvInputChannelSyncManager.refreshTvInputCatalog() }
             } else if (!catalogRefreshed) {
                 uiState.update { state ->
                     state.copy(
@@ -291,7 +287,7 @@ internal class SettingsProviderActions(
         }
     }
 
-    private suspend fun runFullSync(providerId: Long, providerName: String?) {
+    private suspend fun runFullSync(scope: CoroutineScope, providerId: Long, providerName: String?) {
         val provider = providerRepository.getProvider(providerId)
         val pendingXtreamTextRefreshGeneration = provider
             ?.takeIf { it.type == ProviderType.XTREAM_CODES }
@@ -304,8 +300,15 @@ internal class SettingsProviderActions(
             SyncProviderCommand(
                 providerId = providerId,
                 force = true,
-                movieFastSyncOverride = null,
-                epgSyncModeOverride = null
+                // Force full movie/series sync for the explicit "Synchroniser"
+                // button — overrides provider.xtreamFastSyncEnabled so the
+                // catalog is actually downloaded end-to-end, not left as a
+                // lazy skeleton that only hydrates when categories are opened.
+                movieFastSyncOverride = false,
+                // Skip EPG for the main "Synchroniser" button — EPG has its own
+                // dedicated "Synchroniser EPG" button. Prevents the 290k entries
+                // EPG refresh from blocking the UI after TV/movies/series sync.
+                epgSyncModeOverride = ProviderEpgSyncMode.BACKGROUND
             ),
             onProgress = { message ->
                 uiState.update { state ->
@@ -317,7 +320,11 @@ internal class SettingsProviderActions(
             pendingXtreamTextRefreshGeneration?.let { generation ->
                 preferencesRepository.markXtreamTextImportApplied(providerId, generation)
             }
-            tvInputChannelSyncManager.refreshTvInputCatalog()
+            // Fire-and-forget: refreshing the Android TV Input catalog iterates
+            // over every channel + program and can take minutes on 16k+ channel
+            // providers. Run it in the background so the overlay closes
+            // immediately once the catalog sync itself has landed.
+            scope.launch { tvInputChannelSyncManager.refreshTvInputCatalog() }
         }
         uiState.update { state ->
             val partialWarnings = (result as? SyncProviderResult.Success)?.warnings.orEmpty()

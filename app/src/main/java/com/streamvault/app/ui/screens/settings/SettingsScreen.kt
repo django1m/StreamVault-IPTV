@@ -298,7 +298,12 @@ fun SettingsScreen(
             subtitle = stringResource(R.string.settings_providers_subtitle),
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            backdrop = {
+                com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                    palette = com.streamvault.app.ui.design.AmbientPalette.Default
+                ) { }
+            }
         ) {
             Row(modifier = Modifier.fillMaxSize()) {
                 // ג”€ג”€ Left navigation rail ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
@@ -836,7 +841,7 @@ fun SettingsScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 TvClickableSurface(
-                                    onClick = { createDocumentLauncher.launch("streamvault_backup.json") },
+                                    onClick = { createDocumentLauncher.launch("fuziontv_backup.json") },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
                                     colors = ClickableSurfaceDefaults.colors(
                                         containerColor = Primary.copy(alpha = 0.12f),

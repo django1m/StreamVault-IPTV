@@ -623,6 +623,7 @@ internal fun ProviderSettingsCard(
     onRetryWarningAction: (ProviderWarningAction) -> Unit,
     onConnect: () -> Unit,
     onRefresh: () -> Unit,
+    onRefreshEpg: () -> Unit,
     onDelete: () -> Unit,
     onEdit: () -> Unit,
     onParentalControl: () -> Unit,
@@ -885,6 +886,29 @@ internal fun ProviderSettingsCard(
                 ) {
                     Text(
                         text = if (isSyncing) stringResource(R.string.settings_syncing_btn) else stringResource(R.string.settings_sync_btn),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                    )
+                }
+
+                TvClickableSurface(
+                    onClick = onRefreshEpg,
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(6.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Primary.copy(alpha = 0.2f),
+                        focusedContainerColor = Primary.copy(alpha = 0.5f)
+                    ),
+                    border = ClickableSurfaceDefaults.border(
+                        focusedBorder = Border(
+                            border = BorderStroke(FocusSpec.BorderWidth, Color.White),
+                            shape = RoundedCornerShape(6.dp)
+                        )
+                    ),
+                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                ) {
+                    Text(
+                        text = "Synchroniser EPG",
                         style = MaterialTheme.typography.labelMedium,
                         color = Primary,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)

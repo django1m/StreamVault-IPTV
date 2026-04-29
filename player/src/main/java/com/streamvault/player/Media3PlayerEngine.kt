@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.session.MediaSession
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import com.streamvault.domain.model.DecoderMode
 import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.model.VideoFormat
@@ -467,7 +468,7 @@ class Media3PlayerEngine @Inject constructor(
 
     private fun buildRenderersFactory(): DefaultRenderersFactory {
         val baseFactory = if (compatibilityProfile.shouldDisableDecoderReuseWorkaround()) {
-            object : DefaultRenderersFactory(context) {
+            object : NextRenderersFactory(context) {
                 override fun buildVideoRenderers(
                     context: Context,
                     extensionRendererMode: Int,
@@ -504,7 +505,7 @@ class Media3PlayerEngine @Inject constructor(
                 }
             }
         } else {
-            DefaultRenderersFactory(context)
+            NextRenderersFactory(context)
         }
 
         return baseFactory.apply {

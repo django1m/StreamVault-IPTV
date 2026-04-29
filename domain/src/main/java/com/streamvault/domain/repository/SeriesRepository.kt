@@ -27,5 +27,6 @@ interface SeriesRepository {
     suspend fun getSeriesDetails(providerId: Long, seriesId: Long): Result<Series>
     suspend fun getEpisodeStreamInfo(episode: Episode): Result<StreamInfo>
     suspend fun refreshSeries(providerId: Long): Result<Unit>
+    suspend fun preloadAllCategories(providerId: Long): Result<Unit>
     suspend fun updateEpisodeWatchProgress(episodeId: Long, progress: Long): Result<Unit>
 }

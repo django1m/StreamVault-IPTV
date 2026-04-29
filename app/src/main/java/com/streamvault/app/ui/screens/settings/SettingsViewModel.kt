@@ -70,6 +70,8 @@ class SettingsViewModel @Inject constructor(
     private val combinedM3uRepository: CombinedM3uRepository,
     private val categoryRepository: CategoryRepository,
     private val channelRepository: ChannelRepository,
+    private val movieRepository: com.streamvault.domain.repository.MovieRepository,
+    private val seriesRepository: com.streamvault.domain.repository.SeriesRepository,
     private val preferencesRepository: PreferencesRepository,
     private val internetSpeedTestRunner: InternetSpeedTestRunner,
     private val backupManager: BackupManager,
@@ -193,6 +195,8 @@ class SettingsViewModel @Inject constructor(
             observeProviderDiagnostics(
                 providerRepository = providerRepository,
                 syncMetadataRepository = syncMetadataRepository,
+                movieRepository = movieRepository,
+                seriesRepository = seriesRepository,
                 application = appContext
             ).collect { diagnosticsByProvider ->
                 _uiState.update { it.copy(diagnosticsByProvider = diagnosticsByProvider) }

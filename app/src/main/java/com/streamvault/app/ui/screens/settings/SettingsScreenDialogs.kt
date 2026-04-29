@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -706,24 +708,34 @@ private fun SyncingOverlay(
 
     BackHandler(enabled = true) {}
 
-    val overlayFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { overlayFocusRequester.requestFocus() }
+    val progressRatio = progress?.let { parseProgressRatio(it) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.7f))
-            .clickable(enabled = true, onClick = {})
-            .focusRequester(overlayFocusRequester)
-            .focusable()
-            .onKeyEvent { true },
+            .clickable(enabled = true, onClick = {}),
         contentAlignment = Alignment.Center
     ) {
         Column(
+            modifier = Modifier.widthIn(min = 280.dp, max = 420.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            CircularProgressIndicator(color = Primary)
+            if (progressRatio != null) {
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { progressRatio },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Primary
+                )
+                Text(
+                    text = "${(progressRatio * 100).toInt()}%",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = OnSurface
+                )
+            } else {
+                CircularProgressIndicator(color = Primary)
+            }
             Text(
                 text = stringResource(R.string.settings_syncing_title),
                 style = MaterialTheme.typography.titleMedium,
@@ -743,4 +755,37 @@ private fun SyncingOverlay(
             }
         }
     }
+}
+
+private val progressRatioRegex = Regex("""(\d+)\s*/\s*(\d+)""")
+
+// Maps a sync progress message to a global 0..1 ratio covering the full
+// TV → Movies → Series pipeline. Each phase occupies a fixed band; the
+// embedded "X/Y" counter (if any) interpolates within that band.
+private fun parseProgressRatio(message: String): Float? {
+    val lower = message.lowercase()
+    val phaseRange: Pair<Float, Float> = when {
+        "connecting" in lower || "preparing sync" in lower -> 0f to 0.02f
+        "live tv" in lower || "télévision" in lower -> 0.02f to 0.30f
+        "movies" in lower || "films" in lower -> 0.30f to 0.65f
+        "series" in lower || "séries" in lower -> 0.65f to 0.95f
+        "tv integration" in lower || "epg refresh" in lower ||
+            "library already up to date" in lower -> 0.95f to 1f
+        else -> return null
+    }
+    val (low, high) = phaseRange
+
+    val match = progressRatioRegex.find(message)
+    val subRatio: Float = when {
+        match != null -> {
+            val current = match.groupValues[1].toFloatOrNull() ?: 0f
+            val total = match.groupValues[2].toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+            (current / total).coerceIn(0f, 1f)
+        }
+        "saving" in lower -> 0.9f
+        "apply" in lower -> 0.95f
+        "downloading" in lower || "checking" in lower || "preparing" in lower -> 0.1f
+        else -> 0.5f
+    }
+    return (low + (high - low) * subRatio).coerceIn(0f, 1f)
 }

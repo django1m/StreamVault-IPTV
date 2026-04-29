@@ -563,6 +563,8 @@ class SyncManager @Inject constructor(
 
             when (val catalogResult = movieSyncResult.catalogResult) {
                 is CatalogStrategyResult.Success -> {
+                    val tApplyStart = System.currentTimeMillis()
+                    Log.i(TAG, "FzSync MOVIES apply START (Success) sessionId=${movieSyncResult.stagedSessionId}")
                     val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
                         syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
                         movieSyncResult.stagedAcceptedCount
@@ -571,6 +573,7 @@ class SyncManager @Inject constructor(
                         categories = movieSyncResult.categories,
                         movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
                     )
+                    Log.i(TAG, "FzSync MOVIES apply END elapsedMs=${System.currentTimeMillis() - tApplyStart} acceptedCount=$acceptedCount")
                     metadata = metadata.copy(
                         lastMovieSync = now,
                         lastMovieAttempt = now,
@@ -585,6 +588,8 @@ class SyncManager @Inject constructor(
                     )
                 }
                 is CatalogStrategyResult.Partial -> {
+                    val tApplyStart = System.currentTimeMillis()
+                    Log.i(TAG, "FzSync MOVIES apply START (Partial) sessionId=${movieSyncResult.stagedSessionId}")
                     val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
                         syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
                         movieSyncResult.stagedAcceptedCount
@@ -593,6 +598,7 @@ class SyncManager @Inject constructor(
                         categories = movieSyncResult.categories,
                         movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
                     )
+                    Log.i(TAG, "FzSync MOVIES apply END elapsedMs=${System.currentTimeMillis() - tApplyStart} acceptedCount=$acceptedCount (Partial)")
                     metadata = metadata.copy(
                         lastMovieSync = now,
                         lastMovieAttempt = now,
@@ -681,6 +687,8 @@ class SyncManager @Inject constructor(
 
             when (val seriesResult = seriesSyncResult.catalogResult) {
                 is CatalogStrategyResult.Success -> {
+                    val tApplyStart = System.currentTimeMillis()
+                    Log.i(TAG, "FzSync SERIES apply START (Success) sessionId=${seriesSyncResult.stagedSessionId}")
                     val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
                         syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
                         seriesSyncResult.stagedAcceptedCount
@@ -689,6 +697,7 @@ class SyncManager @Inject constructor(
                         categories = seriesSyncResult.categories,
                         series = seriesResult.items.asSequence().map { it.toEntity() }
                     )
+                    Log.i(TAG, "FzSync SERIES apply END elapsedMs=${System.currentTimeMillis() - tApplyStart} acceptedCount=$acceptedCount")
                     metadata = metadata.copy(
                         lastSeriesSync = now,
                         seriesCount = acceptedCount,
@@ -699,6 +708,8 @@ class SyncManager @Inject constructor(
                     warnings += seriesSyncResult.warnings + seriesResult.warnings
                 }
                 is CatalogStrategyResult.Partial -> {
+                    val tApplyStart = System.currentTimeMillis()
+                    Log.i(TAG, "FzSync SERIES apply START (Partial) sessionId=${seriesSyncResult.stagedSessionId}")
                     val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
                         syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
                         seriesSyncResult.stagedAcceptedCount
@@ -707,6 +718,7 @@ class SyncManager @Inject constructor(
                         categories = seriesSyncResult.categories,
                         series = seriesResult.items.asSequence().map { it.toEntity() }
                     )
+                    Log.i(TAG, "FzSync SERIES apply END elapsedMs=${System.currentTimeMillis() - tApplyStart} acceptedCount=$acceptedCount (Partial)")
                     metadata = metadata.copy(
                         lastSeriesSync = now,
                         seriesCount = acceptedCount,

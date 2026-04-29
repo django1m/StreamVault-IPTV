@@ -99,18 +99,16 @@ internal fun LazyListScope.providerSection(
                 onRetryWarningAction = { action -> viewModel.retryWarningAction(selectedProvider.id, action) },
                 onConnect = { viewModel.setActiveProvider(selectedProvider.id) },
                 onRefresh = {
-                    onPendingSyncProviderIdChange(selectedProvider.id)
-                    onCustomSyncSelectionsChange(
-                        buildSet {
-                            add(ProviderSyncSelection.TV)
-                            add(ProviderSyncSelection.MOVIES)
-                            add(ProviderSyncSelection.EPG)
-                            if (selectedProvider.type == ProviderType.XTREAM_CODES) {
-                                add(ProviderSyncSelection.SERIES)
-                            }
-                        }
+                    viewModel.syncProviderSection(
+                        selectedProvider.id,
+                        ProviderSyncSelection.ALL
                     )
-                    onShowProviderSyncDialogChange(true)
+                },
+                onRefreshEpg = {
+                    viewModel.syncProviderSection(
+                        selectedProvider.id,
+                        ProviderSyncSelection.EPG
+                    )
                 },
                 onDelete = { viewModel.deleteProvider(selectedProvider.id) },
                 onEdit = { onEditProvider(selectedProvider) },

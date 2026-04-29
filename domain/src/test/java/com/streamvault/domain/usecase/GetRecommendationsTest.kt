@@ -99,6 +99,7 @@ class GetRecommendationsTest {
         override suspend fun getMovieDetails(providerId: Long, movieId: Long): Result<Movie> = error("Not used in test")
         override suspend fun getStreamInfo(movie: Movie): Result<StreamInfo> = error("Not used in test")
         override suspend fun refreshMovies(providerId: Long): Result<Unit> = error("Not used in test")
+        override suspend fun preloadAllCategories(providerId: Long): Result<Unit> = error("Not used in test")
         override suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit> = error("Not used in test")
 
         private fun <T> unsupported(): Flow<T> = error("Not used in test")

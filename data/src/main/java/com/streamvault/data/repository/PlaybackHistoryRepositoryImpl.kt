@@ -108,7 +108,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun updateResumePosition(history: PlaybackHistory): Result<Unit> {
+    override suspend fun updateResumePosition(history: PlaybackHistory, syncDenormalized: Boolean): Result<Unit> {
         return try {
             if (preferencesRepository.isIncognitoMode.first()) {
                 return Result.success(Unit)
@@ -127,9 +127,13 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 ),
                 lastWatchedAt = System.currentTimeMillis()
             )
-            transactionRunner.inTransaction {
+            if (syncDenormalized) {
+                transactionRunner.inTransaction {
+                    dao.insertOrUpdate(updatedHistory.toEntity())
+                    syncDenormalizedProgress(updatedHistory.contentId, updatedHistory.contentType, updatedHistory.providerId)
+                }
+            } else {
                 dao.insertOrUpdate(updatedHistory.toEntity())
-                syncDenormalizedProgress(updatedHistory.contentId, updatedHistory.contentType, updatedHistory.providerId)
             }
             Result.success(Unit)
         } catch (e: Exception) {

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
@@ -33,7 +34,9 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Singleton
 
 @Singleton
@@ -427,6 +430,32 @@ class SeriesRepositoryImpl @Inject constructor(
 
     override suspend fun refreshSeries(providerId: Long): Result<Unit> =
         Result.success(Unit) // Handled by ProviderRepository
+
+    override suspend fun preloadAllCategories(providerId: Long): Result<Unit> = try {
+        val provider = providerDao.getById(providerId)
+        if (provider == null || provider.type != ProviderType.XTREAM_CODES) {
+            Result.success(Unit)
+        } else {
+            val categories = categoryDao.getByProviderAndTypeSync(providerId, ContentType.SERIES.name)
+            val semaphore = Semaphore(permits = 2)
+            coroutineScope {
+                categories.forEach { category ->
+                    launch {
+                        semaphore.withPermit {
+                            try {
+                                ensureXtreamCategoryLoaded(providerId, category.categoryId)
+                            } catch (_: Exception) {
+                                // Per-category failure shouldn't abort the whole preload.
+                            }
+                        }
+                    }
+                }
+            }
+            Result.success(Unit)
+        }
+    } catch (e: Exception) {
+        Result.error("Failed to preload series categories", e)
+    }
 
     override suspend fun updateEpisodeWatchProgress(episodeId: Long, progress: Long): Result<Unit> = try {
         episodeDao.updateWatchProgress(episodeId, progress)

@@ -1,6 +1,9 @@
 package com.streamvault.app.navigation
 
 import android.net.Uri
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHost
@@ -39,6 +42,7 @@ import com.streamvault.app.ui.screens.multiview.MultiViewScreen
 import com.streamvault.app.ui.screens.player.PlayerScreen
 import com.streamvault.app.ui.screens.provider.ProviderSetupScreen
 import com.streamvault.app.ui.screens.series.SeriesScreen
+import com.streamvault.app.ui.screens.activation.ActivationScreen
 import com.streamvault.app.ui.screens.settings.SettingsScreen
 import com.streamvault.app.ui.screens.update.AppUpdateStartupDialog
 import com.streamvault.app.ui.screens.update.AppUpdateStartupViewModel
@@ -82,6 +86,7 @@ object Routes {
     const val SEARCH_DESTINATION = "search?query={query}"
     const val MOVIE_DETAIL = "movie_detail/{movieId}?returnRoute={returnRoute}"
     const val SERIES_DETAIL = "series_detail/{seriesId}?returnRoute={returnRoute}"
+    const val ACTIVATION = "activation"
     const val WELCOME = "welcome"
     const val PARENTAL_CONTROL_GROUPS = "parental_control_groups/{providerId}"
     const val MULTI_VIEW = "multi_view"
@@ -286,7 +291,7 @@ fun AppNavigation(mainActivity: MainActivity) {
     val updateViewModel: AppUpdateStartupViewModel = hiltViewModel()
     val pendingUpdate by updateViewModel.pendingUpdate.collectAsStateWithLifecycle()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
-    val isBlockedForUpdate = currentRoute == Routes.WELCOME
+    val isBlockedForUpdate = currentRoute == Routes.ACTIVATION || currentRoute == Routes.WELCOME
     pendingUpdate?.takeUnless { isBlockedForUpdate }?.let { update ->
         AppUpdateStartupDialog(
             update = update,
@@ -295,11 +300,29 @@ fun AppNavigation(mainActivity: MainActivity) {
         )
     }
 
+    // Pure fade transitions. SurfaceView (used by Media3 ExoPlayer for video
+    // output) does not support Compose `graphicsLayer` transformations — any
+    // scaleIn/scaleOut on the Player / MultiView routes turns the video black.
+    // Fade-only is safe for all destinations including the player.
     Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
-        startDestination = Routes.WELCOME
+        startDestination = Routes.ACTIVATION,
+        enterTransition = { fadeIn(animationSpec = tween(durationMillis = 200)) },
+        exitTransition = { fadeOut(animationSpec = tween(durationMillis = 150)) },
+        popEnterTransition = { fadeIn(animationSpec = tween(durationMillis = 180)) },
+        popExitTransition = { fadeOut(animationSpec = tween(durationMillis = 150)) }
     ) {
+        composable(Routes.ACTIVATION) {
+            ActivationScreen(
+                onActivated = dropUnlessResumed {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.ACTIVATION) { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable(Routes.WELCOME) {
             WelcomeScreen(
                 onNavigateToHome = dropUnlessResumed {
@@ -580,10 +603,19 @@ fun AppNavigation(mainActivity: MainActivity) {
         }
 
         composable(route = Routes.PLAYER) { backStackEntry ->
-            val playerRequest = backStackEntry.savedStateHandle.get<PlayerNavigationRequest>(PLAYER_REQUEST_KEY)
-                ?: navController.previousBackStackEntry?.savedStateHandle?.get<PlayerNavigationRequest>(PLAYER_REQUEST_KEY)?.also {
-                    backStackEntry.savedStateHandle[PLAYER_REQUEST_KEY] = it
-                }
+            // `launchSingleTop = true` on navigateToPlayer means this composable
+            // instance is reused on re-entry, and its savedStateHandle still holds
+            // the PlayerNavigationRequest from the previous playback. Always prefer
+            // the caller's freshly-set request (previousBackStackEntry) over our
+            // own stale one. Fallback to our saved state for process-death restore.
+            val callerRequest = navController.previousBackStackEntry
+                ?.savedStateHandle
+                ?.get<PlayerNavigationRequest>(PLAYER_REQUEST_KEY)
+            if (callerRequest != null) {
+                backStackEntry.savedStateHandle[PLAYER_REQUEST_KEY] = callerRequest
+            }
+            val playerRequest = backStackEntry.savedStateHandle
+                .get<PlayerNavigationRequest>(PLAYER_REQUEST_KEY)
             val streamUrl = if (isStreamUrlSafe(playerRequest?.streamUrl)) playerRequest?.streamUrl.orEmpty() else ""
             PlayerScreen(
                 streamUrl = streamUrl,

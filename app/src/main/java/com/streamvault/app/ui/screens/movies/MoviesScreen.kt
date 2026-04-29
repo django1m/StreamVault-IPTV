@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import com.streamvault.app.ui.components.shell.InfiniteScrollEffect
 import androidx.compose.foundation.text.BasicTextField
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.*
@@ -100,6 +102,7 @@ fun MoviesScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val initialContentFocusRequester = remember { FocusRequester() }
+    val topBarFocusRequester = remember { FocusRequester() }
     var showPinDialog by remember { mutableStateOf(false) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var pendingMovie by remember { mutableStateOf<Movie?>(null) }
@@ -114,6 +117,13 @@ fun MoviesScreen(
 
     BackHandler(enabled = uiState.selectedCategory != null && !uiState.isReorderMode) {
         viewModel.selectCategory(null)
+    }
+
+    BackHandler(enabled = uiState.selectedCategory == null && !uiState.isReorderMode) {
+        topBarFocusRequester.requestFocusSafely(
+            tag = "MoviesScreen",
+            target = "Top navigation bar"
+        )
     }
 
     ProtectedVodPinDialog(
@@ -153,7 +163,13 @@ fun MoviesScreen(
             subtitle = null,
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            topBarFocusRequester = topBarFocusRequester,
+            backdrop = {
+                com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                    palette = com.streamvault.app.ui.design.AmbientPalette.Default
+                ) { }
+            }
         ) {
         if (uiState.isReorderMode && uiState.reorderCategory != null) {
             ReorderTopBar(
@@ -633,7 +649,7 @@ private fun MoviesVodContent(
                 }
             }
             }
-            items(catEntries, key = { it.key }) { entry ->
+            items(catEntries, key = { it.key }, contentType = { "category" }) { entry ->
                 val categoryName = entry.key
                 val movies = entry.value
                 val matchedCategory = categoryByName[categoryName]
@@ -688,6 +704,13 @@ private fun MoviesVodContent(
     var showBrowseOptions by rememberSaveable(uiState.selectedCategory) { mutableStateOf(false) }
     var showSearchBar by rememberSaveable(uiState.selectedCategory) { mutableStateOf(searchQuery.isNotBlank()) }
     val initialGridMovieId = filteredGridMovies.firstOrNull()?.id
+    val gridState = rememberLazyGridState()
+
+    InfiniteScrollEffect(
+        gridState = gridState,
+        canLoadMore = !uiState.isReorderMode && uiState.canLoadMoreSelectedCategory && !uiState.isLoadingSelectedCategory,
+        onLoadMore = onLoadMore
+    )
 
     if (showBrowseOptions) {
         VodBrowseOptionsDialog(
@@ -709,6 +732,7 @@ private fun MoviesVodContent(
     }
 
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Adaptive(minSize = 136.dp),
         modifier = Modifier
             .fillMaxSize()
@@ -845,16 +869,18 @@ private fun MoviesVodContent(
             }
 
             if (!uiState.isReorderMode && uiState.canLoadMoreSelectedCategory) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    LoadMoreCard(
-                        label = stringResource(
-                            R.string.library_load_more,
-                            uiState.selectedCategoryLoadedCount,
-                            uiState.selectedCategoryTotalCount
-                        ),
-                        onClick = onLoadMore,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 24.dp)
-                    )
+                item(key = "movies_modern_loading_indicator", span = { GridItemSpan(maxLineSpan) }) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color.White.copy(alpha = 0.75f),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
             }
         }
@@ -939,10 +965,17 @@ private fun MoviesVodClassicContent(
     }
     var draggingMovie by remember { mutableStateOf<Movie?>(null) }
     val initialGridMovieId = filteredGridMovies.firstOrNull()?.id
+    val classicGridState = rememberLazyGridState()
+
+    InfiniteScrollEffect(
+        gridState = classicGridState,
+        canLoadMore = !uiState.isReorderMode && uiState.canLoadMoreSelectedCategory && !uiState.isLoadingSelectedCategory,
+        onLoadMore = onLoadMore
+    )
 
     LaunchedEffect(uiState.vodViewMode, uiState.selectedCategory, uiState.isReorderMode) {
         if (uiState.vodViewMode == VodViewMode.CLASSIC && uiState.selectedCategory == null && !uiState.isReorderMode) {
-            onSelectCategory(uiState.favoriteCategoryName)
+            onSelectFullLibraryBrowse()
         }
     }
 
@@ -1104,6 +1137,7 @@ private fun MoviesVodClassicContent(
             }
 
             LazyVerticalGrid(
+                state = classicGridState,
                 columns = GridCells.Adaptive(minSize = 136.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1168,16 +1202,18 @@ private fun MoviesVodClassicContent(
                     }
 
                     if (!uiState.isReorderMode && uiState.canLoadMoreSelectedCategory) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            LoadMoreCard(
-                                label = stringResource(
-                                    R.string.library_load_more,
-                                    uiState.selectedCategoryLoadedCount,
-                                    uiState.selectedCategoryTotalCount
-                                ),
-                                onClick = onLoadMore,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
+                        item(key = "movies_classic_loading_indicator", span = { GridItemSpan(maxLineSpan) }) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 16.dp, bottom = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
                         }
                     }
                 }

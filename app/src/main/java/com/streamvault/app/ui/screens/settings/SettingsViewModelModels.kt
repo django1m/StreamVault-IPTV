@@ -166,7 +166,7 @@ data class SettingsUiState(
     val liveTvCategoryFilters: List<String> = emptyList(),
     val liveTvQuickFilterVisibilityMode: LiveTvQuickFilterVisibilityMode = LiveTvQuickFilterVisibilityMode.ALWAYS_VISIBLE,
     val liveChannelNumberingMode: ChannelNumberingMode = ChannelNumberingMode.GROUP,
-    val vodViewMode: VodViewMode = VodViewMode.MODERN,
+    val vodViewMode: VodViewMode = VodViewMode.CLASSIC,
     val guideDefaultCategoryId: Long = com.streamvault.domain.model.VirtualCategoryIds.FAVORITES,
     val guideDefaultCategoryOptions: List<Category> = emptyList(),
     val preventStandbyDuringPlayback: Boolean = true,

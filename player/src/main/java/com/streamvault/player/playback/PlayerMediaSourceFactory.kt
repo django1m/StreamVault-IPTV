@@ -6,6 +6,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
@@ -53,7 +54,12 @@ class PlayerMediaSourceFactory(
                 .setLoadErrorHandlingPolicy(retryPolicy)
                 .createMediaSource(mediaItem)
 
-            resolvedStreamType == ResolvedStreamType.PROGRESSIVE -> ProgressiveMediaSource.Factory(dataSourceFactory)
+            resolvedStreamType == ResolvedStreamType.PROGRESSIVE -> ProgressiveMediaSource.Factory(
+                    dataSourceFactory,
+                    DefaultExtractorsFactory().setMp4ExtractorFlags(
+                        Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS
+                    )
+                )
                 .setLoadErrorHandlingPolicy(retryPolicy)
                 .createMediaSource(mediaItem)
 

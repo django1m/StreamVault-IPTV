@@ -10,7 +10,11 @@ data class AppShapes(
     val large: RoundedCornerShape = RoundedCornerShape(24.dp),
     val xSmall: RoundedCornerShape = RoundedCornerShape(8.dp),
     val xLarge: RoundedCornerShape = RoundedCornerShape(28.dp),
-    val pill: RoundedCornerShape = RoundedCornerShape(999.dp)
+    val pill: RoundedCornerShape = RoundedCornerShape(999.dp),
+    // Cinematic shapes — used by hero, glass surfaces and VOD poster heroes.
+    val hero: RoundedCornerShape = RoundedCornerShape(32.dp),
+    val glass: RoundedCornerShape = RoundedCornerShape(22.dp),
+    val posterHero: RoundedCornerShape = RoundedCornerShape(24.dp)
 )
 
 val LocalAppShapes = staticCompositionLocalOf { AppShapes() }

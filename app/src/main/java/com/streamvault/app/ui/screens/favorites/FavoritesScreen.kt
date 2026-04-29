@@ -365,7 +365,12 @@ fun FavoritesScreen(
             subtitle = stringResource(R.string.saved_shell_subtitle),
             navigationChrome = AppNavigationChrome.TopBar,
             compactHeader = true,
-            showScreenHeader = false
+            showScreenHeader = false,
+            backdrop = {
+                com.streamvault.app.ui.components.cinematic.AmbientBackground(
+                    palette = com.streamvault.app.ui.design.AmbientPalette.Default
+                ) { }
+            }
         ) {
             when {
                 uiState.isLoading -> {

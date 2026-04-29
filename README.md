@@ -1,4 +1,4 @@
-# StreamVault
+# FuzionTV
 
 <p align="center">
 	<a href="https://github.com/Davidona/StreamVault-IPTV/releases/latest/download/StreamVault.apk"><img src="https://img.shields.io/badge/Download-StreamVault.apk-2ea44f?style=for-the-badge&logo=android" alt="Download StreamVault APK" /></a>
@@ -10,11 +10,11 @@
 	<a href="LICENSE"><img src="https://img.shields.io/badge/License-StreamVault_OSL-0284c7?style=for-the-badge" alt="License" /></a>
 </p>
 
-StreamVault is a TV-first IPTV player for Android TV built with Kotlin, Jetpack Compose, Room, Hilt, and Media3.
+FuzionTV is a TV-first IPTV player for Android TV built with Kotlin, Jetpack Compose, Room, Hilt, and Media3. It is a rebranded fork of StreamVault and pulls updates from the upstream releases.
 
-It is designed for large playlists, remote-friendly browsing, fast provider switching, and a polished living-room playback experience. StreamVault supports both `M3U` playlists and `Xtream Codes`, with dedicated flows for `Live TV`, `Movies`, and `Series`.
+It is designed for large playlists, remote-friendly browsing, fast provider switching, and a polished living-room playback experience. FuzionTV supports both `M3U` playlists and `Xtream Codes`, with dedicated flows for `Live TV`, `Movies`, and `Series`.
 
-Built for Android TV first, StreamVault focuses on the things generic IPTV apps usually get wrong: D-pad navigation, quick channel movement, large-library organization, and a player that still feels good to use from the couch. Phone and tablet installs are also supported, but the primary UX target is TV.
+Built for Android TV first, FuzionTV focuses on the things generic IPTV apps usually get wrong: D-pad navigation, quick channel movement, large-library organization, and a player that still feels good to use from the couch. Phone and tablet installs are also supported, but the primary UX target is TV.
 
 ## Preview
 <p align="center">
