@@ -7,17 +7,12 @@ import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.streamvault.app.diagnostics.RuntimeDiagnosticsManager
-import com.streamvault.app.update.AppUpdateChecker
+import com.streamvault.app.startup.AppStartupCoordinator
 import com.streamvault.app.ui.accessibility.isReducedMotionEnabled
-import com.streamvault.data.preferences.PreferencesRepository
-import com.streamvault.domain.model.Result
 import dagger.hilt.android.HiltAndroidApp
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import okio.Path.Companion.toOkioPath
 
 import androidx.work.Constraints
@@ -31,21 +26,15 @@ import javax.inject.Inject
 @HiltAndroidApp
 class StreamVaultApp : Application(), SingletonImageLoader.Factory {
     private val runtimeDiagnosticsManager by lazy { RuntimeDiagnosticsManager(this) }
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Inject
-    lateinit var preferencesRepository: PreferencesRepository
-
-    @Inject
-    lateinit var appUpdateChecker: AppUpdateChecker
+    lateinit var appStartupCoordinator: AppStartupCoordinator
 
     override fun onCreate() {
         super.onCreate()
         runtimeDiagnosticsManager.start()
-        applicationScope.launch {
-            refreshCachedAppUpdateIfNeeded()
-        }
-        
+        ProcessLifecycleOwner.get().lifecycle.addObserver(appStartupCoordinator)
+
         // Schedule daily data maintenance: EPG pruning, stale-favorite cleanup, and DB compaction checks.
         // BLD-H02: Require network + device idle so the worker doesn't drain battery.
         val gcConstraints = Constraints.Builder()
@@ -71,35 +60,6 @@ class StreamVaultApp : Application(), SingletonImageLoader.Factory {
     override fun onTerminate() {
         runtimeDiagnosticsManager.stop()
         super.onTerminate()
-    }
-
-    private suspend fun refreshCachedAppUpdateIfNeeded() {
-        val autoCheckEnabled = preferencesRepository.autoCheckAppUpdates.first()
-        if (!autoCheckEnabled) {
-            return
-        }
-
-        val lastCheckedAt = preferencesRepository.lastAppUpdateCheckTimestamp.first()
-        val now = System.currentTimeMillis()
-        val checkIntervalMs = 24L * 60L * 60L * 1000L
-        if (lastCheckedAt != null && now - lastCheckedAt < checkIntervalMs) {
-            return
-        }
-
-        preferencesRepository.setLastAppUpdateCheckTimestamp(now)
-        when (val result = appUpdateChecker.fetchLatestRelease()) {
-            is Result.Success -> {
-                preferencesRepository.setCachedAppUpdateRelease(
-                    versionName = result.data.versionName,
-                    versionCode = result.data.versionCode,
-                    releaseUrl = result.data.releaseUrl,
-                    downloadUrl = result.data.downloadUrl,
-                    releaseNotes = result.data.releaseNotes,
-                    publishedAt = result.data.publishedAt
-                )
-            }
-            else -> Unit
-        }
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {
