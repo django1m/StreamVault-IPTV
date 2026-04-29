@@ -21,15 +21,32 @@ private const val FORTY_EIGHT_HOURS_MS = 48L * 60 * 60 * 1000L
 private const val THROTTLE_MS = 30_000L
 
 @Singleton
-class AppStartupCoordinator @Inject constructor(
+class AppStartupCoordinator(
     private val appUpdateChecker: AppUpdateChecker,
     private val preferencesRepository: PreferencesRepository,
     private val providerRepository: ProviderRepository,
     private val syncManager: SyncManager,
     private val snackbar: SyncSnackbarController,
-    private val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    private val clock: () -> Long = { System.currentTimeMillis() }
+    private val applicationScope: CoroutineScope,
+    private val clock: () -> Long
 ) : DefaultLifecycleObserver {
+
+    @Inject
+    constructor(
+        appUpdateChecker: AppUpdateChecker,
+        preferencesRepository: PreferencesRepository,
+        providerRepository: ProviderRepository,
+        syncManager: SyncManager,
+        snackbar: SyncSnackbarController,
+    ) : this(
+        appUpdateChecker = appUpdateChecker,
+        preferencesRepository = preferencesRepository,
+        providerRepository = providerRepository,
+        syncManager = syncManager,
+        snackbar = snackbar,
+        applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        clock = { System.currentTimeMillis() }
+    )
 
     @Volatile
     private var lastRunAt = 0L
