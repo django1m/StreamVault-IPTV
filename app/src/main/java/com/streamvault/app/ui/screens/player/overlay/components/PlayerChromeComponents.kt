@@ -192,6 +192,12 @@ fun PlayerIconButton(
     accent: Boolean = false,
     enabled: Boolean = true,
     size: Dp = PlayerChromeTokens.iconButton(),
+    /**
+     * Icon colour while unfocused. Only for buttons whose colour carries meaning —
+     * record is red because that is universal — never as decoration; a row of
+     * differently tinted icons reads as noise rather than as a control surface.
+     */
+    restingTint: Color? = null,
     onHoldStart: (() -> Unit)? = null,
     onHoldStop: (() -> Unit)? = null
 ) {
@@ -222,7 +228,10 @@ fun PlayerIconButton(
         else -> AppColors.GlassLight
     }
     val focusedContainer = AppColors.Brand
-    val iconTint = if (isFocused || accent) AppColors.Canvas else AppColors.TextPrimary
+    val iconTint = when {
+        isFocused || accent -> AppColors.Canvas
+        else -> restingTint ?: AppColors.TextPrimary
+    }
 
     val latestOnHoldStart by rememberUpdatedState(onHoldStart)
     val latestOnHoldStop by rememberUpdatedState(onHoldStop)

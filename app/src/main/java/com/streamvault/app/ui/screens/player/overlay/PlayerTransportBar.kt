@@ -47,6 +47,7 @@ import com.streamvault.domain.model.RecordingStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.streamvault.app.ui.components.ChannelLogoBadge
 
 /**
  * The two transport chromes that fill the bottom bar: LIVE (zapping, EPG progress,
@@ -104,7 +105,8 @@ internal fun PlayerLiveInfo(
     onZapNext: () -> Unit = {},
     onOpenChannelList: () -> Unit = {},
     onOpenEpg: () -> Unit = {},
-    onOpenChannelInfo: () -> Unit = {}
+    onOpenChannelInfo: () -> Unit = {},
+    channelLogoUrl: String? = null
 ) {
     val isRecording = currentRecordingStatus == RecordingStatus.RECORDING
     val hasArchive = currentProgram?.hasArchive == true
@@ -183,43 +185,69 @@ internal fun PlayerLiveInfo(
         )
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+    // Channel badge + programme blurb: carried over from ChannelInfoOverlay, which OK
+    // no longer opens. Without them the bar would be a downgrade on the one thing the
+    // banner did well — telling you what you are actually watching.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        ChannelLogoBadge(
+            channelName = currentChannelName.orEmpty(),
+            logoUrl = channelLogoUrl,
+            modifier = Modifier.size(64.dp)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            PlayerMetaPill(text = stringResource(R.string.player_live_now), accent = true)
-            PlayerMetaPill(text = stringResource(R.string.player_live_channel, displayChannelNumber))
-            if (hasArchive) {
-                PlayerMetaPill(text = stringResource(R.string.player_archive_badge))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PlayerMetaPill(text = stringResource(R.string.player_live_now), accent = true)
+                PlayerMetaPill(text = stringResource(R.string.player_live_channel, displayChannelNumber))
+                if (hasArchive) {
+                    PlayerMetaPill(text = stringResource(R.string.player_archive_badge))
+                }
+                if (isMuted) {
+                    PlayerMetaPill(text = stringResource(R.string.player_muted_badge))
+                }
             }
-            if (isMuted) {
-                PlayerMetaPill(text = stringResource(R.string.player_muted_badge))
+            Text(
+                text = currentProgram?.title ?: mediaTitle ?: currentChannelName.orEmpty(),
+                style = MaterialTheme.typography.headlineSmall,
+                color = AppColors.TextPrimary,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = if (currentProgram != null) {
+                    stringResource(
+                        R.string.channel_number_name_format,
+                        displayChannelNumber,
+                        currentChannelName.orEmpty()
+                    )
+                } else {
+                    stringResource(R.string.player_no_guide_data)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = AppColors.TextTertiary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            currentProgram?.description?.takeIf { it.isNotBlank() }?.let { description ->
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.TextSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-        Text(
-            text = currentProgram?.title ?: mediaTitle ?: currentChannelName.orEmpty(),
-            style = MaterialTheme.typography.headlineSmall,
-            color = AppColors.TextPrimary,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = if (currentProgram != null) {
-                stringResource(
-                    R.string.channel_number_name_format,
-                    displayChannelNumber,
-                    currentChannelName.orEmpty()
-                )
-            } else {
-                stringResource(R.string.player_no_guide_data)
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = AppColors.TextTertiary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 
     Spacer(modifier = Modifier.height(16.dp))
@@ -286,6 +314,10 @@ internal fun PlayerLiveInfo(
                 if (isRecording) R.string.player_stop_recording else R.string.player_record
             ),
             selected = isRecording,
+            // Red is the one colour convention worth spending here: a recording
+            // indicator that looks like every other control is a recording nobody
+            // notices is running.
+            restingTint = AppColors.Live,
             onClick = if (isRecording) onStopRecording else onStartRecording,
             modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
         )

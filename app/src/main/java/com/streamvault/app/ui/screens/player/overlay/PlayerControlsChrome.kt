@@ -167,6 +167,8 @@ fun PlayerControlsOverlay(
     onOpenChannelList: () -> Unit = {},
     onOpenEpg: () -> Unit = {},
     onOpenChannelInfo: () -> Unit = {},
+    /** LIVE only: lets the bar show the channel badge the info banner used to carry. */
+    channelLogoUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -254,7 +256,8 @@ fun PlayerControlsOverlay(
                 onZapNext = onZapNext,
                 onOpenChannelList = onOpenChannelList,
                 onOpenEpg = onOpenEpg,
-                onOpenChannelInfo = onOpenChannelInfo
+                onOpenChannelInfo = onOpenChannelInfo,
+                channelLogoUrl = channelLogoUrl
             )
         }
     }
@@ -407,6 +410,7 @@ private fun PlayerBottomBar(
     onOpenChannelList: () -> Unit = {},
     onOpenEpg: () -> Unit = {},
     onOpenChannelInfo: () -> Unit = {},
+    channelLogoUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     val isVod = contentType != "LIVE"
@@ -475,7 +479,8 @@ private fun PlayerBottomBar(
                         onZapNext = onZapNext,
                         onOpenChannelList = onOpenChannelList,
                         onOpenEpg = onOpenEpg,
-                        onOpenChannelInfo = onOpenChannelInfo
+                        onOpenChannelInfo = onOpenChannelInfo,
+                        channelLogoUrl = channelLogoUrl
                     )
                 } else {
                     PlayerVodInfo(

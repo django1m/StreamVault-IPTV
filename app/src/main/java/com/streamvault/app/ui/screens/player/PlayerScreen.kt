@@ -709,14 +709,18 @@ fun PlayerScreen(
                             }
                             if (contentType == "LIVE" && viewModel.hasPendingNumericChannelInput()) {
                                 viewModel.commitNumericChannelInput()
-                                   true
-                            } else if (contentType == "LIVE") {
-                                    if (showChannelInfoOverlay) viewModel.closeChannelInfoOverlay()
-                                    else viewModel.openChannelInfoOverlay()
-                                   true
+                                true
                             } else if (showControls) {
+                                // Let the focused control handle OK. Must come before the
+                                // LIVE branch, otherwise OK would toggle the bar shut
+                                // instead of pressing the button under the cursor.
                                 false
                             } else {
+                                // OK now opens the controls bar on LIVE too. It used to
+                                // open ChannelInfoOverlay, which left the bar with no
+                                // entry point at all. The banner is still what a zap
+                                // raises (PlayerZapActions), so the quick "what am I on"
+                                // glance is unchanged.
                                 viewModel.toggleControls()
                                 true
                             }
@@ -877,6 +881,9 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
+                            // INFO keeps its "what am I watching" meaning on LIVE: it
+                            // raises the lightweight banner, unlike OK which now opens
+                            // the full controls bar.
                             if (contentType == "LIVE") {
                                 if (showChannelInfoOverlay) viewModel.closeChannelInfoOverlay()
                                 else viewModel.openChannelInfoOverlay()
@@ -1152,7 +1159,8 @@ fun PlayerScreen(
                 onZapNext = { viewModel.playNext() },
                 onOpenChannelList = { viewModel.openChannelListOverlay() },
                 onOpenEpg = { viewModel.openEpgOverlay() },
-                onOpenChannelInfo = { viewModel.openChannelInfoOverlay() }
+                onOpenChannelInfo = { viewModel.openChannelInfoOverlay() },
+                channelLogoUrl = currentChannel?.logoUrl
             )
 
             PlayerNumericInputOverlay(
@@ -1625,7 +1633,8 @@ private fun PlayerControlsOverlayHost(
     onZapNext: () -> Unit = {},
     onOpenChannelList: () -> Unit = {},
     onOpenEpg: () -> Unit = {},
-    onOpenChannelInfo: () -> Unit = {}
+    onOpenChannelInfo: () -> Unit = {},
+    channelLogoUrl: String? = null
 ) {
     val currentPosition by playerEngine.currentPosition.collectAsStateWithLifecycle()
     val duration by playerEngine.duration.collectAsStateWithLifecycle()
@@ -1687,7 +1696,8 @@ private fun PlayerControlsOverlayHost(
         onZapNext = onZapNext,
         onOpenChannelList = onOpenChannelList,
         onOpenEpg = onOpenEpg,
-        onOpenChannelInfo = onOpenChannelInfo
+        onOpenChannelInfo = onOpenChannelInfo,
+        channelLogoUrl = channelLogoUrl
     )
 }
 
