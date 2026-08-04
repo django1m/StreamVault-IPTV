@@ -146,7 +146,20 @@ internal suspend fun PlayerViewModel.buildCastRequest(): CastMediaRequest? {
     return when (currentContentType) {
         ContentType.LIVE -> {
             val channel = currentChannel.value ?: return null
-            val streamInfo = channelRepository.getStreamInfo(channel).getOrNull() ?: return null
+            val streamResult = channelRepository.getStreamInfo(channel)
+            val streamInfo = streamResult.getOrNull() ?: run {
+                // Log the underlying repo failure (auth/network/parse) so a
+                // user-reported "cast does nothing" is diagnosable — the caller
+                // still surfaces a generic notice.
+                if (streamResult is com.streamvault.domain.model.Result.Error) {
+                    android.util.Log.w(
+                        "PlayerVM",
+                        "Cast stream resolution failed for ${channel.name}: ${streamResult.message}",
+                        streamResult.exception
+                    )
+                }
+                return null
+            }
             streamInfo.toCastRequest(
                 title = mediaTitle.value ?: channel.name,
                 subtitle = currentProgram.value?.title,
@@ -158,7 +171,17 @@ internal suspend fun PlayerViewModel.buildCastRequest(): CastMediaRequest? {
 
         ContentType.MOVIE -> {
             val movie = movieRepository.getMovie(currentContentId)
-            val streamInfo = movie?.let { movieRepository.getStreamInfo(it).getOrNull() }
+            val streamInfo = movie?.let { mv ->
+                val result = movieRepository.getStreamInfo(mv)
+                if (result is com.streamvault.domain.model.Result.Error) {
+                    android.util.Log.w(
+                        "PlayerVM",
+                        "Cast stream resolution failed for movie ${mv.name}: ${result.message}",
+                        result.exception
+                    )
+                }
+                result.getOrNull()
+            }
                 ?: return directCastRequest()
             streamInfo.toCastRequest(
                 title = currentTitle.ifBlank { movie.name },

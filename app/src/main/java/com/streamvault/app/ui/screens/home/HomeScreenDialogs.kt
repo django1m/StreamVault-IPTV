@@ -71,6 +71,14 @@ internal fun HomeDialogsHost(
             },
             onPinEntered = { pin ->
                 scope.launch {
+                    val lockoutMs = viewModel.pinLockoutRemainingMs()
+                    if (lockoutMs > 0L) {
+                        val mins = (lockoutMs / 60000L) + 1
+                        onPinErrorChange(
+                            context.getString(R.string.home_pin_locked_out, mins)
+                        )
+                        return@launch
+                    }
                     pendingUnlockCategory?.let { category ->
                         when (val unlockResult = viewModel.unlockCategoryWithPin(category, pin)) {
                             is Result.Success -> {
@@ -98,7 +106,7 @@ internal fun HomeDialogsHost(
                         onPinErrorChange(null)
 
                         pendingUnlockChannel?.let { channel ->
-                            viewModel.clearPreview()
+                            viewModel.handoffPreviewForFullscreen(channel)
                             onChannelClick(channel, uiState.selectedCategory, resolveProviderForChannel(channel))
                             onPendingUnlockChannelChange(null)
                         }

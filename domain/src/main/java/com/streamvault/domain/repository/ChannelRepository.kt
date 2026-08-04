@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.Flow
 
 interface ChannelRepository {
     fun getChannels(providerId: Long): Flow<List<Channel>>
+    /** Cheap COUNT(*) — never load the full channel list just to size it. */
+    fun getChannelCount(providerId: Long): Flow<Int>
     fun getChannelsByCategory(providerId: Long, categoryId: Long): Flow<List<Channel>>
     fun getChannelsByNumber(providerId: Long, categoryId: Long = ALL_CHANNELS_ID): Flow<List<Channel>>
     fun getChannelsWithoutErrors(providerId: Long, categoryId: Long = ALL_CHANNELS_ID): Flow<List<Channel>>

@@ -1,10 +1,10 @@
 ﻿package com.streamvault.app.ui.screens.multiview
 
-import android.app.Activity
 import android.view.View
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -139,7 +139,7 @@ fun MultiViewScreen(
     }
 
     // Prevent screen from sleeping while watching multiview
-    val multiViewWindow = (LocalContext.current as? Activity)?.window
+    val multiViewWindow = LocalActivity.current?.window
     DisposableEffect(Unit) {
         multiViewWindow?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose { multiViewWindow?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }

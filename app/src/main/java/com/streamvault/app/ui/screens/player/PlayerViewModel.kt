@@ -7,11 +7,19 @@ import com.streamvault.app.cast.CastConnectionState
 import com.streamvault.app.cast.CastManager
 import com.streamvault.app.cast.CastMediaRequest
 import com.streamvault.app.cast.CastStartResult
+import com.streamvault.app.di.ApplicationScope
 import com.streamvault.app.di.MainPlayerEngine
+import com.streamvault.app.di.PlaybackHttpClient
+import com.streamvault.app.playback.PlayerEngineHandoffRegistry
+import com.streamvault.app.playback.XtreamContainerExtensionMemory
+import com.streamvault.app.playback.XtreamPlaybackProber
 import com.streamvault.app.util.isPlaybackComplete
+import com.streamvault.app.vpn.allowsPanelCalls
 import com.streamvault.app.tv.LauncherRecommendationsManager
 import com.streamvault.app.tv.WatchNextManager
+import com.streamvault.data.remote.xtream.XtreamStreamKind
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
+import com.streamvault.data.remote.xtream.XtreamUrlFactory
 import com.streamvault.data.security.CredentialDecryptionException
 import com.streamvault.domain.manager.RecordingManager
 import com.streamvault.domain.model.Category
@@ -44,9 +52,12 @@ import com.streamvault.player.PlayerEngine
 import com.streamvault.player.PlayerError
 import com.streamvault.player.PlayerSubtitleStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,13 +65,13 @@ import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import java.util.Locale
 import okhttp3.OkHttpClient
-import okhttp3.Request
 
 @HiltViewModel
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModel @Inject constructor(
     @param:MainPlayerEngine
-    val playerEngine: PlayerEngine,
+    private val injectedPlayerEngine: PlayerEngine,
+    private val playerEngineHandoffRegistry: PlayerEngineHandoffRegistry,
     private val epgRepository: EpgRepository,
     internal val channelRepository: ChannelRepository,
     internal val movieRepository: MovieRepository,
@@ -78,13 +89,131 @@ class PlayerViewModel @Inject constructor(
     internal val castManager: CastManager,
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver,
     private val seekThumbnailProvider: SeekThumbnailProvider,
-    private val okHttpClient: OkHttpClient
+    @param:PlaybackHttpClient private val playbackHttpClient: OkHttpClient,
+    private val xtreamPlaybackProber: XtreamPlaybackProber,
+    private val extensionMemory: XtreamContainerExtensionMemory,
+    private val playbackReporter: com.streamvault.app.playback.PlaybackReporter,
+    private val networkAvailability: com.streamvault.app.util.NetworkAvailability,
+    private val diagnosticReporter: com.streamvault.app.diagnostics.DiagnosticReporter,
+    private val vpnManager: com.streamvault.app.vpn.VpnManager,
+    @param:ApplicationScope private val applicationScope: CoroutineScope,
 ) : ViewModel() {
+    /**
+     * Engine adopted from the live preview pane in HomeScreen via
+     * [PlayerEngineHandoffRegistry]. Consumed eagerly during construction so
+     * any Composable that later reads `viewModel.playerEngine` already sees
+     * the adopted instance — no reactive wrapper needed. Null when the
+     * fullscreen player was entered from a non-preview source.
+     */
+    private val handoffSnapshot: PlayerEngineHandoffRegistry.Handoff? =
+        playerEngineHandoffRegistry.consume()
+
+    /**
+     * The active playback engine. Either the [injectedPlayerEngine] (the
+     * @MainPlayerEngine RoutingPlayerEngine singleton) or — if the user got
+     * here by double-clicking a previewed live channel — the still-playing
+     * auxiliary Media3 engine taken from the handoff registry. Adoption only
+     * happens once, before first composition, so [val]-like semantics hold
+     * for all consumers despite the `var` declaration.
+     */
+    var playerEngine: PlayerEngine = handoffSnapshot?.engine ?: injectedPlayerEngine
+        private set
+
+    init {
+        // The auxiliary Media3 used for the home preview pane is built with
+        // bypassAudioFocus=true and enableMediaSession=false (see
+        // NetworkModule.provideAuxiliaryPlayerEngine). After handoff the
+        // fullscreen player owns the engine and we want proper audio focus +
+        // a media-session for headphone / Bluetooth controls. Flip them
+        // immediately so the user does not have to re-zap to get the right
+        // behavior.
+        val adopted = handoffSnapshot?.engine
+        if (adopted is com.streamvault.player.Media3PlayerEngine) {
+            adopted.bypassAudioFocus = false
+            adopted.enableMediaSession = true
+        }
+    }
+
+    /**
+     * Live-only: true after the first adopted [prepare] call validated the
+     * channel match. We then know there is no need to redo the engine prepare.
+     * Reset after consumption so any subsequent zap re-runs the normal flow.
+     */
+    private var pendingHandoffChannelId: Long = handoffSnapshot?.channelId ?: -1L
+    private var pendingHandoffProviderId: Long = handoffSnapshot?.providerId ?: -1L
+
+    private fun consumeAdoptionMatch(channelId: Long, providerId: Long): Boolean {
+        if (pendingHandoffChannelId == -1L) return false
+        val match = pendingHandoffChannelId == channelId &&
+            (pendingHandoffProviderId <= 0L ||
+                providerId <= 0L ||
+                pendingHandoffProviderId == providerId)
+        pendingHandoffChannelId = -1L
+        pendingHandoffProviderId = -1L
+        return match
+    }
+
     companion object {
         private const val MUTE_TOGGLE_DEBOUNCE_MS = 250L
         private const val MAX_PROGRAM_HISTORY_ITEMS = 18
         private const val MAX_UPCOMING_PROGRAM_ITEMS = 24
         private const val PLAYER_EPG_REFRESH_INTERVAL_MS = 30_000L
+        // Grace period after backgrounding before we fully stop the engine and
+        // close the upstream socket. Short app switches resume instantly.
+        private const val BACKGROUND_STOP_GRACE_MS = 30_000L
+        // Mid-stream stall recovery: time in READY→BUFFERING before suspecting
+        // a panel-side stall. 8s absorbs a routine HLS segment reload (typical
+        // Xtream segment = 2-4s, slow panel push = 5-7s) without false alarms.
+        // Used for VOD (catch-up / movie / episode) where first-byte after a
+        // re-buffer can legitimately be slower.
+        private const val MID_STREAM_STALL_TIMEOUT_MS = 8_000L
+        // Live channels stream continuous MPEG-TS, so a BUFFERING longer than a
+        // few seconds is almost always a real panel-side stall, not a segment
+        // reload. Tightening to 6s makes recovery feel closer to TiViMate without
+        // false-triggering on the routine 2-4s Xtream hiccup. Tunable: raise it
+        // if a slow provider triggers spurious reconnects.
+        private const val MID_STREAM_STALL_TIMEOUT_LIVE_MS = 6_000L
+        // Live "frozen frame" detection: the decoder stays in READY and isPlaying
+        // is true, but the playback position stops advancing (panel feeds no new
+        // bytes / hardware decoder wedged) WITHOUT any onPlayerError or a
+        // transition to BUFFERING — so neither PlayerRetryPolicy nor the
+        // BUFFERING watchdog above can see it. We poll the position and treat a
+        // sustained freeze as a stall, routed through the same recovery policy.
+        private const val LIVE_PROGRESS_CHECK_INTERVAL_MS = 2_000L
+        private const val LIVE_PROGRESS_STALL_THRESHOLD_MS = 6_000L
+        // Position jitter below this is treated as "not advancing" (rounding
+        // while the surface is wedged on a single frame).
+        private const val LIVE_PROGRESS_MIN_ADVANCE_MS = 250L
+        // Max consecutive restarts without an intervening READY. After this,
+        // we fall back instead of thrashing DNS + TLS on a stream that the
+        // upstream truly cannot deliver right now. Bumped 2→3 : un hoquet
+        // transitoire de 10-15 s du panel rate-limité mérite une tentative de
+        // plus avant d'abandonner.
+        private const val MID_STREAM_STALL_MAX_RESTARTS = 3
+        // Cooldown between two restart attempts. Aligné sur la fenêtre ~30 s du
+        // panel rate-limité (1 req/IP) : 60 s laissait passer des fenêtres de
+        // récupération valides. 30 s reste sobre pour la box 2 GB S905X5M.
+        private const val MID_STREAM_RESTART_COOLDOWN_MS = 30_000L
+        // Initial-buffer timeout for VOD / series episodes. Unlike live (9s),
+        // VOD first-byte can be legitimately slower (server seek into a large
+        // MP4, on-the-fly remux), so we give it more room before declaring the
+        // prepare dead and clearing the spinner. Without this the user can
+        // stare at a frozen loader forever if the panel never feeds bytes.
+        private const val VOD_PREPARE_TIMEOUT_MS = 25_000L
+        // Si l'engine émet ENDED avant ce % de la durée totale, on considère
+        // que c'est un faux EOF (coupure HTTP Xtream, métadonnées MP4/MKV
+        // tronquées) et on tente une reconnexion au lieu d'enchaîner.
+        private const val PREMATURE_END_THRESHOLD_PERCENT = 96L
+        private const val PREMATURE_END_MAX_RETRIES = 3
+        private const val PREMATURE_END_RETRY_BACKOFF_MS = 1_500L
+        // Attente du tunnel VPN avant/pendant une lecture VOD : couvre un
+        // cycle complet provision + double-vérification (~110-120 s).
+        private const val VPN_PLAYBACK_GATE_MS = 120_000L
+        // Une seule relance automatique post-VPN par fenêtre — évite toute
+        // boucle relance→403→relance si le tunnel retombe aussitôt.
+        private const val VPN_AUTO_RETRY_COOLDOWN_MS = 120_000L
+        private const val VPN_WAIT_NOTICE =
+            "Connexion au VPN sécurisé… la lecture reprendra automatiquement."
     }
 
     internal val showControlsFlow = MutableStateFlow(false)
@@ -185,12 +314,31 @@ class PlayerViewModel @Inject constructor(
     internal val triedAlternativeStreams = mutableSetOf<String>()
     private val failedStreamsThisSession = mutableMapOf<String, Int>()
     private var hasRetriedWithSoftwareDecoder = false
+    private var hasRetriedWithAlternateEngine = false
     private var hasRetriedXtreamAuthRefresh = false
+    // Set when the pre-playback probe got 401/403 on a series/movie URL but
+    // playback proceeded anyway (the engine's HTTP stack differs from the
+    // probe's). Lets the terminal error paths show the provider-refusal
+    // message instead of a generic one. Reset by beginPlaybackSession().
+    private var probeAdvisoryHttpCode: Int? = null
+
+    /** Dernière relance auto post-activation VPN (epoch ms) — voir cooldown. */
+    @Volatile private var lastVpnAutoRetryAtMs = 0L
+    // Last probe-failure diagnostic identity — dedups the RETRY button
+    // (each retry is a new session, so lastDiagnosedSession alone would
+    // re-report the same rejection on every click).
+    private var lastProbeDiagKey: Triple<Long, Long, Int>? = null
     internal var lastRecordedLivePlaybackKey: Pair<Long, Long>? = null
     private var currentStreamClassLabel: String = "Primary"
     private var prepareRequestVersion: Long = 0L
     internal var currentArtworkUrl: String? = null
     private var currentResolvedPlaybackUrl: String = ""
+    // Store current URL to find index later. Declared BEFORE the init block:
+    // Kotlin runs initializers in declaration order, and the init block's
+    // error collector (Main.immediate) can invoke handlePlaybackError during
+    // construction — any field declared after init would still be null then
+    // (prod v517 NPE via StringsKt.isBlank on this very field).
+    internal var currentStreamUrl: String = ""
     internal var pendingCatchUpUrls: List<String> = emptyList()
     internal var channelNumberingMode: ChannelNumberingMode = ChannelNumberingMode.GROUP
     private var activeEpgRequestKey: EpgRequestKey? = null
@@ -198,6 +346,10 @@ class PlayerViewModel @Inject constructor(
     internal var liveOverlayTimeoutMs: Long = 4_000L
     private var playerNoticeTimeoutMs: Long = 6_000L
     internal var diagnosticsTimeoutMs: Long = 15_000L
+    // Inactivity guard ("are you still watching?"). 0 = disabled. Re-armed on
+    // every remote interaction; fires only for LIVE after this long with none.
+    private var inactivityTimeoutMs: Long = 0L
+    private var inactivityWatchdogJob: Job? = null
     private var preferredDecoderMode: DecoderMode = DecoderMode.AUTO
 
     // Zapping state
@@ -214,6 +366,12 @@ class PlayerViewModel @Inject constructor(
     private var currentEpisodeNumber: Int? = null
     internal var isVirtualCategory: Boolean = false
     private var lastObservedPlaybackState: PlaybackState = PlaybackState.IDLE
+    // Gates every history write to an immutable per-session snapshot — see
+    // PlaybackSessionGate. Never read currentContentId/currentSeriesId/... in
+    // persistence code: those mutate before the engine actually switches media.
+    private val sessionGate = PlaybackSessionGate()
+    private var lastFinalPersistKey: Pair<Long, Long>? = null
+    private var postSeekPersistJob: Job? = null
 
     private var epgJob: Job? = null
     private var playlistJob: Job? = null
@@ -225,8 +383,36 @@ class PlayerViewModel @Inject constructor(
     internal var zapOverlayJob: Job? = null
     private var aspectRatioJob: Job? = null
     internal var zapBufferWatchdogJob: Job? = null
+    private var vodPrepareWatchdogJob: Job? = null
+    private var midStreamStallWatchdogJob: Job? = null
+    private var liveProgressWatchdogJob: Job? = null
+    private var vodProgressWatchdogJob: Job? = null
+    internal var preloadJob: Job? = null
+    private val midStreamStallPolicy = MidStreamStallRecoveryPolicy(
+        maxConsecutiveRestarts = MID_STREAM_STALL_MAX_RESTARTS,
+        restartCooldownMs = MID_STREAM_RESTART_COOLDOWN_MS,
+        clock = SystemClock::elapsedRealtime
+    )
+    private var prematureEndRetryJob: Job? = null
+    private var prematureEndRetryAttempt: Int = 0
+    private var pendingPrematureEndResumeMs: Long = 0L
+    // URL the pending resume position belongs to. The post-ERROR retry
+    // pipeline may go through several engine state changes before READY; we
+    // must NOT re-apply the seek to a different stream the user navigated to
+    // in the meantime.
+    private var pendingPrematureEndUrl: String = ""
     private var isAppInForeground: Boolean = true
     private var shouldResumeAfterForeground: Boolean = false
+    // Background connection-release: onAppBackgrounded() keeps the immediate
+    // pause(), then after a short grace it stop()s the engine (closing the
+    // upstream socket so the provider line is freed) if still backgrounded.
+    // onAppForegrounded() cancels the timer and resumes via restart().
+    // isEngineAlive guards the delayed job from touching a released engine
+    // (onCleared() sets it false BEFORE release()).
+    private var backgroundStopJob: Job? = null
+    private var stoppedInBackground: Boolean = false
+    private var backgroundResumePositionMs: Long = 0L
+    @Volatile private var isEngineAlive: Boolean = true
     private var seekPreviewRequestVersion: Long = 0L
     private var lastMuteToggleAtMs: Long = 0L
 
@@ -239,6 +425,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private val progressiveSeekController = ProgressiveSeekController(scope = viewModelScope)
+    private var wasPlayingBeforeProgressiveSeek = false
 
     val isProgressiveSeekActive: StateFlow<Boolean> = progressiveSeekController.isActive
 
@@ -256,10 +443,103 @@ class PlayerViewModel @Inject constructor(
                 if (state == PlaybackState.ENDED && lastObservedPlaybackState != PlaybackState.ENDED) {
                     handlePlaybackEnded()
                 }
+                val previousState = lastObservedPlaybackState
                 lastObservedPlaybackState = state
+                if (state == PlaybackState.BUFFERING &&
+                    previousState == PlaybackState.IDLE &&
+                    currentContentType == ContentType.LIVE &&
+                    currentChannelIndex in channelList.indices
+                ) {
+                    scheduleZapBufferWatchdog(currentChannelIndex)
+                }
+                // VOD / series have no zap watchdog and no "previous channel"
+                // fallback, so a prepare that never leaves IDLE/BUFFERING would
+                // hang the loader forever. Arm a dedicated timeout that stops
+                // the engine and surfaces a retryable notice.
+                if (state == PlaybackState.BUFFERING &&
+                    previousState == PlaybackState.IDLE &&
+                    (currentContentType == ContentType.MOVIE ||
+                        currentContentType == ContentType.SERIES_EPISODE)
+                ) {
+                    scheduleVodPrepareWatchdog()
+                }
+                // Mid-stream stall (panel stopped feeding bytes without closing
+                // the socket): PlayerRetryPolicy never fires because the
+                // engine does not surface this as onPlayerError. Force-reconnect
+                // via playerEngine.restart() so the user does not have to back
+                // out and re-enter. Applies to BOTH live and VOD: VOD MP4s on
+                // Xtream panels stall the same way as live channels. Skip if a
+                // channel zap is in flight — that READY→BUFFERING is the zap
+                // itself, handled by scheduleZapBufferWatchdog from
+                // changeChannel().
+                if (state == PlaybackState.BUFFERING &&
+                    zapBufferWatchdogJob?.isActive != true &&
+                    midStreamStallWatchdogJob?.isActive != true
+                ) {
+                    // LIVE : armer sur TOUTE entrée en BUFFERING (pas seulement
+                    // READY→BUFFERING). Sans ça, un BUFFERING soutenu venu d'IDLE
+                    // — restart qui re-bufferise sans atteindre READY, ou démarrage
+                    // qui patine hors du chemin zap — n'avait AUCUN watchdog qui
+                    // décompte → spinner figé pour toujours. Le zap watchdog garde
+                    // la priorité (garde zap-active) pour la sélection initiale.
+                    // VOD : on garde uniquement READY→BUFFERING (l'IDLE→BUFFERING
+                    // initial est couvert par scheduleVodPrepareWatchdog).
+                    if (currentContentType == ContentType.LIVE) {
+                        val targetIndex = currentChannelIndex.takeIf { it in channelList.indices } ?: -1
+                        scheduleMidStreamStallWatchdog(targetIndex)
+                    } else if (previousState == PlaybackState.READY) {
+                        scheduleMidStreamStallWatchdog(-1)
+                    }
+                }
                 if (state == PlaybackState.READY) {
+                    if (sessionGate.onEngineReady(prepareRequestVersion)) {
+                        // First READY of this session: write the history row
+                        // immediately so Continue Watching points at THIS item
+                        // even if the user exits before the first 30 s tick.
+                        recordSessionStart()
+                        // A live channel that reaches READY through the tunnel
+                        // proves any on-demand block is selective (region-specific),
+                        // not a provider-wide outage — Class B ban evidence needs it.
+                        if (currentContentType == ContentType.LIVE) {
+                            vpnManager.reportLivePlaybackSuccess()
+                        }
+                    }
+                    // Playback started, so the panel did NOT refuse this
+                    // stream after all — a later unrelated error must not
+                    // surface the provider-refusal message.
+                    probeAdvisoryHttpCode = null
                     zapBufferWatchdogJob?.cancel()
+                    vodPrepareWatchdogJob?.cancel()
+                    midStreamStallWatchdogJob?.cancel()
+                    midStreamStallPolicy.onPlaybackRecovered()
                     dismissRecoveredNoticeIfPresent()
+                    // Arm the live "frozen frame" watchdog: a live channel that
+                    // is playing should keep advancing its position. A stale
+                    // requestVersion job (previous channel) self-exits on its
+                    // next tick, so re-arming here is safe.
+                    if (currentContentType == ContentType.LIVE) {
+                        startLiveProgressWatchdog()
+                        vodProgressWatchdogJob?.cancel()
+                        // Arm the opt-in inactivity guard (no-op unless enabled).
+                        scheduleInactivityWatchdog()
+                    } else {
+                        liveProgressWatchdogJob?.cancel()
+                        inactivityWatchdogJob?.cancel()
+                        // Filet de sécurité VOD : détecte une position figée alors
+                        // que la lecture tourne (cf. correctif moteur A) et
+                        // reconcilie/relance si jamais ça regèle.
+                        startVodProgressWatchdog()
+                    }
+                    if (pendingPrematureEndResumeMs > 0L &&
+                        pendingPrematureEndUrl.isNotEmpty() &&
+                        pendingPrematureEndUrl == currentStreamUrl
+                    ) {
+                        val resumeMs = pendingPrematureEndResumeMs
+                        pendingPrematureEndResumeMs = 0L
+                        pendingPrematureEndUrl = ""
+                        prematureEndRetryAttempt = 0
+                        playerEngine.seekTo(resumeMs)
+                    }
                     if (currentContentType == ContentType.LIVE) {
                         currentChannelFlow.value?.sanitizedForPlayer()?.let { channel ->
                             if (channel.errorCount > 0) {
@@ -319,6 +599,13 @@ class PlayerViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            preferencesRepository.playbackInactivityTimeoutSeconds.collect { seconds ->
+                inactivityTimeoutMs = seconds * 1000L
+                // Re-arm (or disarm) immediately when the setting changes.
+                scheduleInactivityWatchdog()
+            }
+        }
+        viewModelScope.launch {
             preferencesRepository.playerMediaSessionEnabled.collect(playerEngine::setMediaSessionEnabled)
         }
         viewModelScope.launch {
@@ -340,9 +627,58 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    // Tracks the playback session that already produced a diagnostic so a
+    // re-entered handlePlaybackError never double-logs the same failure.
+    private var lastDiagnosedSession: Long = -1L
+
+    /** Emit ONE clear diagnostic per session, only when recovery is exhausted. */
+    private fun reportTerminalPlaybackFailure(error: PlayerError) {
+        if (lastDiagnosedSession == prepareRequestVersion) return
+        lastDiagnosedSession = prepareRequestVersion
+        diagnosticReporter.reportPlaybackFailure(
+            error = error,
+            contentType = currentContentType.name,
+            title = currentTitle,
+            engine = (playerEngine as? com.streamvault.player.RoutingPlayerEngine)
+                ?.currentEnginePreference()?.name ?: "MEDIA3",
+        )
+        // Enforced on-demand 403: the pre-playback probe was refused 403 AND the
+        // engine's real attempt then also failed terminally, on a movie/series.
+        // This is region-ban evidence for the VPN health guard — but only if it
+        // happened THROUGH the tunnel (the guard re-checks handshake freshness).
+        if (probeAdvisoryHttpCode == 403 &&
+            (currentContentType == ContentType.MOVIE || currentContentType == ContentType.SERIES_EPISODE)
+        ) {
+            vpnManager.reportEnforcedOnDemand403(currentProviderId, currentContentId)
+        }
+    }
+
     private fun handlePlaybackError(error: PlayerError) {
+        // The engines are @Singletons: their error SharedFlow (replay=1) can
+        // replay the previous ViewModel's failure to this one at construction
+        // time. Until THIS ViewModel has started a session
+        // (beginPlaybackSession pre-increments, so the first session is 1),
+        // any error received here belongs to a dead session — ignore it.
+        if (prepareRequestVersion == 0L) {
+            android.util.Log.w(
+                "PlayerVM",
+                "Ignoring replayed pre-session player error: ${error.message}"
+            )
+            return
+        }
         val requestVersion = prepareRequestVersion
         val playbackUrl = currentPlaybackIdentityUrl()
+        // Always trace playback errors with their context — HTTP-code errors
+        // (401/403/404…) from the engines were previously only visible when
+        // they became terminal.
+        android.util.Log.w(
+            "PlayerVM",
+            "playback error [${error.javaClass.simpleName}] " +
+                "type=$currentContentType session=$requestVersion " +
+                "advisoryHttp=$probeAdvisoryHttpCode " +
+                "msg=${XtreamUrlFactory.sanitizeLogMessage(error.message)} " +
+                "url=${XtreamUrlFactory.sanitizeLogMessage(playbackUrl)}"
+        )
         recoveryJob?.cancel()
         if (error is PlayerError.DecoderError && !hasRetriedWithSoftwareDecoder) {
             if (!isActivePlaybackSession(requestVersion, playbackUrl)) return
@@ -360,6 +696,12 @@ class PlayerViewModel @Inject constructor(
             )
             return
         }
+        if ((error is PlayerError.SourceError || error is PlayerError.DecoderError) &&
+            !hasRetriedWithAlternateEngine &&
+            tryAlternateEngineInternal(error)
+        ) {
+            return
+        }
         recoveryJob = viewModelScope.launch {
             if (!isActivePlaybackSession(requestVersion, playbackUrl)) return@launch
             if (tryRefreshXtreamPlaybackAfterAuthError(error, requestVersion, playbackUrl)) {
@@ -371,8 +713,13 @@ class PlayerViewModel @Inject constructor(
 
             if (currentContentType != ContentType.LIVE || channel == null) {
                 if (!isActivePlaybackSession(requestVersion, playbackUrl)) return@launch
+                reportTerminalPlaybackFailure(error)
                 showPlayerNotice(
-                    message = resolvePlaybackErrorMessage(error),
+                    // When the pre-playback probe was already refused with
+                    // 401/403 (advisory attempt), the provider refusal is the
+                    // real story — not the engine's generic failure.
+                    message = probeAdvisoryHttpCode?.let { probeFailureMessage(it) }
+                        ?: resolvePlaybackErrorMessage(error),
                     recoveryType = recoveryType,
                     actions = buildRecoveryActions(recoveryType)
                 )
@@ -402,6 +749,7 @@ class PlayerViewModel @Inject constructor(
                     return@launch
                 }
 
+                reportTerminalPlaybackFailure(error)
                 showPlayerNotice(
                     message = resolveCatchUpFailureMessage(
                         channel = channel,
@@ -440,6 +788,7 @@ class PlayerViewModel @Inject constructor(
                 return@launch
             }
 
+            reportTerminalPlaybackFailure(error)
             if (fallbackToPreviousChannel("Recovery path exhausted for ${recoveryType.name.lowercase()}")) {
                 appendRecoveryAction("Returned to last channel")
                 showPlayerNotice(
@@ -466,11 +815,6 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    private data class PlaybackProbeFailure(
-        val message: String,
-        val recoveryType: PlayerRecoveryType
-    )
-    
     val playerError: StateFlow<PlayerError?> by lazy(LazyThreadSafetyMode.NONE) {
         playerEngine.error
             .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), null)
@@ -526,66 +870,34 @@ class PlayerViewModel @Inject constructor(
     fun seekTo(positionMs: Long) {
         playerEngine.seekTo(positionMs)
         clearSeekPreview()
+        schedulePostSeekPersist()
     }
 
-    fun setScrubbingMode(enabled: Boolean) {
-        playerEngine.setScrubbingMode(enabled)
-        if (!enabled) {
-            clearSeekPreview()
+    /**
+     * Event-based save shortly after the last seek of a burst (D-pad scrubbing
+     * fires many seekTo in a row — debounce instead of one write per press).
+     */
+    private fun schedulePostSeekPersist() {
+        postSeekPersistJob?.cancel()
+        postSeekPersistJob = viewModelScope.launch {
+            delay(2_000)
+            persistPlaybackProgress()
         }
     }
-
-    fun updateSeekPreview(positionMs: Long?) {
-        if (positionMs == null || currentContentType == ContentType.LIVE) {
-            clearSeekPreview()
-            return
-        }
-
-        val previewPositionMs = positionMs.coerceAtLeast(0L)
-        val previewUrl = currentResolvedPlaybackUrl.ifBlank { currentStreamUrl }
-        val canExtractFrame = previewUrl.isNotBlank() && seekThumbnailProvider.supportsFrameExtraction(previewUrl)
-
-        _seekPreview.update { current ->
-            current.copy(
-                visible = true,
-                positionMs = previewPositionMs,
-                artworkUrl = currentArtworkUrl,
-                title = currentTitle,
-                isLoading = canExtractFrame,
-                frameBitmap = if (canExtractFrame) current.frameBitmap else null
-            )
-        }
-
-        seekPreviewJob?.cancel()
-        if (!canExtractFrame) {
-            return
-        }
-
-        val requestVersion = ++seekPreviewRequestVersion
-        seekPreviewJob = viewModelScope.launch {
-            delay(120)
-            val bitmap = seekThumbnailProvider.loadFrame(previewUrl, previewPositionMs)
-            if (requestVersion != seekPreviewRequestVersion) return@launch
-
-            _seekPreview.update { current ->
-                if (!current.visible || current.positionMs != previewPositionMs) {
-                    current
-                } else {
-                    current.copy(
-                        frameBitmap = bitmap,
-                        artworkUrl = currentArtworkUrl,
-                        title = currentTitle,
-                        isLoading = false
-                    )
-                }
-            }
-        }
-    }
+    // Note: setScrubbingMode and updateSeekPreview were removed when the
+    // VOD controls slider became non-focusable. Channel-zap optimisation
+    // still calls playerEngine.setScrubbingMode directly from PlayerZapActions.
 
     internal fun beginPlaybackSession(): Long {
         recoveryJob?.cancel()
         hasRetriedXtreamAuthRefresh = false
-        return ++prepareRequestVersion
+        probeAdvisoryHttpCode = null
+        val version = ++prepareRequestVersion
+        // Disarm history writes until the engine is prepared + READY for this
+        // version. Same-content retries (engine fallback, alternate stream)
+        // keep their identity and re-arm at the next READY.
+        sessionGate.onNewSession(version)
+        return version
     }
 
     private fun clearSeriesEpisodeContext() {
@@ -641,6 +953,14 @@ class PlayerViewModel @Inject constructor(
                     _currentEpisode.value = resolvedEpisode
                     _nextEpisode.value = resolvedEpisode?.let { findNextEpisode(series, it) }
                     currentSeriesId = seriesId
+                    // Now that we know the upstream Xtream series_id, report
+                    // it to the FuzionTV admin so the activity panel shows
+                    // the right series name (provider_inventory_series is
+                    // keyed by xtream series_id, not by the local Room id).
+                    val xtreamSid = series.seriesId.takeIf { it > 0L } ?: seriesId
+                    if (xtreamSid > 0L) {
+                        playbackReporter.start("series", xtreamSid)
+                    }
                     currentSeasonNumber = resolvedEpisode?.seasonNumber ?: seasonNumber
                     currentEpisodeNumber = resolvedEpisode?.episodeNumber ?: episodeNumber
                     if (resolvedEpisode != null && currentContentType == ContentType.SERIES_EPISODE) {
@@ -651,6 +971,13 @@ class PlayerViewModel @Inject constructor(
                         currentTitle = buildEpisodePlaybackTitle(resolvedEpisode)
                         playbackTitleFlow.value = currentTitle
                     }
+                    sessionGate.enrich(
+                        requestVersion = requestVersion,
+                        seriesId = seriesId,
+                        seasonNumber = currentSeasonNumber,
+                        episodeNumber = currentEpisodeNumber,
+                        title = currentTitle.takeIf { it.isNotBlank() }
+                    )
                 }
 
                 else -> {
@@ -661,37 +988,48 @@ class PlayerViewModel @Inject constructor(
                     currentSeriesId = seriesId
                     currentSeasonNumber = seasonNumber
                     currentEpisodeNumber = episodeNumber
+                    sessionGate.enrich(
+                        requestVersion = requestVersion,
+                        seriesId = seriesId,
+                        seasonNumber = seasonNumber,
+                        episodeNumber = episodeNumber,
+                        title = null
+                    )
                 }
             }
         }
     }
 
     private fun buildPlaybackHistorySnapshot(
+        session: PlaybackSessionGate.Snapshot,
         positionMs: Long,
         durationMs: Long
     ): PlaybackHistory? {
-        if (positionMs < 0 || durationMs <= 0 || currentContentId == -1L || currentProviderId == -1L) {
+        if (positionMs < 0 || durationMs <= 0 || session.contentId == -1L || session.providerId == -1L) {
             return null
         }
         return PlaybackHistory(
-            contentId = currentContentId,
-            contentType = currentContentType,
-            providerId = currentProviderId,
-            title = currentTitle,
-            posterUrl = currentArtworkUrl,
-            streamUrl = currentStreamUrl,
+            contentId = session.contentId,
+            contentType = session.contentType,
+            providerId = session.providerId,
+            title = session.title,
+            posterUrl = session.artworkUrl,
+            streamUrl = session.streamUrl,
             resumePositionMs = positionMs,
             totalDurationMs = durationMs,
             lastWatchedAt = System.currentTimeMillis(),
-            seriesId = currentSeriesId,
-            seasonNumber = _currentEpisode.value?.seasonNumber ?: currentSeasonNumber,
-            episodeNumber = _currentEpisode.value?.episodeNumber ?: currentEpisodeNumber
+            seriesId = session.seriesId,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber
         )
     }
 
     private suspend fun persistPlaybackCompletion() {
+        val session = sessionGate.activeSnapshotOrNull() ?: return
+        if (session.contentType == ContentType.LIVE) return
         val durationMs = playerEngine.duration.value
         val completedHistory = buildPlaybackHistorySnapshot(
+            session = session,
             positionMs = durationMs.coerceAtLeast(playerEngine.currentPosition.value),
             durationMs = durationMs
         ) ?: return
@@ -703,13 +1041,110 @@ class PlayerViewModel @Inject constructor(
         launcherRecommendationsManager.refreshRecommendations()
     }
 
+    /**
+     * One-shot write at the first READY of a VOD/episode session so the item
+     * exists in playback_history right away. Without it, "next episode" + an
+     * exit within 30 s left no row for the new episode and Continue Watching
+     * fell back to the series' previous incomplete entry — often episode 1.
+     */
+    private fun recordSessionStart() {
+        val session = sessionGate.activeSnapshotOrNull() ?: return
+        if (session.contentType == ContentType.LIVE) return
+        if (session.contentId == -1L || session.providerId == -1L) return
+        val history = PlaybackHistory(
+            contentId = session.contentId,
+            contentType = session.contentType,
+            providerId = session.providerId,
+            title = session.title,
+            posterUrl = session.artworkUrl,
+            streamUrl = session.streamUrl,
+            resumePositionMs = playerEngine.currentPosition.value.coerceAtLeast(0L),
+            totalDurationMs = playerEngine.duration.value.coerceAtLeast(0L),
+            lastWatchedAt = System.currentTimeMillis(),
+            seriesId = session.seriesId,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber
+        )
+        // Application scope: this row is what Continue Watching points at —
+        // it must survive an exit that lands microseconds after the first
+        // READY (viewModelScope would cancel the write).
+        applicationScope.launch {
+            logRepositoryFailure(
+                operation = "Record playback session start",
+                result = playbackHistoryRepository.recordPlayback(history, incrementWatchCount = false)
+            )
+        }
+    }
+
     private fun handlePlaybackEnded() {
         if (currentContentType == ContentType.LIVE) return
+
+        val position = playerEngine.currentPosition.value
+        val duration = playerEngine.duration.value
+        // Garde-fou: certains streams Xtream ferment la connexion HTTP en plein
+        // milieu, et certains MP4/MKV avec moov/stco tronqués déclenchent un
+        // EOF anticipé. Si on n'a pas atteint le seuil, on traite ENDED comme
+        // une erreur récupérable au lieu d'enchaîner l'épisode suivant.
+        if (duration > 0L && position < duration * PREMATURE_END_THRESHOLD_PERCENT / 100L) {
+            handlePrematureEnd(position)
+            return
+        }
+
+        prematureEndRetryAttempt = 0
+        pendingPrematureEndResumeMs = 0L
+        pendingPrematureEndUrl = ""
         viewModelScope.launch {
             persistPlaybackCompletion()
             if (currentContentType == ContentType.SERIES_EPISODE) {
                 _nextEpisode.value?.let { episode ->
                     playEpisode(episode, showResumePrompt = false)
+                }
+            }
+        }
+    }
+
+    private fun handlePrematureEnd(positionMs: Long) {
+        prematureEndRetryJob?.cancel()
+        val attempt = prematureEndRetryAttempt + 1
+        android.util.Log.w(
+            "PlayerVM",
+            "Premature ENDED at ${positionMs}ms / ${playerEngine.duration.value}ms " +
+                "(attempt $attempt/$PREMATURE_END_MAX_RETRIES)"
+        )
+
+        if (attempt > PREMATURE_END_MAX_RETRIES) {
+            prematureEndRetryAttempt = 0
+            pendingPrematureEndResumeMs = 0L
+            pendingPrematureEndUrl = ""
+            showPlayerNotice(
+                message = "Lecture interrompue. Réessayez plus tard.",
+                recoveryType = PlayerRecoveryType.NETWORK,
+                actions = buildRecoveryActions(PlayerRecoveryType.NETWORK)
+            )
+            return
+        }
+
+        prematureEndRetryAttempt = attempt
+        pendingPrematureEndResumeMs = positionMs
+        pendingPrematureEndUrl = currentStreamUrl
+
+        showPlayerNotice(
+            message = "Lecture interrompue, reconnexion ($attempt/$PREMATURE_END_MAX_RETRIES)…",
+            recoveryType = PlayerRecoveryType.NETWORK,
+            durationMs = PREMATURE_END_RETRY_BACKOFF_MS + 3_000L,
+            isRetryNotice = true
+        )
+
+        prematureEndRetryJob = viewModelScope.launch {
+            persistPlaybackProgress()
+            delay(PREMATURE_END_RETRY_BACKOFF_MS)
+            val episode = _currentEpisode.value
+            if (episode != null && currentContentType == ContentType.SERIES_EPISODE) {
+                playEpisode(episode, showResumePrompt = false)
+            } else {
+                val streamUrl = currentStreamUrl
+                if (streamUrl.isNotBlank()) {
+                    retryStream(streamUrl, null)
                 }
             }
         }
@@ -765,7 +1200,8 @@ class PlayerViewModel @Inject constructor(
 
     internal suspend fun preparePlayer(
         streamInfo: com.streamvault.domain.model.StreamInfo,
-        requestVersion: Long
+        requestVersion: Long,
+        skipEnginePrepare: Boolean = false
     ): Boolean {
         if (!isActivePlaybackSession(requestVersion)) return false
 
@@ -785,15 +1221,16 @@ class PlayerViewModel @Inject constructor(
             return false
         }
 
-        probePlaybackUrl(streamInfo.url)?.let { failure ->
-            if (!isActivePlaybackSession(requestVersion)) return false
-            setLastFailureReason(failure.message)
-            showPlayerNotice(
-                message = failure.message,
-                recoveryType = failure.recoveryType,
-                actions = buildRecoveryActions(failure.recoveryType)
-            )
-            return false
+        var effectiveStreamInfo = streamInfo
+        if (!skipEnginePrepare) {
+            // Probe + container-extension fallback. Null = terminal failure
+            // (notice shown + diagnostic reported inside). A non-null URL may
+            // differ from streamInfo.url when an alternate extension won.
+            val probedUrl = probeAndResolvePlaybackUrl(streamInfo, requestVersion)
+                ?: return false
+            if (probedUrl != streamInfo.url) {
+                effectiveStreamInfo = streamInfo.copy(url = probedUrl)
+            }
         }
         playerEngine.setMuted(preferencesRepository.playerMuted.first())
         playerEngine.setPlaybackSpeed(
@@ -814,40 +1251,258 @@ class PlayerViewModel @Inject constructor(
             ethernetMaxHeight = preferencesRepository.playerEthernetMaxVideoHeight.first()
         )
         if (!isActivePlaybackSession(requestVersion)) return false
-        currentResolvedPlaybackUrl = streamInfo.url
-        playerEngine.prepare(streamInfo)
+        currentResolvedPlaybackUrl = effectiveStreamInfo.url
+        if (!skipEnginePrepare) {
+            playerEngine.prepare(effectiveStreamInfo)
+        }
+        // From here on, READY events belong to this session's media — the
+        // gate may arm on the next READY (a stale READY from the previous
+        // media could not, because this mark was missing for its version).
+        sessionGate.onEnginePrepared(requestVersion)
         return true
     }
 
-    private suspend fun probePlaybackUrl(url: String): PlaybackProbeFailure? {
-        if (!shouldProbePlaybackUrl(url)) return null
+    /**
+     * Probes the playback URL before handing it to the engine.
+     * Returns the URL to play — possibly rewritten with an alternate
+     * container extension that the panel accepted — or null when the failure
+     * is terminal (user notice shown and diagnostic reported here).
+     */
+    private suspend fun probeAndResolvePlaybackUrl(
+        streamInfo: com.streamvault.domain.model.StreamInfo,
+        requestVersion: Long
+    ): String? {
+        // VOD/séries seulement : quand le mode de l'appareil exige le VPN et
+        // que le tunnel n'est pas encore vérifié, attendre AVANT de sonder —
+        // sinon la sonde et le moteur partent sur l'IP résidentielle bloquée.
+        // Le LIVE n'est jamais gaté (il fonctionne sans VPN en mode auto ; la
+        // latence de zapping est sacrée).
+        if (!awaitVpnBeforeOnDemand(requestVersion)) return null
 
-        return runCatching {
-            withContext(Dispatchers.IO) {
-                val request = Request.Builder()
-                    .url(url)
-                    .get()
-                    .header("Range", "bytes=0-0")
-                    .build()
-                okHttpClient.newCall(request).execute().use { response ->
-                    when (response.code) {
-                        401, 403 -> PlaybackProbeFailure(
-                            message = "This Xtream stream was rejected by the provider (${response.code} Unauthorized/Forbidden).",
-                            recoveryType = PlayerRecoveryType.SOURCE
-                        )
-                        404 -> PlaybackProbeFailure(
-                            message = "This Xtream stream is unavailable on the provider right now (404).",
-                            recoveryType = PlayerRecoveryType.SOURCE
-                        )
-                        in 500..599 -> PlaybackProbeFailure(
-                            message = "The provider returned a server error for this stream (${response.code}).",
-                            recoveryType = PlayerRecoveryType.NETWORK
-                        )
-                        else -> null
+        if (!shouldProbePlaybackUrl(streamInfo.url)) return streamInfo.url
+
+        val token = XtreamUrlFactory.parsePlaybackUrl(streamInfo.url)
+        val seriesKey = currentSeriesId.takeIf { token?.kind == XtreamStreamKind.SERIES }
+        val outcome = xtreamPlaybackProber.probe(
+            url = streamInfo.url,
+            kind = token?.kind,
+            preferredExtension = extensionMemory.preferred(currentProviderId, seriesKey),
+            isActive = { isActivePlaybackSession(requestVersion) }
+        )
+        if (!isActivePlaybackSession(requestVersion)) return null
+
+        return when (outcome) {
+            is XtreamPlaybackProber.Outcome.Inconclusive -> streamInfo.url
+            is XtreamPlaybackProber.Outcome.Playable -> {
+                outcome.winningExtension?.let { winner ->
+                    extensionMemory.remember(currentProviderId, seriesKey, winner)
+                    appendRecoveryAction(
+                        "Extension .$winner substituée après HTTP ${outcome.initialCode}"
+                    )
+                    reportProbeDiagnostic(
+                        httpCode = outcome.initialCode ?: 0,
+                        url = streamInfo.url,
+                        requestedExtension = token?.containerExtension,
+                        triedExtensions = listOfNotNull(token?.containerExtension, winner),
+                        recoveredExtension = winner
+                    )
+                }
+                outcome.url
+            }
+            is XtreamPlaybackProber.Outcome.Rejected -> {
+                reportProbeDiagnostic(
+                    httpCode = outcome.httpCode,
+                    url = streamInfo.url,
+                    requestedExtension = token?.containerExtension,
+                    triedExtensions = outcome.triedExtensions,
+                    recoveredExtension = null
+                )
+                // A 403 on LIVE through the tunnel means the provider is refusing
+                // everything (provider-wide), not banning this region for VOD —
+                // let the VPN guard wipe any region-ban evidence it's gathering.
+                if (outcome.httpCode == 403 && currentContentType == ContentType.LIVE) {
+                    vpnManager.reportLive403()
+                }
+                // A 403 on an on-demand stream is the provider's IP block —
+                // kick the VPN, wait for the tunnel, then auto-retry once
+                // instead of letting the engine burn its attempt on the
+                // blocked IP. Returns true when it took ownership of the flow.
+                if (awaitVpnAndAutoRetry(outcome.httpCode, requestVersion)) {
+                    return null
+                }
+                if (outcome.advisory) {
+                    // 401/403 on a series/movie: the probe's HTTP client is
+                    // not the engine's (LibVLC sends a different User-Agent) —
+                    // give the engine its one real attempt. The terminal
+                    // error paths swap in the provider-refusal message.
+                    probeAdvisoryHttpCode = outcome.httpCode
+                    appendRecoveryAction(
+                        "Sonde refusée (HTTP ${outcome.httpCode}) — tentative moteur quand même"
+                    )
+                    streamInfo.url
+                } else {
+                    val message = probeFailureMessage(outcome.httpCode)
+                    setLastFailureReason(message)
+                    val recoveryType = if (outcome.httpCode in 500..599) {
+                        PlayerRecoveryType.NETWORK
+                    } else {
+                        PlayerRecoveryType.SOURCE
                     }
+                    showPlayerNotice(
+                        message = message,
+                        recoveryType = recoveryType,
+                        actions = buildRecoveryActions(recoveryType)
+                    )
+                    null
                 }
             }
-        }.getOrNull()
+        }
+    }
+
+    /**
+     * Gate pré-sonde pour la VOD/séries : si le mode de l'appareil exige le
+     * VPN et que le tunnel n'est pas vérifié, attend (notice à l'écran) puis
+     * poursuit sur tunnel prêt. @return false = flux interrompu (notice
+     * terminale affichée, ou session zappée pendant l'attente).
+     */
+    private suspend fun awaitVpnBeforeOnDemand(requestVersion: Long): Boolean {
+        if (currentContentType != ContentType.SERIES_EPISODE &&
+            currentContentType != ContentType.MOVIE
+        ) return true
+        val snapshot = runCatching {
+            vpnManager.awaitVpnReadyIfRequired(timeoutMs = 0)
+        }.getOrDefault(com.streamvault.app.vpn.VpnGateResult.NOT_REQUIRED)
+        if (snapshot.allowsPanelCalls()) return true
+
+        showPlayerNotice(
+            message = VPN_WAIT_NOTICE,
+            recoveryType = PlayerRecoveryType.SOURCE,
+            durationMs = VPN_PLAYBACK_GATE_MS + 5_000L,
+        )
+        val result = runCatching {
+            vpnManager.awaitVpnReadyIfRequired(VPN_PLAYBACK_GATE_MS)
+        }.getOrDefault(com.streamvault.app.vpn.VpnGateResult.FAILED)
+        if (!isActivePlaybackSession(requestVersion)) return false
+        if (result.allowsPanelCalls()) {
+            appendRecoveryAction("VPN vérifié avant lecture on-demand")
+            dismissPlayerNotice()
+            return true
+        }
+        val message = "Le tunnel VPN sécurisé n'a pas pu être établi ($result). " +
+            "Réessayez, ou contactez votre revendeur si le problème persiste."
+        setLastFailureReason(message)
+        showPlayerNotice(
+            message = message,
+            recoveryType = PlayerRecoveryType.SOURCE,
+            actions = buildRecoveryActions(PlayerRecoveryType.SOURCE)
+        )
+        return false
+    }
+
+    /**
+     * 403 sur un film/épisode = blocage de l'IP de sortie par les edges
+     * on-demand du fournisseur (le live n'est pas touché). Active le VPN,
+     * attend que le tunnel soit vérifié, puis relance la lecture UNE fois —
+     * au lieu de laisser le moteur brûler sa tentative sur l'IP bloquée puis
+     * d'exiger un RETRY manuel. @return true quand cette fonction a pris la
+     * main sur le flux (l'appelant doit retourner null sans autre notice).
+     */
+    private suspend fun awaitVpnAndAutoRetry(httpCode: Int, requestVersion: Long): Boolean {
+        if (httpCode != 403) return false
+        if (currentContentType != ContentType.SERIES_EPISODE &&
+            currentContentType != ContentType.MOVIE
+        ) return false
+        val activated = runCatching { vpnManager.onOnDemandBlocked() }
+            .onFailure { android.util.Log.w("PlayerVM", "VPN auto-activate failed: ${it.message}") }
+            .getOrDefault(false)
+        if (!activated) return false // mode off : comportement historique
+        // Tunnel déjà vérifié ⇒ le 403 est passé À TRAVERS le tunnel : c'est le
+        // territoire du guard région (enforced403), pas de l'activation — on
+        // laisse la tentative advisory du moteur suivre son cours.
+        val snapshot = runCatching {
+            vpnManager.awaitVpnReadyIfRequired(timeoutMs = 0)
+        }.getOrDefault(com.streamvault.app.vpn.VpnGateResult.FAILED)
+        if (snapshot == com.streamvault.app.vpn.VpnGateResult.READY) return false
+        // Anti-boucle : une seule relance automatique par fenêtre de cooldown.
+        val now = System.currentTimeMillis()
+        if (now - lastVpnAutoRetryAtMs < VPN_AUTO_RETRY_COOLDOWN_MS) return false
+        lastVpnAutoRetryAtMs = now
+
+        showPlayerNotice(
+            message = VPN_WAIT_NOTICE,
+            recoveryType = PlayerRecoveryType.SOURCE,
+            durationMs = VPN_PLAYBACK_GATE_MS + 5_000L,
+        )
+        val result = runCatching {
+            vpnManager.awaitVpnReadyIfRequired(VPN_PLAYBACK_GATE_MS)
+        }.getOrDefault(com.streamvault.app.vpn.VpnGateResult.FAILED)
+        if (!isActivePlaybackSession(requestVersion)) return true // zap/BACK pendant l'attente
+        if (result == com.streamvault.app.vpn.VpnGateResult.READY) {
+            appendRecoveryAction("VPN vérifié — relance automatique de la lecture")
+            dismissPlayerNotice()
+            retryStream(currentStreamUrl, currentChannelFlow.value?.epgChannelId)
+        } else {
+            val message = probeFailureMessage(httpCode)
+            setLastFailureReason(message)
+            showPlayerNotice(
+                message = message,
+                recoveryType = PlayerRecoveryType.SOURCE,
+                actions = buildRecoveryActions(PlayerRecoveryType.SOURCE)
+            )
+        }
+        return true
+    }
+
+    /**
+     * One probe-failure diagnostic per session (shares [lastDiagnosedSession]
+     * with [reportTerminalPlaybackFailure], so an advisory engine attempt
+     * never double-reports), plus one per content+code across sessions (the
+     * RETRY button starts a new session on every click).
+     */
+    private fun reportProbeDiagnostic(
+        httpCode: Int,
+        url: String,
+        requestedExtension: String?,
+        triedExtensions: List<String>,
+        recoveredExtension: String?
+    ) {
+        val key = Triple(currentProviderId, currentContentId, httpCode)
+        if (recoveredExtension == null) {
+            if (lastDiagnosedSession == prepareRequestVersion) return
+            if (key == lastProbeDiagKey) return
+            lastDiagnosedSession = prepareRequestVersion
+        }
+        lastProbeDiagKey = key
+        diagnosticReporter.reportStreamProbeRejected(
+            httpCode = httpCode,
+            contentType = currentContentType.name,
+            title = currentTitle,
+            requestedExtension = requestedExtension,
+            triedExtensions = triedExtensions,
+            recoveredExtension = recoveredExtension,
+            host = XtreamUrlFactory.maskHost(url)
+        )
+    }
+
+    /** French, actionable message for a terminal probe rejection. */
+    private fun probeFailureMessage(httpCode: Int): String = when {
+        httpCode == 401 || httpCode == 403 -> when (currentContentType) {
+            ContentType.SERIES_EPISODE ->
+                "Le fournisseur refuse l'accès aux séries sur cette ligne (HTTP $httpCode). " +
+                    "Si le direct et les films fonctionnent, votre abonnement n'inclut " +
+                    "probablement pas les séries — contactez votre fournisseur."
+            ContentType.MOVIE ->
+                "Le fournisseur refuse l'accès à ce film sur cette ligne (HTTP $httpCode). " +
+                    "Contactez votre fournisseur si le problème touche tous les films."
+            else ->
+                "Ce flux a été refusé par le fournisseur (HTTP $httpCode)."
+        }
+        httpCode == 404 ->
+            "Ce contenu est introuvable chez le fournisseur (HTTP 404), " +
+                "y compris sous les formats alternatifs."
+        else ->
+            "Le serveur du fournisseur est en erreur pour ce flux (HTTP $httpCode). " +
+                "Réessayez plus tard."
     }
 
     private suspend fun shouldProbePlaybackUrl(url: String): Boolean {
@@ -887,6 +1542,20 @@ class PlayerViewModel @Inject constructor(
         val shouldReloadPlaylist = categoryId != -1L &&
             (categoryId != previousCategoryId || providerId != previousProviderId)
         clearSeekPreview()
+        // Wipe the now-playing context SYNCHRONOUSLY before any async loader so
+        // the overlay never keeps showing the previously played item while the
+        // new one's metadata (channel, EPG, series/episode) is still resolving.
+        // currentChannelFlow is repopulated below for LIVE only (async); the
+        // EPG flows by the EPG loader; the series/episode flows by
+        // loadSeriesEpisodeContext. clearSeriesEpisodeContext() runs here
+        // UNCONDITIONALLY (before currentSeriesId is re-set) — without this an
+        // episode→episode switch never cleared the previous episode.
+        currentChannelFlow.value = null
+        _currentProgram.value = null
+        _nextProgram.value = null
+        _upcomingPrograms.value = emptyList()
+        _programHistory.value = emptyList()
+        clearSeriesEpisodeContext()
         currentResolvedPlaybackUrl = ""
         currentStreamUrl = streamUrl
         currentContentId = internalChannelId
@@ -898,6 +1567,21 @@ class PlayerViewModel @Inject constructor(
         currentSeriesId = seriesId?.takeIf { it > 0L }
         currentSeasonNumber = seasonNumber
         currentEpisodeNumber = episodeNumber
+        sessionGate.begin(
+            PlaybackSessionGate.Snapshot(
+                requestVersion = requestVersion,
+                contentId = internalChannelId,
+                contentType = currentContentType,
+                providerId = providerId,
+                seriesId = currentSeriesId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                title = title,
+                artworkUrl = artworkUrl,
+                streamUrl = streamUrl
+            )
+        )
+        lastFinalPersistKey = null
         currentStreamClassLabel = if (hasArchiveRequest) "Catch-up" else "Primary"
         if (!hasArchiveRequest) {
             pendingCatchUpUrls = emptyList()
@@ -920,11 +1604,32 @@ class PlayerViewModel @Inject constructor(
             recentChannelsFlow.value = emptyList()
             lastVisitedCategoryJob?.cancel()
             _lastVisitedCategory.value = null
+        } else if (providerId > 0L && internalChannelId > 0L) {
+            // Persist the active LIVE channel so the next app launch can
+            // resume it (and zap-last works after a cold start, before any
+            // in-session zap has populated previousChannelIndex).
+            viewModelScope.launch {
+                preferencesRepository.setLastLiveChannelId(providerId, internalChannelId)
+            }
         }
         hasRetriedWithSoftwareDecoder = false
+        hasRetriedWithAlternateEngine = false
         playerEngine.setDecoderMode(preferredDecoderMode)
         updateDecoderMode(preferredDecoderMode)
         updateStreamClass(currentStreamClassLabel)
+
+        // Report current playback to the FuzionTV admin (best-effort).
+        // The Xtream upstream stream_id is the LAST numeric segment of the
+        // playback URL (it's NOT internalChannelId, which is the Room PK
+        // auto-generated locally). For SERIES_EPISODE we defer the report
+        // to loadSeriesEpisodeContext once the upstream Series.seriesId is
+        // resolved — the episode_id from the URL would point to the wrong
+        // row in provider_inventory_series (which is keyed by series_id).
+        val sidFromUrl = Regex("""/(\d+)(?:\.[A-Za-z0-9]+)?(?:\?|$)""")
+            .find(streamUrl)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        if (currentContentType != ContentType.SERIES_EPISODE && sidFromUrl > 0L) {
+            playbackReporter.start(currentContentType.name, sidFromUrl)
+        }
         
         // Reset tried streams for manual switch
         triedAlternativeStreams.clear()
@@ -941,7 +1646,12 @@ class PlayerViewModel @Inject constructor(
                     showPlayerNotice(message = "No playable stream URL was available.", recoveryType = PlayerRecoveryType.SOURCE)
                     return@launch
                 }
-                if (!preparePlayer(streamInfo, requestVersion)) return@launch
+                // If the engine was adopted from the live preview and still
+                // points at the same channel, skip the network probe + ExoPlayer
+                // prepare — the stream is already flowing. Mismatch falls back
+                // to a regular prepare on the adopted engine.
+                val adoptedMatch = consumeAdoptionMatch(internalChannelId, providerId)
+                if (!preparePlayer(streamInfo, requestVersion, skipEnginePrepare = adoptedMatch)) return@launch
             }
         }
         
@@ -1122,14 +1832,52 @@ class PlayerViewModel @Inject constructor(
     }
 
     private suspend fun persistPlaybackProgress(refreshShelves: Boolean = false) {
+        // Capture session + position synchronously, before any suspension:
+        // the gate guarantees the position belongs to this snapshot's media.
+        val session = sessionGate.activeSnapshotOrNull() ?: return
+        if (session.contentType == ContentType.LIVE) return
         val pos = playerEngine.currentPosition.value
         val dur = playerEngine.duration.value
 
         if (pos > 0 && dur > 0) {
-            val history = buildPlaybackHistorySnapshot(pos, dur) ?: return
+            val history = buildPlaybackHistorySnapshot(session, pos, dur) ?: return
+            // syncDenormalized on every tick (single-row UPDATE, RAM-neutral)
+            // so the series screen's episode progress stays fresh during the
+            // session; refreshShelves stays reserved for the costly watch-next
+            // / launcher refreshes.
             logRepositoryFailure(
                 operation = "Persist playback resume position",
-                result = playbackHistoryRepository.updateResumePosition(history, syncDenormalized = refreshShelves)
+                result = playbackHistoryRepository.updateResumePosition(history, syncDenormalized = true)
+            )
+            if (refreshShelves) {
+                watchNextManager.refreshWatchNext()
+                launcherRecommendationsManager.refreshRecommendations()
+            }
+        }
+    }
+
+    /**
+     * Final save when the session is about to lose its ViewModel (player
+     * screen disposed, app backgrounded, onCleared). Captures everything
+     * synchronously on the caller thread, then writes on [applicationScope]:
+     * a viewModelScope.launch here never executes from onCleared() (the scope
+     * is already cancelled) — the historical reason exits never saved — and a
+     * runBlocking on Main would be an ANR risk on the 2 GB box.
+     */
+    private fun persistFinalProgress(refreshShelves: Boolean = true) {
+        val session = sessionGate.activeSnapshotOrNull() ?: return
+        if (session.contentType == ContentType.LIVE) return
+        val pos = playerEngine.currentPosition.value
+        val dur = playerEngine.duration.value
+        if (pos <= 0 || dur <= 0) return
+        val key = session.requestVersion to pos
+        if (key == lastFinalPersistKey) return
+        lastFinalPersistKey = key
+        val history = buildPlaybackHistorySnapshot(session, pos, dur) ?: return
+        applicationScope.launch {
+            logRepositoryFailure(
+                operation = "Persist final playback position",
+                result = playbackHistoryRepository.updateResumePosition(history, syncDenormalized = true)
             )
             if (refreshShelves) {
                 watchNextManager.refreshWatchNext()
@@ -1144,31 +1892,119 @@ class PlayerViewModel @Inject constructor(
         shouldResumeAfterForeground = playerEngine.isPlaying.value
         if (shouldResumeAfterForeground) {
             playerEngine.pause()
+            // After a short grace, fully stop the engine to CLOSE the upstream
+            // socket (frees the provider line) if still backgrounded. A quick
+            // app switch (back within the grace) stays merely paused and resumes
+            // instantly with no re-buffer.
+            backgroundStopJob?.cancel()
+            backgroundStopJob = viewModelScope.launch {
+                delay(BACKGROUND_STOP_GRACE_MS)
+                // Bail if the engine was released (back pressed) or we returned
+                // to foreground in the meantime.
+                if (!isEngineAlive || isAppInForeground) return@launch
+                // Capture VOD position BEFORE stop() — currentPosition resets to
+                // 0 once the engine is stopped. Live ignores position (live-edge).
+                backgroundResumePositionMs =
+                    if (currentContentType == ContentType.LIVE) 0L
+                    else playerEngine.currentPosition.value.coerceAtLeast(0L)
+                playerEngine.stopForBackground()
+                evictPlaybackPoolQuietly()
+                stoppedInBackground = true
+            }
         }
-        if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
-        }
+        // Application scope: the process can be killed right after ON_STOP on
+        // the 2 GB box — a viewModelScope coroutine may never get to run.
+        persistFinalProgress(refreshShelves = true)
     }
 
     fun onAppForegrounded() {
         if (isAppInForeground) return
         isAppInForeground = true
-        if (shouldResumeAfterForeground && !_resumePrompt.value.show) {
+        backgroundStopJob?.cancel()
+        backgroundStopJob = null
+        if (stoppedInBackground) {
+            // We closed the connection while backgrounded — re-prepare the same
+            // stream. restart() reattaches live to the live-edge; for VOD we
+            // re-seek to the captured position (restart() can't read it post-stop).
+            stoppedInBackground = false
+            playerEngine.restart()
+            if (currentContentType != ContentType.LIVE && backgroundResumePositionMs > 0L) {
+                playerEngine.seekTo(backgroundResumePositionMs)
+            }
+            backgroundResumePositionMs = 0L
+        } else if (shouldResumeAfterForeground && !_resumePrompt.value.show) {
             playerEngine.play()
         }
         shouldResumeAfterForeground = false
     }
 
-    fun onPlayerScreenDisposed() {
-        if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
+    /**
+     * Close idle pooled sockets on the playback OkHttp client so a stopped
+     * stream doesn't leave a keep-alive connection lingering upstream (the line
+     * would stay counted busy). Only evictAll() — never dispatcher.cancelAll() —
+     * so concurrent MultiView calls on the shared singleton client are not cut
+     * (evictAll only closes IDLE connections, not in-flight ones).
+     */
+    private fun evictPlaybackPoolQuietly() {
+        runCatching { playbackHttpClient.connectionPool.evictAll() }
+            .onFailure { android.util.Log.w("PlayerVM", "evictPlaybackPool failed: ${it.message}") }
+    }
+
+    private fun hasActiveRecording(): Boolean =
+        _recordingItems.value.any {
+            it.status == com.streamvault.domain.model.RecordingStatus.RECORDING
+        }
+
+    /**
+     * (Re)arm the inactivity guard ("are you still watching?"). Stays disarmed
+     * unless enabled (timeout > 0), on a LIVE stream, and no recording is in
+     * progress (cutting playback while recording the same channel is poor UX —
+     * the recording itself uses a separate client and is unaffected either way).
+     * After [inactivityTimeoutMs] with no remote interaction it closes the
+     * upstream connection (frees the line) and shows a resumable notice.
+     * [notePlaybackInteraction] re-arms it on every interaction, so an active
+     * viewer is never cut.
+     */
+    private fun scheduleInactivityWatchdog() {
+        inactivityWatchdogJob?.cancel()
+        inactivityWatchdogJob = null
+        val timeout = inactivityTimeoutMs
+        if (timeout <= 0L || currentContentType != ContentType.LIVE || hasActiveRecording()) return
+        inactivityWatchdogJob = viewModelScope.launch {
+            delay(timeout)
+            if (!isEngineAlive || currentContentType != ContentType.LIVE) return@launch
+            // Keep audio focus (stopForBackground) so the RETRY action resumes
+            // cleanly on Amlogic.
+            playerEngine.stopForBackground()
+            evictPlaybackPoolQuietly()
+            val hours = (timeout / 3_600_000L).coerceAtLeast(1)
+            appendRecoveryAction("Inactivity auto-stop after ${hours}h")
+            showPlayerNotice(
+                message = "Lecture arrêtée après ${hours} h sans activité.",
+                recoveryType = PlayerRecoveryType.UNKNOWN,
+                actions = listOf(PlayerNoticeAction.RETRY),
+                durationMs = 3_600_000L
+            )
         }
     }
 
-    fun handOffPlaybackToMultiView() {
-        if (currentContentType != ContentType.LIVE) {
-            viewModelScope.launch { persistPlaybackProgress(refreshShelves = true) }
+    /** Reset the inactivity guard on any remote interaction during live playback. */
+    internal fun notePlaybackInteraction() {
+        if (inactivityTimeoutMs > 0L && currentContentType == ContentType.LIVE) {
+            scheduleInactivityWatchdog()
         }
+    }
+
+    fun onPlayerScreenDisposed() {
+        persistFinalProgress(refreshShelves = true)
+    }
+
+    fun handOffPlaybackToMultiView() {
+        // Same guard as onCleared(): the engine is about to be released.
+        isEngineAlive = false
+        backgroundStopJob?.cancel()
+        backgroundStopJob = null
+        persistFinalProgress(refreshShelves = true)
         playerEngine.release()
     }
 
@@ -1204,7 +2040,18 @@ class PlayerViewModel @Inject constructor(
                     applyRemoteProgramFallback(providerId, epgChannelId, streamId, now)
                 }
 
-                delay(PLAYER_EPG_REFRESH_INTERVAL_MS)
+                // Wake up at the next program transition (with a small guard
+                // so we land just AFTER endTime) instead of waiting the full
+                // 30 s tick — keeps the now/next overlay accurate on news
+                // channels with 5-15 min slots.
+                val currentEndMs = _currentProgram.value?.endTime ?: 0L
+                val msUntilTransition = currentEndMs - System.currentTimeMillis()
+                val nextDelay = when {
+                    currentEndMs <= 0L -> PLAYER_EPG_REFRESH_INTERVAL_MS
+                    msUntilTransition <= 0L -> PLAYER_EPG_REFRESH_INTERVAL_MS
+                    else -> msUntilTransition.coerceAtMost(PLAYER_EPG_REFRESH_INTERVAL_MS) + 250L
+                }
+                delay(nextDelay)
             }
         }
     }
@@ -1330,17 +2177,27 @@ class PlayerViewModel @Inject constructor(
                 }
                 
                 if (currentChannelIndex != -1) {
-                currentChannelFlow.value = channelList[currentChannelIndex].sanitizedForPlayer()
+                    currentChannelFlow.value = channelList[currentChannelIndex].sanitizedForPlayer()
                     refreshCurrentChannelRecording()
                     val ch = channelList[currentChannelIndex]
                     displayChannelNumberFlow.value = resolveChannelNumber(ch, currentChannelIndex)
+                    // Cold-start hydration: if zap-last has never been primed
+                    // this session, seed previousChannelIndex from the channel
+                    // we persisted on the last prepare(LIVE) of the previous
+                    // session, so the zap-last remote button works on the very
+                    // first press of a fresh app launch.
+                    if (previousChannelIndex == -1 && currentProviderId > 0L) {
+                        val persistedLastId = preferencesRepository
+                            .getLastLiveChannelId(currentProviderId).first()
+                        if (persistedLastId != null && persistedLastId != ch.id) {
+                            val seedIndex = channelList.indexOfFirst { it.id == persistedLastId }
+                            if (seedIndex >= 0) previousChannelIndex = seedIndex
+                        }
+                    }
                 }
             }
         }
     }
-    
-    // Store current URL to find index later
-    internal var currentStreamUrl: String = ""
 
     private fun observeRecentChannels() {
         recentChannelsJob?.cancel()
@@ -1480,13 +2337,20 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun resolvePlaybackErrorMessage(error: PlayerError): String = when (classifyPlaybackError(error)) {
-        PlayerRecoveryType.NETWORK -> "This stream is not responding right now. You can retry or try another source."
-        PlayerRecoveryType.SOURCE -> "We couldn't start this stream on the available paths."
-        PlayerRecoveryType.DECODER -> "This stream could not play in the current decoder mode."
-        PlayerRecoveryType.DRM -> "Playback requires valid DRM credentials or a supported device security level."
-        PlayerRecoveryType.BUFFER_TIMEOUT -> "Playback stayed stuck buffering for too long on this stream."
-        PlayerRecoveryType.CATCH_UP -> "Replay is unavailable for the selected program."
-        PlayerRecoveryType.UNKNOWN -> error.message.ifBlank { "Playback failed for an unknown reason." }
+        PlayerRecoveryType.NETWORK ->
+            // Distinguish "device is offline" (user action: check wifi) from
+            // "panel/stream is not answering" (user action: retry / wait).
+            if (!networkAvailability.isConnected()) {
+                "Pas de connexion Internet — vérifiez votre Wi-Fi ou votre réseau."
+            } else {
+                "Le serveur ne répond pas pour le moment. Réessayez ou changez de source."
+            }
+        PlayerRecoveryType.SOURCE -> "Impossible de démarrer ce flux sur les chemins disponibles."
+        PlayerRecoveryType.DECODER -> "Ce flux ne peut pas être lu dans le mode de décodage actuel."
+        PlayerRecoveryType.DRM -> "La lecture nécessite des identifiants DRM valides ou un niveau de sécurité supporté."
+        PlayerRecoveryType.BUFFER_TIMEOUT -> "La lecture est restée bloquée en mise en mémoire tampon trop longtemps."
+        PlayerRecoveryType.CATCH_UP -> "Le replay est indisponible pour ce programme."
+        PlayerRecoveryType.UNKNOWN -> error.message.ifBlank { "La lecture a échoué pour une raison inconnue." }
     }
 
     private fun buildRecoveryActions(recoveryType: PlayerRecoveryType): List<PlayerNoticeAction> {
@@ -1500,6 +2364,7 @@ class PlayerViewModel @Inject constructor(
         if (recoveryType == PlayerRecoveryType.CATCH_UP && currentContentType == ContentType.LIVE) {
             actions += PlayerNoticeAction.OPEN_GUIDE
         }
+        actions += PlayerNoticeAction.GO_BACK
         return actions
     }
 
@@ -1635,6 +2500,53 @@ class PlayerViewModel @Inject constructor(
         return tryAlternateStreamInternal(channel)
     }
 
+    /**
+     * Force a re-prepare on the alternate playback engine. Used when Media3
+     * fails on a malformed progressive container that LibVLC could still play
+     * (broken moov/stco metadata), or symmetrically when LibVLC chokes on a
+     * stream Media3 handles fine. The override is one-shot: subsequent
+     * preparations fall back to the regular routing decision.
+     */
+    private fun tryAlternateEngineInternal(error: PlayerError): Boolean {
+        val routing = playerEngine as? com.streamvault.player.RoutingPlayerEngine ?: return false
+        val streamUrl = currentStreamUrl
+        if (streamUrl.isBlank()) return false
+        val currentPref = routing.currentEnginePreference()
+        val swapTo = when (currentPref) {
+            com.streamvault.player.RoutingPlayerEngine.EnginePreference.MEDIA3 ->
+                com.streamvault.player.RoutingPlayerEngine.EnginePreference.LIBVLC
+            com.streamvault.player.RoutingPlayerEngine.EnginePreference.LIBVLC ->
+                com.streamvault.player.RoutingPlayerEngine.EnginePreference.MEDIA3
+        }
+
+        hasRetriedWithAlternateEngine = true
+        setLastFailureReason(error.message)
+        appendRecoveryAction("Switching playback engine: ${currentPref.name} → ${swapTo.name}")
+        android.util.Log.w("PlayerVM", "Engine fallback: ${currentPref.name} → ${swapTo.name} for $streamUrl")
+
+        routing.forceEngineForNextPrepare(swapTo)
+        val requestVersion = beginPlaybackSession()
+        viewModelScope.launch {
+            val resolvedUrl = resolvePlaybackUrl(streamUrl, currentContentId, currentProviderId, currentContentType)
+                ?: streamUrl
+            if (!isActivePlaybackSession(requestVersion, streamUrl)) return@launch
+            val streamInfo = com.streamvault.domain.model.StreamInfo(
+                url = resolvedUrl,
+                title = currentTitle,
+                streamType = com.streamvault.domain.model.StreamType.UNKNOWN
+            )
+            if (!preparePlayer(streamInfo, requestVersion)) return@launch
+            playerEngine.play()
+        }
+        showPlayerNotice(
+            message = "Retrying with the alternate playback engine…",
+            recoveryType = PlayerRecoveryType.SOURCE,
+            actions = buildRecoveryActions(PlayerRecoveryType.SOURCE),
+            isRetryNotice = true
+        )
+        return true
+    }
+
     private fun tryAlternateStreamInternal(channel: com.streamvault.domain.model.Channel): Boolean {
         val nextStream = channel.alternativeStreams.firstOrNull { altUrl ->
             altUrl != currentStreamUrl &&
@@ -1710,6 +2622,13 @@ class PlayerViewModel @Inject constructor(
                 setLastFailureReason("Channel timed out in buffering state")
                 appendRecoveryAction("Buffer watchdog triggered")
                 val recovered = fallbackToPreviousChannel("Channel timed out in buffering state")
+                if (!recovered) {
+                    // No previous channel to fall back to: explicitly stop the
+                    // engine so it exits BUFFERING. Otherwise PlayerScreen keeps
+                    // the centered spinner forever (showLoader = BUFFERING || IDLE)
+                    // and the user has to back out manually.
+                    playerEngine.stop()
+                }
                 showPlayerNotice(
                     message = if (recovered) {
                         "That channel stalled too long. Returned to the last channel."
@@ -1723,18 +2642,260 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private fun scheduleVodPrepareWatchdog() {
+        vodPrepareWatchdogJob?.cancel()
+        val requestVersion = prepareRequestVersion
+        vodPrepareWatchdogJob = viewModelScope.launch {
+            delay(VOD_PREPARE_TIMEOUT_MS)
+            if (!isActivePlaybackSession(requestVersion)) return@launch
+            val state = playerEngine.playbackState.value
+            // Still stuck before first frame after the grace window: the panel
+            // is not feeding bytes. Stop so the loader clears, and offer a
+            // retry. No "previous channel" / "alternate stream" — those are
+            // live-only and buildRecoveryActions already excludes them for VOD.
+            if (state == PlaybackState.BUFFERING || state == PlaybackState.IDLE) {
+                markStreamFailure(currentStreamUrl)
+                setLastFailureReason("VOD prepare timed out in buffering state")
+                appendRecoveryAction("VOD prepare watchdog triggered")
+                playerEngine.stop()
+                showPlayerNotice(
+                    // An advisory probe rejection (401/403) followed by a hung
+                    // prepare means the panel silently dropped us: surface the
+                    // provider refusal rather than a connectivity hint.
+                    message = probeAdvisoryHttpCode?.let { probeFailureMessage(it) }
+                        ?: "La lecture n'a pas pu démarrer — vérifiez votre connexion ou réessayez.",
+                    recoveryType = PlayerRecoveryType.BUFFER_TIMEOUT,
+                    actions = buildRecoveryActions(PlayerRecoveryType.BUFFER_TIMEOUT)
+                )
+            }
+        }
+    }
+
+    private fun scheduleMidStreamStallWatchdog(targetIndex: Int) {
+        midStreamStallWatchdogJob?.cancel()
+        val requestVersion = prepareRequestVersion
+        // targetIndex >= 0 means LIVE on a specific channel; -1 means VOD
+        // (catch-up, movie, episode) where we track the playback session via
+        // requestVersion instead of channelIndex.
+        val isLiveTarget = targetIndex >= 0
+        // Live = continuous MPEG-TS, so a long BUFFERING is almost always a real
+        // stall: react faster. VOD first-byte can be legitimately slow: stay
+        // patient.
+        val timeoutMs = if (isLiveTarget) {
+            MID_STREAM_STALL_TIMEOUT_LIVE_MS
+        } else {
+            MID_STREAM_STALL_TIMEOUT_MS
+        }
+        midStreamStallWatchdogJob = viewModelScope.launch {
+            delay(timeoutMs)
+            if (!isActivePlaybackSession(requestVersion)) return@launch
+            val stillOnTarget = if (isLiveTarget) {
+                currentChannelIndex == targetIndex
+            } else {
+                requestVersion == prepareRequestVersion
+            }
+            val state = playerEngine.playbackState.value
+            if (!stillOnTarget || state != PlaybackState.BUFFERING) return@launch
+            // Re-arm so the next tick can decide whether to restart again (after
+            // cooldown) or fall back — the BUFFERING watchdog drives its own loop.
+            handleMidStreamStall(targetIndex, reArmBufferingWatchdog = true)
+        }
+    }
+
+    // Shared recovery for a detected mid-stream stall, reached from two sources:
+    // the BUFFERING watchdog (scheduleMidStreamStallWatchdog) and the live
+    // position-progress watchdog (startLiveProgressWatchdog). Both funnel through
+    // the same MidStreamStallRecoveryPolicy so cooldown + max-restart accounting
+    // is consistent regardless of how the freeze was detected.
+    private fun handleMidStreamStall(targetIndex: Int, reArmBufferingWatchdog: Boolean) {
+        val isLiveTarget = targetIndex >= 0
+        when (midStreamStallPolicy.decide(networkAvailability.isConnected())) {
+            MidStreamStallRecoveryPolicy.Action.Restart -> {
+                midStreamStallPolicy.onRestart()
+                android.util.Log.w(
+                    "PlayerVM",
+                    "mid-stream stall: restart isLive=$isLiveTarget target=$targetIndex"
+                )
+                appendRecoveryAction("Mid-stream stall: restart")
+                // Surface a user-visible "Reconnexion…" notice so the viewer
+                // knows recovery is in progress instead of staring at a frozen
+                // frame. Auto-dismisses when state→READY.
+                showPlayerNotice(
+                    message = "Reconnexion en cours…",
+                    recoveryType = PlayerRecoveryType.BUFFER_TIMEOUT,
+                    actions = emptyList(),
+                    isRetryNotice = true
+                )
+                playerEngine.restart()
+                if (reArmBufferingWatchdog) scheduleMidStreamStallWatchdog(targetIndex)
+            }
+            MidStreamStallRecoveryPolicy.Action.WaitForNetwork -> {
+                android.util.Log.w(
+                    "PlayerVM",
+                    "mid-stream stall: no network, deferring restart target=$targetIndex"
+                )
+                appendRecoveryAction("Mid-stream stall: waiting for network")
+                showPlayerNotice(
+                    message = "Pas de connexion — attente du réseau…",
+                    recoveryType = PlayerRecoveryType.NETWORK,
+                    actions = emptyList(),
+                    isRetryNotice = true
+                )
+                if (reArmBufferingWatchdog) scheduleMidStreamStallWatchdog(targetIndex)
+            }
+            MidStreamStallRecoveryPolicy.Action.WaitForCooldown -> {
+                android.util.Log.w(
+                    "PlayerVM",
+                    "mid-stream stall: cooldown active, deferring restart target=$targetIndex"
+                )
+                appendRecoveryAction("Mid-stream stall: cooldown")
+                if (reArmBufferingWatchdog) scheduleMidStreamStallWatchdog(targetIndex)
+            }
+            MidStreamStallRecoveryPolicy.Action.Fallback -> {
+                markStreamFailure(currentStreamUrl)
+                setLastFailureReason("Mid-stream stall: restarts exhausted")
+                appendRecoveryAction("Mid-stream stall watchdog gave up")
+                midStreamStallPolicy.reset()
+                val recovered = if (isLiveTarget) {
+                    fallbackToPreviousChannel("Mid-stream stall: restarts exhausted")
+                } else {
+                    // VOD has no "previous channel" concept — just stop so the
+                    // spinner clears and the notice is visible.
+                    playerEngine.stop()
+                    false
+                }
+                showPlayerNotice(
+                    message = when {
+                        recovered -> "Stream stalled and could not recover. " +
+                            "Returned to the last channel."
+                        isLiveTarget -> "Stream stalled and could not recover. " +
+                            "Try another source or open the guide."
+                        else -> "La lecture est interrompue. Réessaie plus tard ou choisis une autre source."
+                    },
+                    recoveryType = PlayerRecoveryType.BUFFER_TIMEOUT,
+                    actions = buildRecoveryActions(PlayerRecoveryType.BUFFER_TIMEOUT)
+                )
+            }
+        }
+    }
+
+    // Live "frozen frame" watchdog: catches the case the BUFFERING watchdog
+    // cannot — the decoder stays in READY with isPlaying=true but the playback
+    // position stops advancing (no error, no BUFFERING). Polls the position and,
+    // after a sustained freeze, routes through the shared recovery path. Live
+    // only: VOD pause/seek legitimately freezes the position.
+    private fun startLiveProgressWatchdog() {
+        liveProgressWatchdogJob?.cancel()
+        val targetIndex = currentChannelIndex
+        if (currentContentType != ContentType.LIVE || targetIndex !in channelList.indices) return
+        val requestVersion = prepareRequestVersion
+        liveProgressWatchdogJob = viewModelScope.launch {
+            var lastPos = playerEngine.currentPosition.value
+            var lastAdvanceAt = SystemClock.elapsedRealtime()
+            while (currentCoroutineContext().isActive) {
+                delay(LIVE_PROGRESS_CHECK_INTERVAL_MS)
+                if (!isActivePlaybackSession(requestVersion)) return@launch
+                val steady = currentContentType == ContentType.LIVE &&
+                    currentChannelIndex == targetIndex &&
+                    playerEngine.isPlaying.value &&
+                    playerEngine.playbackState.value == PlaybackState.READY &&
+                    zapBufferWatchdogJob?.isActive != true
+                val pos = playerEngine.currentPosition.value
+                // Reset the freeze timer whenever we are not in a steady
+                // "video should be moving" situation, or the position advanced.
+                if (!steady || pos > lastPos + LIVE_PROGRESS_MIN_ADVANCE_MS) {
+                    lastPos = pos
+                    lastAdvanceAt = SystemClock.elapsedRealtime()
+                    continue
+                }
+                if (SystemClock.elapsedRealtime() - lastAdvanceAt >= LIVE_PROGRESS_STALL_THRESHOLD_MS) {
+                    android.util.Log.w(
+                        "PlayerVM",
+                        "live progress stall: position frozen at $pos target=$targetIndex"
+                    )
+                    appendRecoveryAction("Live progress stall: position frozen")
+                    // reArm=false: this loop keeps watching on its own; the
+                    // BUFFERING watchdog will also arm naturally if the restart
+                    // pushes us back through READY→BUFFERING.
+                    handleMidStreamStall(targetIndex, reArmBufferingWatchdog = false)
+                    // Reset so we wait another full threshold before re-triggering
+                    // (avoids spamming the policy while the engine churns through
+                    // IDLE→BUFFERING→READY after restart).
+                    lastPos = playerEngine.currentPosition.value
+                    lastAdvanceAt = SystemClock.elapsedRealtime()
+                }
+            }
+        }
+    }
+
+    // Watchdog VOD "position figée" : filet de sécurité symétrique de
+    // startLiveProgressWatchdog mais pour le non-LIVE. Le correctif moteur A
+    // (LibVlcPlayerEngine) rend déjà la position auto-réparante ; ce watchdog
+    // ne sert qu'en dernier recours si la position cesse d'avancer alors que
+    // isPlaying==true et READY. Il passe par la même MidStreamStallRecoveryPolicy
+    // (cooldown + max-restart partagés) via targetIndex=-1 (chemin VOD :
+    // restart, puis stop()+notice si épuisé).
+    private fun startVodProgressWatchdog() {
+        vodProgressWatchdogJob?.cancel()
+        if (currentContentType == ContentType.LIVE) return
+        val requestVersion = prepareRequestVersion
+        vodProgressWatchdogJob = viewModelScope.launch {
+            var lastPos = playerEngine.currentPosition.value
+            var lastAdvanceAt = SystemClock.elapsedRealtime()
+            while (currentCoroutineContext().isActive) {
+                delay(LIVE_PROGRESS_CHECK_INTERVAL_MS)
+                if (!isActivePlaybackSession(requestVersion)) return@launch
+                // "steady" = on s'attend à ce que la position avance. Pause et
+                // buffering légitimes (isPlaying==false ou state!=READY)
+                // réinitialisent le timer → pas de faux positif.
+                val steady = currentContentType != ContentType.LIVE &&
+                    requestVersion == prepareRequestVersion &&
+                    playerEngine.isPlaying.value &&
+                    playerEngine.playbackState.value == PlaybackState.READY
+                val pos = playerEngine.currentPosition.value
+                if (!steady || pos > lastPos + LIVE_PROGRESS_MIN_ADVANCE_MS) {
+                    lastPos = pos
+                    lastAdvanceAt = SystemClock.elapsedRealtime()
+                    continue
+                }
+                if (SystemClock.elapsedRealtime() - lastAdvanceAt >= LIVE_PROGRESS_STALL_THRESHOLD_MS) {
+                    android.util.Log.w("PlayerVM", "vod progress stall: position frozen at $pos")
+                    appendRecoveryAction("VOD progress stall: position frozen")
+                    handleMidStreamStall(targetIndex = -1, reArmBufferingWatchdog = false)
+                    // Laisser le temps au restart de retraverser READY avant de
+                    // re-mesurer, pour ne pas spammer la policy.
+                    lastPos = playerEngine.currentPosition.value
+                    lastAdvanceAt = SystemClock.elapsedRealtime()
+                }
+            }
+        }
+    }
+
     private fun fallbackToPreviousChannel(reason: String): Boolean {
         val fallbackIndex = previousChannelIndex
-        if (fallbackIndex in channelList.indices && fallbackIndex != currentChannelIndex) {
-            android.util.Log.w("PlayerVM", "Falling back to previous channel: $reason")
-            changeChannel(fallbackIndex)
-            return true
-        }
-        return false
+        if (fallbackIndex !in channelList.indices) return false
+        if (fallbackIndex == currentChannelIndex) return false
+        // A playlist reorder (sync, favorite toggle) can leave
+        // previousChannelIndex pointing at a DIFFERENT index that now resolves
+        // to the SAME channel we're already on. Switching to it would show a
+        // misleading "returned to the last channel" notice while nothing
+        // actually changed — bail so the caller surfaces the no-fallback path.
+        val currentId = channelList.getOrNull(currentChannelIndex)?.id
+        val fallbackId = channelList.getOrNull(fallbackIndex)?.id
+        if (currentId != null && currentId == fallbackId) return false
+        android.util.Log.w("PlayerVM", "Falling back to previous channel: $reason")
+        changeChannel(fallbackIndex)
+        return true
     }
 
     fun play() = playerEngine.play()
-    fun pause() = playerEngine.pause()
+
+    fun pause() {
+        playerEngine.pause()
+        // Event-based save: a user pause is a natural resume point — don't
+        // wait up to 30 s for the periodic tick.
+        viewModelScope.launch { persistPlaybackProgress() }
+    }
     fun seekForward() = playerEngine.seekForward()
     fun seekBackward() = playerEngine.seekBackward()
 
@@ -1742,6 +2903,8 @@ class PlayerViewModel @Inject constructor(
         if (currentContentType == ContentType.LIVE) return
         if (playerEngine.playbackState.value == PlaybackState.ERROR) return
         if (progressiveSeekController.isActive.value) return
+        wasPlayingBeforeProgressiveSeek = playerEngine.isPlaying.value ||
+            playerEngine.playbackState.value == PlaybackState.BUFFERING
         playerEngine.pause()
         progressiveSeekController.start(direction)
     }
@@ -1749,7 +2912,10 @@ class PlayerViewModel @Inject constructor(
     fun stopProgressiveSeek() {
         if (!progressiveSeekController.isActive.value) return
         progressiveSeekController.stop()
-        playerEngine.play()
+        if (wasPlayingBeforeProgressiveSeek) {
+            playerEngine.play()
+        }
+        wasPlayingBeforeProgressiveSeek = false
     }
 
     fun playEpisode(episode: Episode, showResumePrompt: Boolean = true) {
@@ -1787,6 +2953,12 @@ class PlayerViewModel @Inject constructor(
         showControlsFlow.value = !showControlsFlow.value
         if (!showControlsFlow.value) {
             clearSeekPreview()
+        }
+    }
+
+    fun revealControls() {
+        if (!showControlsFlow.value) {
+            showControlsFlow.value = true
         }
     }
 
@@ -1942,6 +3114,9 @@ class PlayerViewModel @Inject constructor(
                 appendRecoveryAction("Opened guide from recovery")
                 openEpgOverlay()
             }
+            // Navigation is the screen's job: PlayerScreen intercepts GO_BACK
+            // and invokes its onBack callback before reaching here.
+            PlayerNoticeAction.GO_BACK -> Unit
         }
         dismissPlayerNotice()
     }
@@ -2121,8 +3296,16 @@ class PlayerViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        super.onCleared()
-        onPlayerScreenDisposed()
+        // Guard the delayed background-stop job: mark the engine dead and cancel
+        // the timer BEFORE release(), so it can never call stopForBackground()
+        // on a freed engine (crash, esp. LibVLC native threads).
+        isEngineAlive = false
+        backgroundStopJob?.cancel()
+        backgroundStopJob = null
+        // Final save FIRST, and on applicationScope: the historical
+        // `super.onCleared()` call at the top cancelled viewModelScope before
+        // the save coroutine ever ran — exits never persisted the position.
+        persistFinalProgress(refreshShelves = true)
         channelInfoHideJob?.cancel()
         liveOverlayHideJob?.cancel()
         diagnosticsHideJob?.cancel()
@@ -2134,11 +3317,25 @@ class PlayerViewModel @Inject constructor(
         controlsHideJob?.cancel()
         zapOverlayJob?.cancel()
         zapBufferWatchdogJob?.cancel()
+        vodPrepareWatchdogJob?.cancel()
+        midStreamStallWatchdogJob?.cancel()
+        liveProgressWatchdogJob?.cancel()
+        vodProgressWatchdogJob?.cancel()
+        inactivityWatchdogJob?.cancel()
+        preloadJob?.cancel()
+        prematureEndRetryJob?.cancel()
+        mutePersistJob?.cancel()
         progressTrackingJob?.cancel()
+        postSeekPersistJob?.cancel()
         aspectRatioJob?.cancel()
         recentChannelsJob?.cancel()
         lastVisitedCategoryJob?.cancel()
         seekThumbnailProvider.clearCache()
+        // Releases the per-screen engine resources only — the global LibVLC
+        // singleton must never be freed here (next playback would ANR).
         playerEngine.release()
+        evictPlaybackPoolQuietly()
+        playbackReporter.stop()
+        super.onCleared()
     }
 }

@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
@@ -267,7 +268,7 @@ class TvInputSetupViewModel @Inject constructor(
                 status = TvInputSetupStatus.SCANNING
             )
 
-            val providers = providerRepository.getProviders().first()
+            val providers = providerRepository.getProviders().firstOrNull().orEmpty()
             if (providers.isEmpty()) {
                 _uiState.value = TvInputSetupUiState(
                     inputId = inputId,

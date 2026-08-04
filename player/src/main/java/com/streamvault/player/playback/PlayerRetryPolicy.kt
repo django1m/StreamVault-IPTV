@@ -52,11 +52,18 @@ class PlayerRetryPolicy(
         if (PlayerErrorClassifier.classify(error) == PlaybackErrorCategory.LIVE_WINDOW) {
             return LIVE_WINDOW_RETRY_DELAY_MS
         }
+        // Live splits into two regimes:
+        //   - Initial start (before first frame): tolerant 1s/2s/3s so slow-start
+        //     Xtream backends have a real chance to serve the manifest.
+        //   - Mid-stream (after first frame): aggressive 0.5s/1s/2s so a transient
+        //     panel hiccup recovers quickly without a visible buffer.
+        val isLive = streamContext.isLive
+        val liveMidStream = isLive && playbackStarted()
         return when (attempt) {
-            1 -> 1_000L
-            2 -> 2_500L
-            else -> 5_000L
-        }.coerceAtMost(5_000L)
+            1 -> if (liveMidStream) 500L else 1_000L
+            2 -> if (liveMidStream) 1_000L else if (isLive) 2_000L else 2_500L
+            else -> if (liveMidStream) 2_000L else if (isLive) 3_000L else 5_000L
+        }
     }
 
     fun retryReason(error: Throwable): String {
@@ -74,9 +81,15 @@ class PlayerRetryPolicy(
     ): LoadErrorHandlingPolicy.FallbackSelection? = null
 
     override fun getMinimumLoadableRetryCount(dataType: Int): Int {
-        return when {
-            dataType == C.DATA_TYPE_MANIFEST -> 3
-            dataType == C.DATA_TYPE_MEDIA -> if (streamContext.resolvedStreamType == ResolvedStreamType.PROGRESSIVE) 2 else 2
+        // Live mid-stream: cut Media3's silent internal retries so onPlayerError
+        // fires fast and PlayerRetryPolicy triggers a /live re-request within
+        // ~1-2s (faster recovery from a transient upstream hiccup).
+        // Live initial start: keep the standard 3/2 so a slow-start backend
+        // (Xtream that needs ~3-5s for the manifest) actually gets that window.
+        val liveMidStream = streamContext.isLive && playbackStarted()
+        return when (dataType) {
+            C.DATA_TYPE_MANIFEST -> if (liveMidStream) 1 else 3
+            C.DATA_TYPE_MEDIA -> if (liveMidStream) 1 else 2
             else -> 1
         }
     }

@@ -1,7 +1,9 @@
 package com.streamvault.player
 
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.CaptionStyleCompat
 
+@androidx.annotation.OptIn(UnstableApi::class)
 data class PlayerSubtitleStyle(
     val textScale: Float = 1f,
     val foregroundColorArgb: Int = 0xFFFFFFFF.toInt(),

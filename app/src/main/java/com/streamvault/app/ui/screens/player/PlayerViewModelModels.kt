@@ -64,7 +64,13 @@ enum class PlayerNoticeAction {
     RETRY,
     LAST_CHANNEL,
     ALTERNATE_STREAM,
-    OPEN_GUIDE
+    OPEN_GUIDE,
+    /**
+     * Leave the player and return to the previous screen. Always offered:
+     * before it existed, a VOD failure offered only RETRY (LAST_CHANNEL is
+     * live-only) and the customer was stuck retrying a dead stream.
+     */
+    GO_BACK
 }
 
 enum class AspectRatio(val modeName: String) {

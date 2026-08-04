@@ -39,7 +39,7 @@ class SearchContent @Inject constructor(
         providerId: Long,
         query: String,
         scope: SearchContentScope = SearchContentScope.ALL,
-        maxResultsPerSection: Int = 120
+        maxResultsPerSection: Int = 300
     ): Flow<SearchContentResult> {
         val normalizedQuery = query.trim()
         if (normalizedQuery.length < 2) {

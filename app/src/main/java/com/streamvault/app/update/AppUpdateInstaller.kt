@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.streamvault.app.BuildConfig
 import com.streamvault.data.preferences.PreferencesRepository
@@ -35,7 +36,9 @@ import javax.inject.Singleton
 data class AppUpdateDownloadState(
     val status: AppUpdateDownloadStatus = AppUpdateDownloadStatus.Idle,
     val versionName: String? = null,
-    val downloadId: Long? = null
+    val downloadId: Long? = null,
+    val bytesDownloaded: Long = 0L,
+    val totalBytes: Long = -1L
 )
 
 enum class AppUpdateDownloadStatus {
@@ -48,7 +51,8 @@ enum class AppUpdateDownloadStatus {
 @Singleton
 class AppUpdateInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val preferencesRepository: PreferencesRepository
+    private val preferencesRepository: PreferencesRepository,
+    private val diagnosticReporter: com.streamvault.app.diagnostics.DiagnosticReporter
 ) {
     private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -67,6 +71,27 @@ class AppUpdateInstaller @Inject constructor(
     }
 
     val downloadState: StateFlow<AppUpdateDownloadState> = _downloadState.asStateFlow()
+
+    /**
+     * Single write point for the download state. Reports the incident to the
+     * admin ONLY on the transition into Failed — refreshState() is polled, so
+     * reporting on every Failed observation would spam one diagnostic per poll.
+     */
+    private fun publishState(state: AppUpdateDownloadState) {
+        val previous = _downloadState.value
+        _downloadState.value = state
+        if (state.status == AppUpdateDownloadStatus.Failed &&
+            previous.status != AppUpdateDownloadStatus.Failed
+        ) {
+            diagnosticReporter.report(
+                severity = com.streamvault.domain.model.DiagnosticSeverity.ERROR,
+                category = com.streamvault.domain.model.DiagnosticCategory.UPDATE,
+                message = "Mise à jour ${state.versionName ?: "(version inconnue)"} échouée — " +
+                    "téléchargement interrompu ou fichier invalide",
+                context = buildMap { state.versionName?.let { put("version", it) } },
+            )
+        }
+    }
 
     init {
         registerDownloadReceiver()
@@ -95,7 +120,7 @@ class AppUpdateInstaller @Inject constructor(
                 }
                 AppUpdateDownloadState()
             }
-            _downloadState.value = restoredState
+            publishState(restoredState)
             return@withContext restoredState
         }
 
@@ -112,19 +137,25 @@ class AppUpdateInstaller @Inject constructor(
                     preferencesRepository.setDownloadedAppUpdateVersionName(null)
                     AppUpdateDownloadState(status = AppUpdateDownloadStatus.Failed)
                 }
-                _downloadState.value = fallbackState
+                publishState(fallbackState)
                 return@withContext fallbackState
             }
 
             val statusColumn = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
             val status = cursor.getInt(statusColumn)
+            val bytesSoFar = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                .takeIf { it >= 0 }?.let { cursor.getLong(it) } ?: 0L
+            val totalSize = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                .takeIf { it >= 0 }?.let { cursor.getLong(it) } ?: -1L
             val state = when (status) {
                 DownloadManager.STATUS_PENDING,
                 DownloadManager.STATUS_PAUSED,
                 DownloadManager.STATUS_RUNNING -> AppUpdateDownloadState(
                     status = AppUpdateDownloadStatus.Downloading,
                     versionName = downloadedVersionName,
-                    downloadId = downloadId
+                    downloadId = downloadId,
+                    bytesDownloaded = bytesSoFar,
+                    totalBytes = totalSize
                 )
 
                 DownloadManager.STATUS_SUCCESSFUL -> {
@@ -145,7 +176,7 @@ class AppUpdateInstaller @Inject constructor(
                     )
                 }
             }
-            _downloadState.value = state
+            publishState(state)
             syncPollingForState(state)
             return@withContext state
         }
@@ -185,13 +216,16 @@ class AppUpdateInstaller @Inject constructor(
 
             val downloadId = downloadManager.enqueue(request)
             preferencesRepository.setDownloadedAppUpdateVersionName(releaseInfo.versionName)
+            // Persist the SHA-256 alongside the version so installDownloadedUpdate()
+            // can verify integrity automatically, even if the caller forgets to pass it.
+            preferencesRepository.setDownloadedAppUpdateSha256(releaseInfo.sha256)
             preferencesRepository.setAppUpdateDownloadId(downloadId)
             val state = AppUpdateDownloadState(
                 status = AppUpdateDownloadStatus.Downloading,
                 versionName = releaseInfo.versionName,
                 downloadId = downloadId
             )
-            _downloadState.value = state
+            publishState(state)
             syncPollingForState(state)
             Result.success(Unit)
         } catch (error: IllegalArgumentException) {
@@ -225,20 +259,30 @@ class AppUpdateInstaller @Inject constructor(
         // SEC-L02: Verify SHA-256 integrity before handing the APK to the package manager.
         // This guards against a truncated download, a network MITM, or a tampered file in
         // the external storage directory (which is world-readable on unencrypted devices).
-        if (!expectedSha256.isNullOrBlank()) {
+        // The expected hash is taken from the explicit argument first, and falls back to
+        // the value persisted at download time so every callsite is covered automatically.
+        val effectiveExpectedSha = expectedSha256?.takeIf { it.isNotBlank() }
+            ?: preferencesRepository.downloadedAppUpdateSha256.first()
+        if (!effectiveExpectedSha.isNullOrBlank()) {
             val actualHash = computeSha256Hex(apkFile)
-            if (!actualHash.equals(expectedSha256.trim(), ignoreCase = true)) {
+            if (!actualHash.equals(effectiveExpectedSha.trim(), ignoreCase = true)) {
                 android.util.Log.e(
                     "AppUpdateInstaller",
-                    "APK SHA-256 mismatch for ${apkFile.name}: expected=${expectedSha256.trim()} actual=$actualHash"
+                    "APK SHA-256 mismatch for ${apkFile.name}: expected=${effectiveExpectedSha.trim()} actual=$actualHash"
                 )
                 apkFile.delete()
                 preferencesRepository.setDownloadedAppUpdateVersionName(null)
+                preferencesRepository.setDownloadedAppUpdateSha256(null)
                 return@withContext Result.error(
                     "Downloaded update failed integrity check. The file has been removed; please download again."
                 )
             }
             android.util.Log.i("AppUpdateInstaller", "APK SHA-256 verified OK for ${apkFile.name}")
+        } else {
+            android.util.Log.w(
+                "AppUpdateInstaller",
+                "No expected SHA-256 available — skipping integrity check for ${apkFile.name}"
+            )
         }
 
         val apkUri = FileProvider.getUriForFile(
@@ -279,6 +323,7 @@ class AppUpdateInstaller @Inject constructor(
 
         apkFileForVersion(downloadedVersionName).delete()
         preferencesRepository.setDownloadedAppUpdateVersionName(null)
+        preferencesRepository.setDownloadedAppUpdateSha256(null)
         preferencesRepository.setAppUpdateDownloadId(null)
     }
 
@@ -312,12 +357,12 @@ class AppUpdateInstaller @Inject constructor(
 
     private fun registerDownloadReceiver() {
         val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(downloadCompleteReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(downloadCompleteReceiver, filter)
-        }
+        ContextCompat.registerReceiver(
+            context,
+            downloadCompleteReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     /**

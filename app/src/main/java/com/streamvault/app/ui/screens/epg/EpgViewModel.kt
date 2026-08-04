@@ -189,6 +189,21 @@ class EpgViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(EpgUiState())
     val uiState: StateFlow<EpgUiState> = _uiState.asStateFlow()
 
+    // D-pad focus memory. Lives in the ViewModel because a `remember` in the
+    // composable is wiped on every navigation (play a channel → back) and on
+    // category/filter changes, which snapped focus back to row 0 — brutal on
+    // a remote when you were 80 rows deep. The index is the visual fallback
+    // when the channel itself left the filtered list.
+    var lastFocusedChannelId: Long? = null
+        private set
+    var lastFocusedChannelIndex: Int = 0
+        private set
+
+    fun onChannelFocused(channelId: Long, index: Int) {
+        lastFocusedChannelId = channelId
+        if (index >= 0) lastFocusedChannelIndex = index
+    }
+
     private val selectedCategoryId = MutableStateFlow(ChannelRepository.ALL_CHANNELS_ID)
     private val guideAnchorTime = MutableStateFlow(System.currentTimeMillis())
     private val showScheduledOnly = MutableStateFlow(false)

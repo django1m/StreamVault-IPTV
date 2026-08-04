@@ -2,6 +2,8 @@ package com.streamvault.app.startup
 
 import com.streamvault.app.update.AppUpdateChecker
 import com.streamvault.app.update.AppUpdateInfo
+import com.streamvault.app.vpn.FakeVpnGate
+import com.streamvault.app.vpn.VpnGateResult
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.domain.model.Provider
@@ -41,6 +43,7 @@ class AppStartupCoordinatorTest {
         providerRepository: ProviderRepository = mock(),
         syncManager: SyncManager = mock(),
         snackbar: SyncSnackbarController = SyncSnackbarController(),
+        vpnGate: FakeVpnGate = FakeVpnGate(),
         clock: () -> Long = { now }
     ) = AppStartupCoordinator(
         appUpdateChecker = appUpdateChecker,
@@ -48,6 +51,7 @@ class AppStartupCoordinatorTest {
         providerRepository = providerRepository,
         syncManager = syncManager,
         snackbar = snackbar,
+        vpnGate = vpnGate,
         applicationScope = scope,
         clock = clock
     )
@@ -180,6 +184,43 @@ class AppStartupCoordinatorTest {
         coord.onAppStart()
         advanceUntilIdle()
         verify(checker, times(2)).fetchLatestRelease()
+    }
+
+    @Test
+    fun `stale sync is skipped when the required VPN never becomes ready`() = runTest(StandardTestDispatcher()) {
+        val provRepo = mock<ProviderRepository> {
+            on { getActiveProvider() } doReturn flowOf(provider(now - fortyEightHoursMs - 1))
+        }
+        val sync = mock<SyncManager> { on { isAnySyncActive() } doReturn false }
+        val gate = FakeVpnGate(result = VpnGateResult.FAILED, required = true)
+
+        val coord = newCoordinator(this, providerRepository = provRepo, syncManager = sync, vpnGate = gate)
+        coord.onAppStart()
+        advanceUntilIdle()
+
+        verify(sync, never()).sync(any(), any(), any(), any(), any())
+    }
+
+    @Test
+    fun `stale sync waits for the VPN gate then runs once ready`() = runTest(StandardTestDispatcher()) {
+        val provRepo = mock<ProviderRepository> {
+            on { getActiveProvider() } doReturn flowOf(provider(now - fortyEightHoursMs - 1))
+        }
+        val sync = mock<SyncManager> {
+            on { isAnySyncActive() } doReturn false
+            onBlocking {
+                sync(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+            } doReturn Result.success(Unit)
+        }
+        // Cycle virtuel de 20 s avant READY : le sync ne doit partir qu'après.
+        val gate = FakeVpnGate(result = VpnGateResult.READY, required = true, awaitDelayMs = 20_000L)
+
+        val coord = newCoordinator(this, providerRepository = provRepo, syncManager = sync, vpnGate = gate)
+        coord.onAppStart()
+        advanceUntilIdle()
+
+        verify(sync).sync(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+        assertEquals(1, gate.controlPlaneCalls)
     }
 
     @Test

@@ -35,9 +35,18 @@ fun ChannelLogoBadge(
     backgroundColor: Color = AppColors.SurfaceEmphasis,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     textStyle: TextStyle = MaterialTheme.typography.titleMedium,
-    textColor: Color = AppColors.TextSecondary
+    textColor: Color = AppColors.TextSecondary,
+    // Channel logos render in small square-ish badges (22-48dp). The default
+    // 400x225 request of rememberCrossfadeImageModel is video-aspect and forces
+    // Coil to decode/cache an oversized bitmap for each logo — costly on the
+    // 2 GB box when scrolling long channel lists. Request a logo-sized bitmap.
+    requestSizePx: Int = 96
 ) {
-    val model = rememberCrossfadeImageModel(logoUrl?.takeIf { it.isNotBlank() })
+    val model = rememberCrossfadeImageModel(
+        logoUrl?.takeIf { it.isNotBlank() },
+        width = requestSizePx,
+        height = requestSizePx
+    )
     var showFallback by remember(model) { mutableStateOf(true) }
 
     Box(

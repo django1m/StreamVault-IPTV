@@ -44,6 +44,7 @@ import com.streamvault.player.playback.PreloadCoordinator
 import com.streamvault.player.playback.ResolvedStreamType
 import com.streamvault.player.playback.StreamTypeResolver
 import com.streamvault.player.stats.PlayerStatsCollector
+import com.streamvault.player.system.DevicePerformanceProfile
 import com.streamvault.player.tracks.PlayerTrackController
 import com.streamvault.player.ui.PlayerViewBinder
 import com.streamvault.player.ui.SubtitleStyleController
@@ -66,14 +67,20 @@ import okhttp3.OkHttpClient
 @OptIn(UnstableApi::class)
 class Media3PlayerEngine @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val deviceProfile: DevicePerformanceProfile
 ) : PlayerEngine {
 
     companion object {
         private const val TAG = "Media3PlayerEngine"
+        private const val SEEK_END_GUARD_MS = 5_000L
     }
 
     var constrainResolutionForMultiView: Boolean = false
+    // Plein écran : rendre via un SurfaceView (couche vidéo matérielle + scaler VPP
+    // Amlogic) plutôt qu'une TextureView (upscaling GPU bilinéaire plus mou et plus
+    // lourd sur 2 Go). Laissé à false pour la mosaïque/preview (TextureView).
+    var useSurfaceView: Boolean = false
     var bypassAudioFocus: Boolean = false
         set(value) {
             field = value
@@ -90,13 +97,14 @@ class Media3PlayerEngine @Inject constructor(
                     }
                 }
             } else {
-                mediaSession?.release()
-                mediaSession = null
+                releaseMediaSession()
             }
         }
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private var exoPlayer: ExoPlayer? = null
+    private var playerListener: Player.Listener? = null
+    private var analyticsListener: AnalyticsListener? = null
     private var mediaSession: MediaSession? = null
     private var requestedDecoderMode: DecoderMode = DecoderMode.AUTO
     private var activeDecoderMode: DecoderMode = DecoderMode.HARDWARE
@@ -104,10 +112,19 @@ class Media3PlayerEngine @Inject constructor(
     private var lastMediaId: String? = null
     private var currentResolvedStreamType: ResolvedStreamType = ResolvedStreamType.UNKNOWN
     private var currentTimeoutProfile: PlayerTimeoutProfile = PlayerTimeoutProfile.VOD
+    // Profil de buffer du LoadControl du player ACTIF. Le live utilise un buffer
+    // court (rebuffer dans la fenêtre watchdog 6 s + heap natif bas sur 2 Go) ;
+    // le VOD garde un gros buffer. Un changement de profil force recreatePlayer().
+    private var activeBufferProfile: BufferProfile = BufferProfile.VOD
     private var currentRetryPolicy: PlayerRetryPolicy? = null
     private var currentRetryContext: PlaybackRetryContext? = null
     private var playbackStarted = false
     private var retryAttempt = 0
+    // Incremented at the top of every prepareInternal(). A nested or stale
+    // prepareInternal() (e.g. a future refactor re-adding the recreatePlayer()
+    // re-entrance) must abandon itself when the generation moved on, instead
+    // of issuing a second setMediaSource+prepare on the same player.
+    private var prepareGeneration = 0L
     private var retryJob: Job? = null
     private var retryGeneration = 0L
 
@@ -172,8 +189,42 @@ class Media3PlayerEngine @Inject constructor(
     private val compatibilityProfile: PlaybackCompatibilityProfile = DefaultPlaybackCompatibilityProfile
     private val decoderPreferencePolicy = DefaultDecoderPreferencePolicy()
 
+    private enum class BufferProfile { LIVE, VOD }
+
+    private fun bufferProfileFor(type: ResolvedStreamType): BufferProfile =
+        if (type == ResolvedStreamType.HLS || type == ResolvedStreamType.MPEG_TS_LIVE) {
+            BufferProfile.LIVE
+        } else {
+            BufferProfile.VOD
+        }
+
     override fun prepare(streamInfo: StreamInfo) {
         prepareInternal(streamInfo = streamInfo, preserveRetryState = false, seekPositionMs = null, autoPlay = true)
+    }
+
+    override fun restart() {
+        val streamInfo = lastStreamInfo ?: return
+        // Live streams must re-attach to the live edge (a stored position is
+        // stale by the time we re-prepare). VOD / progressive content must
+        // resume at the user's current playback position — restarting from
+        // 0 would be unrecoverable bad UX after a transient stall mid-film.
+        val isLive = currentResolvedStreamType == ResolvedStreamType.HLS ||
+            currentResolvedStreamType == ResolvedStreamType.MPEG_TS_LIVE
+        val resumePosition = if (isLive) {
+            null
+        } else {
+            exoPlayer?.currentPosition?.takeIf { it > 0L }
+        }
+        Log.i(
+            TAG,
+            "restart target=${PlaybackLogSanitizer.sanitizeUrl(streamInfo.url)} resumeMs=$resumePosition isLive=$isLive"
+        )
+        prepareInternal(
+            streamInfo = streamInfo,
+            preserveRetryState = false,
+            seekPositionMs = resumePosition,
+            autoPlay = true
+        )
     }
 
     override fun play() {
@@ -185,14 +236,29 @@ class Media3PlayerEngine @Inject constructor(
     override fun pause() {
         retryJob?.cancel()
         exoPlayer?.playWhenReady = false
-        audioFocusController.onPauseOrStop()
+        // Keep audio focus on pause — releasing then re-requesting on resume
+        // intermittently fails on Amlogic S905X5M and leaves play/pause feeling
+        // dead. Focus is only released on stop() / release().
+        audioFocusController.onPause()
     }
 
     override fun stop() {
         retryJob?.cancel()
+        statsCollector.stop()
         exoPlayer?.stop()
         _playbackState.value = PlaybackState.IDLE
-        audioFocusController.onPauseOrStop()
+        audioFocusController.onStop()
+    }
+
+    override fun stopForBackground() {
+        // Same as stop() but WITHOUT releasing audio focus. exoPlayer.stop()
+        // closes the upstream source/socket (frees the line); keeping the focus
+        // avoids the Amlogic "play/pause dead" bug on resume (see pause()).
+        retryJob?.cancel()
+        statsCollector.stop()
+        exoPlayer?.stop()
+        _playbackState.value = PlaybackState.IDLE
+        audioFocusController.onPause()
     }
 
     override fun seekTo(positionMs: Long) {
@@ -202,12 +268,14 @@ class Media3PlayerEngine @Inject constructor(
     override fun seekForward(ms: Long) {
         exoPlayer?.let { player ->
             val duration = player.duration
-            val newPosition = if (duration != C.TIME_UNSET) {
-                (player.currentPosition + ms).coerceAtMost(duration)
+            if (duration != C.TIME_UNSET) {
+                val safeMax = (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L)
+                if (player.currentPosition < safeMax) {
+                    player.seekTo((player.currentPosition + ms).coerceAtMost(safeMax))
+                }
             } else {
-                player.currentPosition + ms
+                player.seekTo(player.currentPosition + ms)
             }
-            player.seekTo(newPosition)
         }
     }
 
@@ -309,7 +377,7 @@ class Media3PlayerEngine @Inject constructor(
     }
 
     override fun createRenderView(context: Context, resizeMode: PlayerSurfaceResizeMode) =
-        viewBinder.createRenderView(context, resizeMode)
+        viewBinder.createRenderView(context, resizeMode, useSurfaceView)
 
     override fun bindRenderView(renderView: android.view.View, resizeMode: PlayerSurfaceResizeMode) {
         viewBinder.bind(renderView, getOrCreatePlayer(), resizeMode)
@@ -325,10 +393,15 @@ class Media3PlayerEngine @Inject constructor(
         preloadCoordinator.release()
         statsCollector.stop()
         audioFocusController.release()
-        mediaSession?.release()
-        mediaSession = null
+        releaseMediaSession()
         viewBinder.clear()
-        exoPlayer?.release()
+        exoPlayer?.let { player ->
+            playerListener?.let { runCatching { player.removeListener(it) } }
+            analyticsListener?.let { runCatching { player.removeAnalyticsListener(it) } }
+            runCatching { player.release() }
+        }
+        playerListener = null
+        analyticsListener = null
         exoPlayer = null
         lastStreamInfo = null
         lastMediaId = null
@@ -337,6 +410,9 @@ class Media3PlayerEngine @Inject constructor(
         playbackStarted = false
         retryAttempt = 0
         _retryStatus.value = null
+        // Purge the replayed error so the next screen's collectors don't
+        // re-handle this session's failure at construction time.
+        _error.resetReplayCache()
         _playbackState.value = PlaybackState.IDLE
         _isPlaying.value = false
         _mediaTitle.value = null
@@ -353,6 +429,7 @@ class Media3PlayerEngine @Inject constructor(
         retryJob?.cancel()
         retryJob = null
         retryGeneration++
+        val generation = ++prepareGeneration
         lastStreamInfo = streamInfo
         val mediaId = mediaSourceFactory.mediaIdFor(streamInfo)
         if (!preserveRetryState || lastMediaId != mediaId) {
@@ -367,17 +444,33 @@ class Media3PlayerEngine @Inject constructor(
         _error.tryEmit(null)
         _mediaTitle.value = null
         trackController.resetSelections()
+        // Official reset of _currentPosition/_duration for a new prepare —
+        // RoutingPlayerEngine subscribes to these flows only after prepare()
+        // returns and relies on them being fresh here. Do not remove.
         statsCollector.reset()
 
         currentResolvedStreamType = StreamTypeResolver.resolve(streamInfo)
         currentTimeoutProfile = PlayerTimeoutProfile.resolve(streamInfo, currentResolvedStreamType, preload = false)
-        currentRetryContext = PlaybackRetryContext(currentResolvedStreamType, currentTimeoutProfile)
-        currentRetryPolicy = PlayerRetryPolicy(currentRetryContext!!) { playbackStarted }
+        val retryContext = PlaybackRetryContext(currentResolvedStreamType, currentTimeoutProfile)
+        currentRetryContext = retryContext
+        val retryPolicy = PlayerRetryPolicy(retryContext) { playbackStarted }
+        currentRetryPolicy = retryPolicy
 
         val preferredDecoderMode = decoderPreferencePolicy.preferredMode(requestedDecoderMode, mediaId)
-        if (activeDecoderMode != preferredDecoderMode) {
-            activeDecoderMode = preferredDecoderMode
+        val desiredBufferProfile = bufferProfileFor(currentResolvedStreamType)
+        // Recréer si le mode décodeur OU le profil de buffer (live↔vod) change.
+        // recreatePlayer() est un no-op s'il n'y a pas encore de player (premier
+        // prepare) ; createPlayer() lira alors activeBufferProfile mis à jour ici.
+        val profileChanged = activeDecoderMode != preferredDecoderMode ||
+            activeBufferProfile != desiredBufferProfile
+        activeDecoderMode = preferredDecoderMode
+        activeBufferProfile = desiredBufferProfile
+        if (profileChanged) {
             recreatePlayer()
+        }
+        if (generation != prepareGeneration) {
+            Log.i(TAG, "prepare generation=$generation superseded, abandon")
+            return
         }
 
         Log.i(
@@ -393,7 +486,7 @@ class Media3PlayerEngine @Inject constructor(
             ?: mediaSourceFactory.create(
                 streamInfo = streamInfo,
                 resolvedStreamType = currentResolvedStreamType,
-                retryPolicy = currentRetryPolicy!!,
+                retryPolicy = retryPolicy,
                 preload = false
             ).second
         preloadCoordinator.onPlaybackStarted(mediaId)
@@ -404,17 +497,39 @@ class Media3PlayerEngine @Inject constructor(
         viewBinder.attachPlayer(player)
     }
 
+    /**
+     * Releases the MediaSession safely. Snapshot + null-out FIRST so a
+     * re-entrant call (release() racing a setter or recreatePlayer() on the
+     * main thread) cannot double-release the same handle, and wrap the native
+     * release in runCatching — MediaSession.release() can throw
+     * IllegalStateException if the session was already torn down.
+     */
+    private fun releaseMediaSession() {
+        val session = mediaSession
+        mediaSession = null
+        session?.let { runCatching { it.release() } }
+    }
+
+    /**
+     * Tears down the current ExoPlayer so the next getOrCreatePlayer() builds
+     * a fresh one with the updated decoder mode / buffer profile. Must NOT
+     * call prepareInternal() itself: the only caller IS prepareInternal(),
+     * which continues with getOrCreatePlayer() right after. The historical
+     * re-entrant call here issued a second setMediaSource+prepare (double
+     * network open, 1-3 s of extra restart latency on the S905X5M) and seeked
+     * the NEW media to the OLD player's position.
+     */
     private fun recreatePlayer() {
         val existing = exoPlayer
         if (existing != null) {
-            val currentViewPosition = existing.currentPosition
-            val playWhenReady = existing.playWhenReady
-            mediaSession?.release()
-            mediaSession = null
-            exoPlayer?.release()
+            releaseMediaSession()
+            playerListener?.let { runCatching { existing.removeListener(it) } }
+            analyticsListener?.let { runCatching { existing.removeAnalyticsListener(it) } }
+            playerListener = null
+            analyticsListener = null
+            runCatching { existing.release() }
             exoPlayer = null
             viewBinder.attachPlayer(null)
-            lastStreamInfo?.let { prepareInternal(it, preserveRetryState = true, seekPositionMs = currentViewPosition, autoPlay = playWhenReady) }
         }
     }
 
@@ -431,14 +546,38 @@ class Media3PlayerEngine @Inject constructor(
 
     private fun createPlayer(): ExoPlayer {
         val renderersFactory = buildRenderersFactory()
+        // Low-end Amlogic boxes (2 GB) need a tighter max-buffer to keep the
+        // native heap from spiking on long live streams.
+        // [minBuffer, maxBuffer, bufferForPlayback, bufferForPlaybackAfterRebuffer]
+        // LIVE : buffer court → rebuffer dans la fenêtre watchdog (6 s), heap bas,
+        // moins de matraquage d'un panel rate-limité. VOD : gros buffer conservé.
+        val bufferMs = if (activeBufferProfile == BufferProfile.LIVE) {
+            when (deviceProfile.tier) {
+                DevicePerformanceProfile.Tier.LOW -> intArrayOf(6_000, 10_000, 1_500, 3_000)
+                DevicePerformanceProfile.Tier.MID -> intArrayOf(6_000, 12_000, 1_500, 3_500)
+                DevicePerformanceProfile.Tier.HIGH -> intArrayOf(8_000, 15_000, 2_000, 4_000)
+            }
+        } else {
+            when (deviceProfile.tier) {
+                DevicePerformanceProfile.Tier.LOW -> intArrayOf(15_000, 30_000, 2_500, 5_000)
+                DevicePerformanceProfile.Tier.MID -> intArrayOf(20_000, 60_000, 2_500, 7_500)
+                DevicePerformanceProfile.Tier.HIGH -> intArrayOf(30_000, 90_000, 2_500, 10_000)
+            }
+        }
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                30_000,
-                90_000,
-                2_500,
-                10_000
-            )
+            .setBufferDurationsMs(bufferMs[0], bufferMs[1], bufferMs[2], bufferMs[3])
             .setPrioritizeTimeOverSizeThresholds(true)
+            .apply {
+                // VOD/LOW byte cap: 30 s of a very-high-bitrate MKV can exceed
+                // 60 MB of native heap on the 2 GB box. 16 MB ≈ 8 s at 16 Mbps;
+                // with prioritizeTimeOverSizeThresholds this is a secondary
+                // guard, not the primary buffering driver.
+                if (deviceProfile.tier == DevicePerformanceProfile.Tier.LOW &&
+                    activeBufferProfile == BufferProfile.VOD
+                ) {
+                    setTargetBufferBytes(16 * 1024 * 1024)
+                }
+            }
             .build()
         val livePlaybackSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
             .setFallbackMinPlaybackSpeed(1.0f)
@@ -461,8 +600,10 @@ class Media3PlayerEngine @Inject constructor(
             .apply {
                 videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
                 playbackParameters = PlaybackParameters(_playbackSpeed.value)
-                addAnalyticsListener(createAnalyticsListener())
-                addListener(createPlayerListener())
+                val analytics = createAnalyticsListener().also { analyticsListener = it }
+                val listener = createPlayerListener().also { playerListener = it }
+                addAnalyticsListener(analytics)
+                addListener(listener)
             }
     }
 
@@ -580,9 +721,23 @@ class Media3PlayerEngine @Inject constructor(
                 }
                 if (_playbackState.value == PlaybackState.READY) {
                     _retryStatus.value = null
+                    // Reset the retry budget once the stream is rendering again so
+                    // a long-running channel keeps recovering from successive
+                    // transient blips instead of exhausting maxAttempts after
+                    // a few hours.
+                    retryAttempt = 0
                 }
                 if (_playbackState.value == PlaybackState.READY && _isPlaying.value) {
                     markPlaybackStarted("ready-while-playing")
+                }
+                // The position pump must outlive transient stalls: keep it
+                // alive through READY and BUFFERING (self-healing even if an
+                // isPlaying transition was lost during a swap/recreate), and
+                // only stop it when the player truly has nothing to report.
+                when (_playbackState.value) {
+                    PlaybackState.READY, PlaybackState.BUFFERING -> statsCollector.ensureStarted()
+                    PlaybackState.IDLE, PlaybackState.ENDED -> statsCollector.stop()
+                    else -> Unit
                 }
             }
 
@@ -592,11 +747,13 @@ class Media3PlayerEngine @Inject constructor(
                     if (_playbackState.value == PlaybackState.READY) {
                         markPlaybackStarted("playing-ready")
                     }
-                    statsCollector.start()
+                    statsCollector.ensureStarted()
                     audioFocusController.onPlaybackStarted()
-                } else {
-                    statsCollector.stop()
                 }
+                // isPlaying=false (pause or transient stall) no longer stops
+                // the pump: stopping here froze the seekbar whenever the
+                // matching isPlaying=true was never observed (frozen-controls
+                // bug). The pump stops on IDLE/ENDED, stop() and release().
             }
 
             override fun onPlayerError(error: PlaybackException) {

@@ -56,8 +56,8 @@ class MarkAsWatchedTest {
             lastMarkedHistory = history
             return com.streamvault.domain.model.Result.success(Unit)
         }
-        override suspend fun recordPlayback(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
-        override suspend fun updateResumePosition(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
+        override suspend fun recordPlayback(history: PlaybackHistory, incrementWatchCount: Boolean) = com.streamvault.domain.model.Result.success(Unit)
+        override suspend fun updateResumePosition(history: PlaybackHistory, syncDenormalized: Boolean) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun removeFromHistory(contentId: Long, contentType: ContentType, providerId: Long) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun clearAllHistory() = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun clearHistoryForProvider(providerId: Long) = com.streamvault.domain.model.Result.success(Unit)

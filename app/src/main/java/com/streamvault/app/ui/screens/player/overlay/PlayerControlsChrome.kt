@@ -11,6 +11,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -64,6 +66,8 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import com.streamvault.app.R
+import com.streamvault.app.ui.design.LocalFormFactor
+import com.streamvault.app.ui.design.isTouch
 import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.ui.components.rememberCrossfadeImageModel
 import com.streamvault.app.ui.screens.player.NumericChannelInputState
@@ -135,9 +139,9 @@ fun PlayerControlsOverlay(
     onCast: () -> Unit = {},
     onStopCasting: () -> Unit = {},
     onSeekToPosition: (Long) -> Unit = {},
-    onSetScrubbingMode: (Boolean) -> Unit = {},
+    /** Non-null only on form factors where PiP exists (mobile). */
+    onEnterPip: (() -> Unit)? = null,
     seekPreview: SeekPreviewState = SeekPreviewState(),
-    onSeekPreviewPositionChanged: (Long?) -> Unit = {},
     clockLabelOverride: String? = null,
     onUserInteraction: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -220,9 +224,8 @@ fun PlayerControlsOverlay(
                 onSeekForwardHoldStart = onSeekForwardHoldStart,
                 onSeekForwardHoldStop = onSeekForwardHoldStop,
                 onSeekToPosition = onSeekToPosition,
-                onSetScrubbingMode = onSetScrubbingMode,
-                seekPreview = seekPreview,
-                onSeekPreviewPositionChanged = onSeekPreviewPositionChanged
+                onEnterPip = onEnterPip,
+                seekPreview = seekPreview
             )
         }
     }
@@ -540,9 +543,8 @@ private fun PlayerBottomBar(
     onSeekForwardHoldStart: () -> Unit = {},
     onSeekForwardHoldStop: () -> Unit = {},
     onSeekToPosition: (Long) -> Unit,
-    onSetScrubbingMode: (Boolean) -> Unit,
+    onEnterPip: (() -> Unit)?,
     seekPreview: SeekPreviewState,
-    onSeekPreviewPositionChanged: (Long?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isVod = contentType != "LIVE"
@@ -633,7 +635,7 @@ private fun PlayerBottomBar(
                         playButtonFocusRequester = playButtonFocusRequester,
                         quickActionsFocusRequester = quickActionsFocusRequester,
                         onSeekToPosition = onSeekToPosition,
-                        onSetScrubbingMode = onSetScrubbingMode,
+                        onEnterPip = onEnterPip,
                         onToggleAspectRatio = onToggleAspectRatio,
                         onOpenSubtitleTracks = onOpenSubtitleTracks,
                         onOpenAudioTracks = onOpenAudioTracks,
@@ -652,8 +654,7 @@ private fun PlayerBottomBar(
                         onSeekBackwardHoldStop = onSeekBackwardHoldStop,
                         onSeekForwardHoldStart = onSeekForwardHoldStart,
                         onSeekForwardHoldStop = onSeekForwardHoldStop,
-                        seekPreview = seekPreview,
-                        onSeekPreviewPositionChanged = onSeekPreviewPositionChanged
+                        seekPreview = seekPreview
                     )
                 }
             }
@@ -827,7 +828,7 @@ private fun PlayerVodInfo(
     playButtonFocusRequester: FocusRequester,
     quickActionsFocusRequester: FocusRequester,
     onSeekToPosition: (Long) -> Unit,
-    onSetScrubbingMode: (Boolean) -> Unit,
+    onEnterPip: (() -> Unit)?,
     onToggleAspectRatio: () -> Unit,
     onOpenSubtitleTracks: () -> Unit,
     onOpenAudioTracks: () -> Unit,
@@ -846,8 +847,7 @@ private fun PlayerVodInfo(
     onSeekBackwardHoldStop: () -> Unit = {},
     onSeekForwardHoldStart: () -> Unit = {},
     onSeekForwardHoldStop: () -> Unit = {},
-    seekPreview: SeekPreviewState,
-    onSeekPreviewPositionChanged: (Long?) -> Unit
+    seekPreview: SeekPreviewState
 ) {
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val isTelevisionDevice = rememberIsTelevisionDevice()
@@ -913,20 +913,41 @@ private fun PlayerVodInfo(
             if (isCastConnected) onStopCasting else onCast
         ))
         add(PlayerActionSpec(stringResource(R.string.player_aspect_ratio_label, aspectRatioLabel), onToggleAspectRatio))
-    }
-    var sliderValue by remember(duration, currentPosition) {
-        mutableStateOf(if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f)
-    }
-    var isScrubbing by remember { mutableStateOf(false) }
-    val latestSeekCallback by rememberUpdatedState(onSeekToPosition)
-    val latestScrubbingCallback by rememberUpdatedState(onSetScrubbingMode)
-    val latestSeekPreviewPositionChanged by rememberUpdatedState(onSeekPreviewPositionChanged)
-
-    LaunchedEffect(duration, currentPosition, isScrubbing) {
-        if (!isScrubbing) {
-            sliderValue = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f
+        // Explicit way into Picture-in-Picture. Auto-enter already handles the
+        // home gesture, but without a button the feature is undiscoverable —
+        // nothing on screen suggests the video can keep playing in a corner.
+        if (onEnterPip != null) {
+            add(PlayerActionSpec(stringResource(R.string.player_pip), onEnterPip))
         }
     }
+    // Slider is purely visual on Android TV: seek is driven by the parent
+    // PlayerScreen KeyEvent handler (DPAD LEFT/RIGHT → seekBackward/seekForward,
+    // long-hold → progressive seek). Material3 Slider's DPAD handling is
+    // unreliable on TV (onValueChangeFinished does not fire on DPAD release),
+    // so we make the slider non-focusable below and mirror the engine's
+    // currentPosition directly. This eliminates the entire isScrubbing state
+    // machine and the bugs it caused (frozen timecode at last sliderValue,
+    // focus captured by slider, play/pause feeling dead).
+    //
+    // On TOUCH devices there is no D-pad to drive it, so the slider becomes the
+    // only way to seek and must be draggable. The scrubbing state machine is
+    // therefore reintroduced — but ONLY on that path: `interactiveSeek` is false
+    // on TV, which keeps `enabled = false` and the exact behaviour described
+    // above. `.focusable(false)` stays unconditional so a Bluetooth keyboard or
+    // remote plugged into a phone can never capture the slider either.
+    val interactiveSeek = LocalFormFactor.current.isTouch && duration > 0
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    val engineFraction = if (duration > 0) {
+        currentPosition.toFloat() / duration.toFloat()
+    } else {
+        0f
+    }
+    // While the finger is down we show the dragged position, not the engine's —
+    // otherwise the thumb fights the playhead and jumps back under the finger.
+    val sliderValue = if (isScrubbing) scrubFraction else engineFraction
+    val displayedPosition = if (isScrubbing) (scrubFraction * duration).toLong() else currentPosition
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1079,50 +1100,43 @@ private fun PlayerVodInfo(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = formatDuration(
-                            if (isScrubbing && duration > 0) {
-                                (sliderValue * duration).toLong()
-                            } else {
-                                currentPosition
-                            }
-                        ),
+                        text = formatDuration(displayedPosition),
                         style = MaterialTheme.typography.labelMedium,
                         color = Color.White
                     )
                     Slider(
                         value = sliderValue,
-                        onValueChange = { newValue ->
-                            val clampedValue = newValue.coerceIn(0f, 1f)
-                            if (!isScrubbing) {
+                        onValueChange = if (interactiveSeek) {
+                            { fraction ->
                                 isScrubbing = true
-                                latestScrubbingCallback(true)
+                                scrubFraction = fraction
                             }
-                            sliderValue = clampedValue
-                            if (duration > 0) {
-                                latestSeekPreviewPositionChanged((clampedValue * duration).toLong())
-                            }
+                        } else {
+                            { /* no-op: seek driven by parent KeyEvent */ }
                         },
-                        onValueChangeFinished = {
-                            if (duration > 0) {
-                                latestSeekCallback((sliderValue.coerceIn(0f, 1f) * duration).toLong())
-                            }
-                            if (isScrubbing) {
-                                latestScrubbingCallback(false)
+                        onValueChangeFinished = if (interactiveSeek) {
+                            {
+                                onSeekToPosition((scrubFraction * duration).toLong())
                                 isScrubbing = false
                             }
-                            latestSeekPreviewPositionChanged(null)
+                        } else {
+                            null
                         },
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 16.dp)
-                            .focusProperties {
-                                down = quickActionsFocusRequester
-                            }
+                            // Unconditional: the slider must never take D-pad or
+                            // keyboard focus, on any form factor.
+                            .focusable(false)
                             .semantics { contentDescription = playbackLabel },
-                        enabled = duration > 0,
+                        enabled = interactiveSeek,
                         colors = SliderDefaults.colors(
+                            thumbColor = Primary,
                             activeTrackColor = Primary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                            inactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                            disabledActiveTrackColor = Primary,
+                            disabledInactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                            disabledThumbColor = Primary
                         )
                     )
                     Text(

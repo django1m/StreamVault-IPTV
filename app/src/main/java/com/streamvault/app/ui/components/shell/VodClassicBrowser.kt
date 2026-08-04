@@ -19,6 +19,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.streamvault.app.ui.design.FormFactor
+import com.streamvault.app.ui.design.LocalFormFactor
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +64,69 @@ fun VodClassicSplitLayout(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
+    // PHONE: the side-by-side layout is unusable here. The rail is a fixed
+    // 300dp; on a 411dp phone (379dp after the shell gutters) that leaves
+    // 379 - 300 - 20 = 59dp for the content pane, and 23dp once its own
+    // horizontal padding is removed — the grid renders as a sliver, which reads
+    // as "I pick a category and nothing shows up".
+    //
+    // A two-level pattern like Settings does not apply: one category is always
+    // selected (the "all" entry is selected by default), so there is no
+    // "nothing selected" state to show the list in. Instead the rail collapses
+    // and is summoned from a header button, closing again once a category is
+    // picked. CLASSIC is the DEFAULT view mode, so this path is what every
+    // phone user sees on a fresh install.
+    if (LocalFormFactor.current == FormFactor.Phone) {
+        var railExpanded by rememberSaveable { mutableStateOf(false) }
+        Column(modifier = modifier.fillMaxSize()) {
+            if (railExpanded) {
+                CategoryRailPanel(
+                    title = railTitle,
+                    searchValue = railSearchValue,
+                    onSearchValueChange = onRailSearchValueChange,
+                    searchPlaceholder = railSearchPlaceholder,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    items(categories, key = { it.key }) { category ->
+                        // Picking a category closes the rail, so the grid the
+                        // user just asked for is what they land on.
+                        VodClassicCategoryRow(
+                            category = category.copy(
+                                onClick = {
+                                    category.onClick()
+                                    railExpanded = false
+                                }
+                            )
+                        )
+                    }
+                }
+            } else {
+                TvButton(
+                    onClick = { railExpanded = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "☰  " + (categories.firstOrNull { it.isSelected }?.label ?: railTitle),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    content()
+                }
+            }
+        }
+        return
+    }
+
     Row(
         modifier = modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.spacedBy(20.dp)

@@ -79,7 +79,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun recordPlayback(history: PlaybackHistory): Result<Unit> {
+    override suspend fun recordPlayback(history: PlaybackHistory, incrementWatchCount: Boolean): Result<Unit> {
         return try {
             if (preferencesRepository.isIncognitoMode.first()) {
                 return Result.success(Unit)
@@ -90,7 +90,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 streamUrl = XtreamUrlFactory.sanitizePersistedStreamUrl(history.streamUrl, history.providerId),
                 resumePositionMs = history.resumePositionMs.takeIf { it > 0L } ?: existing?.resumePositionMs ?: 0L,
                 totalDurationMs = history.totalDurationMs.takeIf { it > 0L } ?: existing?.totalDurationMs ?: 0L,
-                watchCount = (existing?.watchCount ?: 0) + 1,
+                watchCount = if (incrementWatchCount) (existing?.watchCount ?: 0) + 1 else existing?.watchCount ?: 1,
                 watchedStatus = resolveWatchedStatus(
                     resumePositionMs = history.resumePositionMs.takeIf { it > 0L } ?: existing?.resumePositionMs ?: 0L,
                     totalDurationMs = history.totalDurationMs.takeIf { it > 0L } ?: existing?.totalDurationMs ?: 0L,

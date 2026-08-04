@@ -89,6 +89,9 @@ class PreferencesRepository @Inject constructor(
         val PLAYER_SUBTITLE_TEXT_COLOR = intPreferencesKey("player_subtitle_text_color")
         val PLAYER_SUBTITLE_BACKGROUND_COLOR = intPreferencesKey("player_subtitle_background_color")
         val PLAYER_CONTROLS_TIMEOUT_SECONDS = intPreferencesKey("player_controls_timeout_seconds")
+        // Auto-stop a LIVE stream after N seconds with no remote interaction
+        // ("are you still watching?"). 0 = disabled (default).
+        val PLAYBACK_INACTIVITY_TIMEOUT_SECONDS = intPreferencesKey("playback_inactivity_timeout_seconds")
         val PLAYER_LIVE_OVERLAY_TIMEOUT_SECONDS = intPreferencesKey("player_live_overlay_timeout_seconds")
         val PLAYER_NOTICE_TIMEOUT_SECONDS = intPreferencesKey("player_notice_timeout_seconds")
         val PLAYER_DIAGNOSTICS_TIMEOUT_SECONDS = intPreferencesKey("player_diagnostics_timeout_seconds")
@@ -109,6 +112,7 @@ class PreferencesRepository @Inject constructor(
         val LAST_APP_UPDATE_CHECK_TIMESTAMP = longPreferencesKey("last_app_update_check_timestamp")
         val APP_UPDATE_DOWNLOAD_ID = longPreferencesKey("app_update_download_id")
         val APP_UPDATE_DOWNLOADED_VERSION_NAME = stringPreferencesKey("app_update_downloaded_version_name")
+        val APP_UPDATE_DOWNLOADED_SHA256 = stringPreferencesKey("app_update_downloaded_sha256")
         val APP_UPDATE_LATEST_VERSION_NAME = stringPreferencesKey("app_update_latest_version_name")
         val APP_UPDATE_LATEST_VERSION_CODE = intPreferencesKey("app_update_latest_version_code")
         val APP_UPDATE_RELEASE_URL = stringPreferencesKey("app_update_release_url")
@@ -217,6 +221,13 @@ class PreferencesRepository @Inject constructor(
 
     val playerControlsTimeoutSeconds: Flow<Int> = context.dataStore.data.map { preferences ->
         (preferences[PreferencesKeys.PLAYER_CONTROLS_TIMEOUT_SECONDS] ?: 5).coerceIn(2, 60)
+    }
+
+    // 0 = disabled; otherwise the inactivity timeout in seconds. Clamped to a
+    // sane range (>= 1 h) so a stray small value can't kill live playback fast.
+    val playbackInactivityTimeoutSeconds: Flow<Int> = context.dataStore.data.map { preferences ->
+        val v = preferences[PreferencesKeys.PLAYBACK_INACTIVITY_TIMEOUT_SECONDS] ?: 0
+        if (v <= 0) 0 else v.coerceAtLeast(3600)
     }
 
     val playerLiveOverlayTimeoutSeconds: Flow<Int> = context.dataStore.data.map { preferences ->
@@ -379,6 +390,10 @@ class PreferencesRepository @Inject constructor(
         preferences[PreferencesKeys.APP_UPDATE_DOWNLOADED_VERSION_NAME]?.takeIf { it.isNotBlank() }
     }
 
+    val downloadedAppUpdateSha256: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.APP_UPDATE_DOWNLOADED_SHA256]?.takeIf { it.isNotBlank() }
+    }
+
     val cachedAppUpdateVersionName: Flow<String?> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.APP_UPDATE_LATEST_VERSION_NAME]?.takeIf { it.isNotBlank() }
     }
@@ -455,6 +470,16 @@ class PreferencesRepository @Inject constructor(
                 preferences.remove(PreferencesKeys.APP_UPDATE_DOWNLOADED_VERSION_NAME)
             } else {
                 preferences[PreferencesKeys.APP_UPDATE_DOWNLOADED_VERSION_NAME] = versionName
+            }
+        }
+    }
+
+    suspend fun setDownloadedAppUpdateSha256(sha256: String?) {
+        context.dataStore.edit { preferences ->
+            if (sha256.isNullOrBlank()) {
+                preferences.remove(PreferencesKeys.APP_UPDATE_DOWNLOADED_SHA256)
+            } else {
+                preferences[PreferencesKeys.APP_UPDATE_DOWNLOADED_SHA256] = sha256
             }
         }
     }
@@ -560,6 +585,13 @@ class PreferencesRepository @Inject constructor(
     suspend fun setPlayerControlsTimeoutSeconds(seconds: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYER_CONTROLS_TIMEOUT_SECONDS] = seconds.coerceIn(2, 60)
+        }
+    }
+
+    suspend fun setPlaybackInactivityTimeoutSeconds(seconds: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYBACK_INACTIVITY_TIMEOUT_SECONDS] =
+                if (seconds <= 0) 0 else seconds.coerceAtLeast(3600)
         }
     }
 
@@ -757,6 +789,20 @@ class PreferencesRepository @Inject constructor(
         val key = longPreferencesKey("last_live_category_id_$providerId")
         context.dataStore.edit { preferences ->
             preferences[key] = categoryId
+        }
+    }
+
+    fun getLastLiveChannelId(providerId: Long): Flow<Long?> {
+        val key = longPreferencesKey("last_live_channel_id_$providerId")
+        return context.dataStore.data.map { preferences ->
+            preferences[key]
+        }
+    }
+
+    suspend fun setLastLiveChannelId(providerId: Long, channelId: Long) {
+        val key = longPreferencesKey("last_live_channel_id_$providerId")
+        context.dataStore.edit { preferences ->
+            preferences[key] = channelId
         }
     }
 

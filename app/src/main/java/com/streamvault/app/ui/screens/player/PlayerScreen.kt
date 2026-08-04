@@ -59,6 +59,11 @@ import com.streamvault.player.PlayerSurfaceResizeMode
 import com.streamvault.player.PlayerTrack
 import com.streamvault.player.TrackType
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.streamvault.app.ui.screens.player.gesture.PlayerGestureFeedback
+import com.streamvault.app.ui.screens.player.gesture.PlayerGestureHud
+import com.streamvault.app.ui.screens.player.gesture.VerticalDragZone
+import com.streamvault.app.ui.screens.player.gesture.playerTouchGestures
+import com.streamvault.app.ui.screens.player.gesture.rememberPlayerGestureController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -66,18 +71,26 @@ import javax.inject.Inject
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import com.streamvault.app.ui.components.dialogs.ProgramHistoryDialog
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.streamvault.app.R
 import com.streamvault.app.MainActivity
 import com.streamvault.app.cast.CastConnectionState
+import com.streamvault.app.ui.design.LocalFormFactor
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
+import com.streamvault.app.ui.pip.LocalIsInPip
+import com.streamvault.app.ui.pip.PIP_CONTROL_FORWARD
+import com.streamvault.app.ui.pip.PIP_CONTROL_PLAY_PAUSE
+import com.streamvault.app.ui.pip.PIP_CONTROL_REWIND
+import com.streamvault.app.ui.design.isTouch
 import com.streamvault.app.ui.design.requestFocusSafely
+import com.streamvault.app.ui.system.ImmersiveSystemBars
 import com.streamvault.app.ui.screens.player.overlay.ChannelInfoOverlay
 import com.streamvault.app.ui.screens.player.overlay.CategoryListOverlay
 import com.streamvault.app.ui.screens.player.overlay.ChannelListOverlay
@@ -214,12 +227,27 @@ fun PlayerScreen(
         focusRequester.requestFocus()
     }
 
-    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+    // Observe the PROCESS lifecycle, not LocalLifecycleOwner (the NavBackStackEntry).
+    // Returning to the box launcher (Home) backgrounds the whole process; the
+    // nav-entry ON_STOP does not always propagate in a single-activity +
+    // Compose-Navigation graph, which left audio playing in the background.
+    // ProcessLifecycleOwner fires reliably on real app foreground/background.
+    val processLifecycleOwner = ProcessLifecycleOwner.get()
+    LifecycleEventEffect(Lifecycle.Event.ON_START, processLifecycleOwner) {
         viewModel.onAppForegrounded()
     }
 
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        viewModel.onAppBackgrounded()
+    val isInPip = LocalIsInPip.current
+
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP, processLifecycleOwner) {
+        // In Picture-in-Picture the video is still on screen, so backgrounding
+        // the engine here would kill the very playback the user asked to keep.
+        // The activity is PAUSED but not STOPPED in PiP, so this should not fire
+        // at all — the guard is defensive, because if it ever did, the symptom
+        // would be "PiP opens then goes black" with no obvious culprit.
+        if (!isInPip) {
+            viewModel.onAppBackgrounded()
+        }
     }
 
     DisposableEffect(mainActivity) {
@@ -227,6 +255,11 @@ fun PlayerScreen(
             viewModel.onPlayerScreenDisposed()
         }
     }
+
+    // On phone/tablet the app chrome is NOT fullscreen (see the mobile theme), so
+    // the player has to claim immersion for itself and give it back on exit.
+    // No-op on TV, where the theme is already windowFullscreen.
+    ImmersiveSystemBars(enabled = LocalFormFactor.current.isTouch)
 
     // Prevent screen from sleeping during active playback
     val playerWindow = mainActivity?.window
@@ -363,9 +396,12 @@ fun PlayerScreen(
         }
     }
 
-    val handlePlayerNoticeAction: (PlayerNoticeAction) -> Unit = remember(returnRoute, onNavigate) {
+    val handlePlayerNoticeAction: (PlayerNoticeAction) -> Unit = remember(returnRoute, onNavigate, onBack) {
         { action ->
-            if (action == PlayerNoticeAction.OPEN_GUIDE && !returnRoute.isNullOrBlank() && onNavigate != null) {
+            if (action == PlayerNoticeAction.GO_BACK) {
+                viewModel.dismissPlayerNotice()
+                onBack()
+            } else if (action == PlayerNoticeAction.OPEN_GUIDE && !returnRoute.isNullOrBlank() && onNavigate != null) {
                 viewModel.dismissPlayerNotice()
                 onNavigate(returnRoute)
             } else {
@@ -411,6 +447,57 @@ fun PlayerScreen(
         handleBackPress()
     }
 
+    // ── Picture-in-Picture (mobile only) ──────────────────────────────────
+    val pipController = mainActivity?.pipController
+    val playerStats by viewModel.playerStats.collectAsStateWithLifecycle()
+
+    // Feed the aspect ratio from the decoded frame. Android rejects extreme
+    // ratios, so the controller clamps; 0x0 before the first frame is ignored.
+    LaunchedEffect(pipController, playerStats.width, playerStats.height) {
+        pipController?.setVideoSize(playerStats.width, playerStats.height)
+    }
+    // Auto-enter is armed only while the player is on screen AND playing, so
+    // swiping home from a browsing screen never opens a PiP window.
+    LaunchedEffect(pipController, isPlaying) {
+        pipController?.setPlayerState(visible = true, playing = isPlaying)
+    }
+    DisposableEffect(pipController) {
+        onDispose {
+            // Leaving the player disarms auto-enter; otherwise going home from
+            // any other screen would still pop a PiP window.
+            pipController?.setPlayerState(visible = false, playing = false)
+            mainActivity?.onPipControl = null
+        }
+    }
+    // PiP action buttons drive the same entry points as the on-screen controls.
+    DisposableEffect(mainActivity, isPlaying) {
+        mainActivity?.onPipControl = { control ->
+            when (control) {
+                PIP_CONTROL_PLAY_PAUSE -> if (isPlaying) viewModel.pause() else viewModel.play()
+                PIP_CONTROL_REWIND -> viewModel.seekBackward()
+                PIP_CONTROL_FORWARD -> viewModel.seekForward()
+            }
+            // The play/pause icon must flip to match the new state.
+            pipController?.syncParams()
+        }
+        onDispose { }
+    }
+
+    // ── Touch gestures (phone / tablet only) ──────────────────────────────
+    val touchGesturesEnabled = LocalFormFactor.current.isTouch
+    val gestureController = rememberPlayerGestureController()
+    var gestureFeedback by remember { mutableStateOf<PlayerGestureFeedback?>(null) }
+    // Bumped when a drag ends; the effect below then fades the HUD out. A plain
+    // key on `gestureFeedback` would restart the timer on every drag frame and
+    // the HUD would linger long after the finger lifted.
+    var gestureFeedbackNonce by remember { mutableIntStateOf(0) }
+    LaunchedEffect(gestureFeedback, gestureFeedbackNonce) {
+        if (gestureFeedback != null) {
+            delay(900)
+            gestureFeedback = null
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -421,20 +508,63 @@ fun PlayerScreen(
                 canFocus = !anyOverlayVisible && !showControls
             }
             .focusable()
-            .pointerInput(contentType, anyOverlayVisible, showControls) {
-                detectTapGestures {
+            // Touch vocabulary of the player. On TV `touchGesturesEnabled` is
+            // false and this contributes nothing, leaving the D-pad path exactly
+            // as before. Note this REPLACES the previous standalone
+            // detectTapGestures — two tap detectors on one node fight over the
+            // pointer and the second never fires.
+            .playerTouchGestures(
+                enabled = touchGesturesEnabled,
+                allowZap = contentType == "LIVE",
+                onSingleTap = {
                     when {
-                        anyOverlayVisible -> return@detectTapGestures
+                        anyOverlayVisible -> Unit
                         showControls -> viewModel.toggleControls()
                         contentType == "LIVE" -> viewModel.openChannelInfoOverlay()
                         else -> viewModel.toggleControls()
                     }
+                },
+                onDoubleTapSeek = { deltaSeconds ->
+                    if (!anyOverlayVisible) {
+                        if (deltaSeconds < 0) viewModel.seekBackward() else viewModel.seekForward()
+                        gestureFeedback = PlayerGestureFeedback.Seek(deltaSeconds)
+                    }
+                },
+                onTogglePlayPause = {
+                    if (!anyOverlayVisible) {
+                        if (isPlaying) viewModel.pause() else viewModel.play()
+                    }
+                },
+                onVerticalDrag = { zone, delta ->
+                    if (!anyOverlayVisible) {
+                        when (zone) {
+                            VerticalDragZone.Volume ->
+                                gestureController.adjustVolume(delta)?.let {
+                                    gestureFeedback = PlayerGestureFeedback.Volume(it)
+                                }
+                            VerticalDragZone.Brightness ->
+                                gestureController.adjustBrightness(delta)?.let {
+                                    gestureFeedback = PlayerGestureFeedback.Brightness(it)
+                                }
+                        }
+                    }
+                },
+                onDragEnd = { gestureFeedbackNonce++ },
+                onZap = { next ->
+                    if (!anyOverlayVisible) {
+                        // Same entry points the D-pad up/down uses, so zapping
+                        // behaves identically however it is triggered.
+                        if (next) viewModel.playNext() else viewModel.playPrevious()
+                    }
                 }
-            }
+            )
             .onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
                     return@onPreviewKeyEvent false
                 }
+                // Any remote key press = activity → reset the inactivity guard
+                // (no-op unless the opt-in guard is enabled on a live stream).
+                viewModel.notePlaybackInteraction()
                 if (contentType != "LIVE") {
                     return@onPreviewKeyEvent false
                 }
@@ -584,6 +714,7 @@ fun PlayerScreen(
                                 if (isRtl) viewModel.openEpgOverlay() else viewModel.openChannelListOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showCategoryListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
+                                viewModel.revealControls()
                                 val direction = if (isRtl) SeekDirection.FORWARD else SeekDirection.BACKWARD
                                 when (event.nativeKeyEvent.repeatCount) {
                                     0 -> {
@@ -613,6 +744,7 @@ fun PlayerScreen(
                                 if (isRtl) viewModel.openChannelListOverlay() else viewModel.openEpgOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
+                                viewModel.revealControls()
                                 val direction = if (isRtl) SeekDirection.BACKWARD else SeekDirection.FORWARD
                                 when (event.nativeKeyEvent.repeatCount) {
                                     0 -> {
@@ -771,470 +903,521 @@ fun PlayerScreen(
             onRelease = { renderView ->
                 viewModel.playerEngine.releaseRenderView(renderView)
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                // Android animates from this rectangle into the PiP window.
+                // Without it the transition snaps instead of morphing.
+                .onGloballyPositioned { coords ->
+                    if (pipController != null) {
+                        val bounds = coords.boundsInWindow()
+                        pipController.setSourceRect(
+                            android.graphics.Rect(
+                                bounds.left.toInt(),
+                                bounds.top.toInt(),
+                                bounds.right.toInt(),
+                                bounds.bottom.toInt()
+                            )
+                        )
+                    }
+                }
         )
 
-        // Buffering indicator
-        if (playbackState == PlaybackState.BUFFERING) {
-            Box(
+        // Loader robuste : ne JAMAIS laisser le spinner centré collé pendant que
+        // la lecture tourne. Règles :
+        //  - isPlaying == true        → masqué immédiatement (la chaîne joue).
+        //  - pas BUFFERING/IDLE       → masqué (READY/ENDED/ERROR).
+        //  - BUFFERING/IDLE sans jeu  → affiché ; immédiat au tout premier
+        //    démarrage (évite l'écran noir muet), mais débouncé ~1 s une fois
+        //    qu'on a déjà joué, pour qu'un micro-rebuffer ne fasse pas clignoter
+        //    le gros overlay. `playbackTitle` sert de clé de session : il change
+        //    à chaque zap/épisode et réinitialise l'état du loader.
+        // In Picture-in-Picture the window is roughly 200dp wide: there is room
+        // for the video and nothing else, and PiP exposes no touch targets beyond
+        // the system action row. Everything below is chrome (loader, controls,
+        // overlays, dialogs, toasts) plus the effects that drive it — no playback
+        // logic — so it is simply not composed while in PiP.
+        if (!isInPip) {
+            val bufferingNow = playbackState == PlaybackState.BUFFERING ||
+                playbackState == PlaybackState.IDLE
+            var hasEverPlayed by remember(playbackTitle) { mutableStateOf(false) }
+            LaunchedEffect(isPlaying) { if (isPlaying) hasEverPlayed = true }
+            var showLoader by remember(playbackTitle) { mutableStateOf(false) }
+            LaunchedEffect(bufferingNow, isPlaying, hasEverPlayed) {
+                when {
+                    isPlaying || !bufferingNow -> showLoader = false
+                    !hasEverPlayed -> showLoader = true
+                    else -> {
+                        delay(1000)
+                        showLoader = true
+                    }
+                }
+            }
+            if (showLoader) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 24.dp, vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = Primary,
+                            strokeWidth = 3.dp,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        val loadingLabel = currentChannel?.name
+                            ?: currentEpisode?.title
+                            ?: playbackTitle
+                        if (!loadingLabel.isNullOrBlank()) {
+                            Text(
+                                text = loadingLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.player_buffering),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.78f)
+                        )
+                    }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = playerNotice != null && !(playbackState == PlaybackState.BUFFERING && playerNotice?.isRetryNotice == false),
+                enter = fadeIn(),
+                exit = fadeOut(),
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 64.dp),
-                contentAlignment = Alignment.TopCenter
+                    .align(Alignment.TopCenter)
+                    .padding(top = 116.dp)
             ) {
+                PlayerNoticeBanner(
+                    notice = playerNotice,
+                    onDismiss = viewModel::dismissPlayerNotice,
+                    onAction = handlePlayerNoticeAction
+                )
+            }
+
+            if (currentChannelRecording?.status == com.streamvault.domain.model.RecordingStatus.RECORDING) {
+                val recordingPulse = rememberInfiniteTransition(label = "recordingPulse")
+                val recordingAlpha by recordingPulse.animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.2f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 750),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "recordingAlpha"
+                )
                 Row(
                     modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        .align(Alignment.TopStart)
+                        .padding(start = 18.dp, top = 18.dp)
+                        .background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CircularProgressIndicator(
-                        color = Primary,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(18.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(Color(0xFFFF4D4F).copy(alpha = recordingAlpha), RoundedCornerShape(999.dp))
                     )
                     Text(
-                        text = stringResource(R.string.player_buffering),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White
+                        text = stringResource(R.string.settings_recording_status_recording),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
-        }
 
-        AnimatedVisibility(
-            visible = playerNotice != null && !(playbackState == PlaybackState.BUFFERING && playerNotice?.isRetryNotice == false),
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 116.dp)
-        ) {
-            PlayerNoticeBanner(
-                notice = playerNotice,
-                onDismiss = viewModel::dismissPlayerNotice,
-                onAction = handlePlayerNoticeAction
-            )
-        }
+            // Error overlay
+            if (playbackState == PlaybackState.ERROR) {
+                PlayerErrorOverlay(
+                    playerError = playerError,
+                    contentType = contentType,
+                    hasAlternateStream = viewModel.hasAlternateStream(),
+                    hasLastChannel = viewModel.hasLastChannel(),
+                    onAction = handlePlayerNoticeAction
+                )
+            }
 
-        if (currentChannelRecording?.status == com.streamvault.domain.model.RecordingStatus.RECORDING) {
-            val recordingPulse = rememberInfiniteTransition(label = "recordingPulse")
-            val recordingAlpha by recordingPulse.animateFloat(
-                initialValue = 1f,
-                targetValue = 0.2f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 750),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "recordingAlpha"
+            // Above the video, below the controls: a gesture readout must never sit
+            // on top of a button the user is trying to press.
+            if (touchGesturesEnabled) {
+                PlayerGestureHud(
+                    feedback = gestureFeedback,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            PlayerControlsOverlayHost(
+                playerEngine = viewModel.playerEngine,
+                visible = showControls,
+                title = playbackTitle.ifBlank { title },
+                contentType = contentType,
+                isPlaying = isPlaying,
+                currentProgram = currentProgram,
+                currentChannelName = currentChannel?.name,
+                displayChannelNumber = displayChannelNumber,
+                aspectRatioLabel = aspectRatio.modeName,
+                subtitleTrackCount = availableSubtitleTracks.size,
+                audioTrackCount = availableAudioTracks.size,
+                videoQualityCount = availableVideoQualities.size,
+                currentRecordingStatus = currentChannelRecording?.status,
+                isMuted = isMuted,
+                playbackSpeed = playbackSpeed,
+                mediaTitle = mediaTitle,
+                playButtonFocusRequester = playButtonFocusRequester,
+                quickActionsFocusRequester = quickActionsFocusRequester,
+                modifier = Modifier.fillMaxSize(),
+                onClose = viewModel::toggleControls,
+                onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
+                onSeekBackward = { viewModel.seekBackward() },
+                onSeekForward = { viewModel.seekForward() },
+                onSeekBackwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.BACKWARD) },
+                onSeekBackwardHoldStop = { viewModel.stopProgressiveSeek() },
+                onSeekForwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.FORWARD) },
+                onSeekForwardHoldStop = { viewModel.stopProgressiveSeek() },
+                onRestartProgram = viewModel::restartCurrentProgram,
+                onOpenArchive = { showProgramHistory = true },
+                onStartRecording = viewModel::startManualRecording,
+                onStopRecording = viewModel::stopCurrentRecording,
+                onScheduleRecording = viewModel::scheduleRecording,
+                onScheduleDailyRecording = viewModel::scheduleDailyRecording,
+                onScheduleWeeklyRecording = viewModel::scheduleWeeklyRecording,
+                onToggleAspectRatio = viewModel::toggleAspectRatio,
+                onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
+                onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
+                onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
+                onOpenPlaybackSpeed = { showSpeedSelection = true },
+                hasNextEpisode = nextEpisode != null,
+                onPlayNextEpisode = viewModel::playNextEpisode,
+                onOpenSplitScreen = { showSplitDialog = true },
+                onToggleMute = viewModel::toggleMute,
+                isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
+                onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
+                onStopCasting = viewModel::stopCasting,
+                onSeekToPosition = viewModel::seekTo,
+                // Null on TV: no PiP there, so no action is added to the panel.
+                onEnterPip = pipController?.takeIf { it.isSupported }?.let {
+                    { it.enterIfPlaying() }
+                },
+                seekPreview = seekPreview,
+                onUserInteraction = viewModel::refreshControlsAutoHide
             )
-            Row(
+
+            PlayerNumericInputOverlay(
+                state = numericChannelInput,
+                visible = contentType == "LIVE" && !showControls,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 40.dp)
+            )
+
+            PlayerAspectRatioToast(
+                aspectRatioLabel = aspectRatio.modeName,
+                controlsVisible = showControls,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 32.dp)
+            )
+
+            PlayerResolutionBadge(
+                visible = showResolution && !showControls && resolutionBadgeLabel != null,
+                resolutionLabel = resolutionBadgeLabel.orEmpty(),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(32.dp)
+            )
+        
+            // Resume Prompt Dialog
+            if (resumePrompt.show) {
+                PlayerResumePrompt(
+                    title = resumePrompt.title,
+                    onStartOver = { viewModel.dismissResumePrompt(resume = false) },
+                    onResume = { viewModel.dismissResumePrompt(resume = true) }
+                )
+            }
+        
+            // Track Selection Dialog
+            PlayerTrackSelectionDialog(
+                trackType = showTrackSelection,
+                audioTracks = availableAudioTracks,
+                subtitleTracks = availableSubtitleTracks,
+                videoTracks = availableVideoQualities,
+                onDismiss = { showTrackSelection = null },
+                onSelectAudio = viewModel::selectAudioTrack,
+                onSelectVideo = viewModel::selectVideoQuality,
+                onSelectSubtitle = viewModel::selectSubtitleTrack
+            )
+            PlayerSpeedSelectionDialog(
+                visible = showSpeedSelection,
+                selectedSpeed = playbackSpeed,
+                onDismiss = { showSpeedSelection = false },
+                onSelectSpeed = viewModel::setPlaybackSpeed
+            )
+            PlayerEpisodeSelectionDialog(
+                visible = showEpisodePicker,
+                seriesTitle = currentSeries?.name ?: playbackTitle.ifBlank { title },
+                seasons = currentSeriesSeasons.orEmpty(),
+                currentEpisodeId = currentEpisode?.id ?: internalChannelId,
+                currentSeasonNumber = currentEpisode?.seasonNumber ?: seasonNumber,
+                onDismiss = { showEpisodePicker = false },
+                onSelectEpisode = { episode ->
+                    showEpisodePicker = false
+                    viewModel.playEpisode(episode)
+                }
+            )
+
+            // --- Overlays ---
+            if (showDiagnostics) {
+                val playerStats by viewModel.playerStats.collectAsStateWithLifecycle()
+                DiagnosticsOverlay(
+                    stats = playerStats,
+                    diagnostics = playerDiagnostics,
+                    modifier = Modifier.align(Alignment.TopStart).padding(32.dp)
+                )
+            }
+
+            if (contentType == "LIVE") {
+                AnimatedVisibility(
+                    visible = showChannelListOverlay,
+                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
+                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                    modifier = Modifier
+                        .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
+                        .fillMaxHeight()
+                        .width(sideOverlayWidth)
+                        .focusGroup()
+                ) {
+                    ChannelListOverlay(
+                        channels = currentChannelList,
+                        recentChannels = recentChannels,
+                        currentChannelId = currentChannel?.id ?: internalChannelId,
+                        overlayFocusRequester = channelListFocusRequester,
+                        lastVisitedCategoryName = lastVisitedCategory?.name,
+                        onOpenLastGroup = { viewModel.openLastVisitedCategory() },
+                        onSelectChannel = { channelId -> viewModel.zapToChannel(channelId) },
+                        onOpenCategories = { viewModel.openCategoryListOverlay() },
+                        onDismiss = { viewModel.closeOverlays() },
+                        onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showCategoryListOverlay,
+                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
+                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                    modifier = Modifier
+                        .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
+                        .fillMaxHeight()
+                        .width(sideOverlayWidth)
+                        .focusGroup()
+                ) {
+                    CategoryListOverlay(
+                        categories = availableCategories,
+                        currentCategoryId = activeCategoryId,
+                        overlayFocusRequester = categoryListFocusRequester,
+                        onSelectCategory = { category ->
+                            viewModel.selectCategoryFromOverlay(category)
+                        },
+                        onDismiss = { viewModel.closeOverlays() },
+                        onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showEpgOverlay,
+                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) -it else it }),
+                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) -it else it }),
+                    modifier = Modifier
+                        .align(if (isRtl) Alignment.TopStart else Alignment.TopEnd)
+                        .fillMaxHeight()
+                        .width(epgOverlayWidth)
+                        .focusGroup()
+                ) {
+                    EpgOverlay(
+                        currentChannel = currentChannel,
+                        displayChannelNumber = displayChannelNumber,
+                        currentProgram = currentProgram,
+                        nextProgram = nextProgram,
+                        upcomingPrograms = upcomingPrograms,
+                        overlayFocusRequester = epgFocusRequester,
+                        preferredFocusedProgramToken = lastFocusedEpgProgramToken,
+                        onFocusedProgramChange = { token -> lastFocusedEpgProgramToken = token },
+                        onDismiss = { viewModel.closeOverlays() },
+                        onOpenArchiveBrowser = {
+                            showProgramHistory = true
+                            viewModel.closeOverlays()
+                        },
+                        onPlayCatchUp = { program -> 
+                            viewModel.playCatchUp(program)
+                            viewModel.closeOverlays()
+                        },
+                        onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showChannelInfoOverlay,
+                    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .focusGroup()
+                ) {
+                    ChannelInfoOverlay(
+                        currentChannel = currentChannel,
+                        displayChannelNumber = displayChannelNumber,
+                        currentProgram = currentProgram,
+                        nextProgram = nextProgram,
+                        focusRequester = channelInfoFocusRequester,
+                        lastVisitedCategoryName = lastVisitedCategory?.name,
+                        onDismiss = { viewModel.closeChannelInfoOverlay() },
+                        onOverlayInteracted = viewModel::onLiveOverlayInteraction,
+                        onOpenFullEpg = {
+                            viewModel.closeChannelInfoOverlay()
+                            viewModel.openEpgOverlay()
+                        },
+                        onOpenLastGroup = {
+                            viewModel.closeChannelInfoOverlay()
+                            viewModel.openLastVisitedCategory()
+                        },
+                        currentRecordingStatus = currentChannelRecording?.status,
+                        onStartRecording = viewModel::startManualRecording,
+                        onStopRecording = viewModel::stopCurrentRecording,
+                        onRestartProgram = { viewModel.restartCurrentProgram() },
+                        onToggleAspectRatio = { viewModel.toggleAspectRatio() },
+                        onToggleDiagnostics = { viewModel.toggleDiagnostics() },
+                        onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
+                        isPlaying = isPlaying,
+                        currentAspectRatio = aspectRatio.modeName,
+                        isDiagnosticsEnabled = showDiagnostics,
+                        onOpenSplitScreen = { showSplitDialog = true },
+                        subtitleTrackCount = availableSubtitleTracks.size,
+                        audioTrackCount = availableAudioTracks.size,
+                        videoQualityCount = availableVideoQualities.size,
+                        isMuted = isMuted,
+                        onToggleMute = viewModel::toggleMute,
+                        onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
+                        onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
+                        onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
+                        isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
+                        onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
+                        onStopCasting = viewModel::stopCasting
+                    )
+                }
+            }
+
+            // ─── Cinematic overlays ───────────────────────────────────────
+            // NowPlayingChip: glass pill announcing what's playing, fades after 3s.
+            // Re-triggered each time the stream URL or episode changes.
+            val nowPlayingKey = remember(streamUrl, currentEpisode?.id) {
+                "$streamUrl|${currentEpisode?.id ?: 0}"
+            }
+            val nowPlayingSubtitle = currentEpisode?.let { ep ->
+                val season = ep.seasonNumber.takeIf { it > 0 }
+                val number = ep.episodeNumber.takeIf { it > 0 }
+                if (season != null && number != null) "S$season · E$number" else null
+            } ?: currentChannel?.let { channel ->
+                currentProgram?.title?.takeIf { it.isNotBlank() }
+            }
+            com.streamvault.app.ui.screens.player.overlay.components.NowPlayingChip(
+                title = playbackTitle.takeIf { it.isNotBlank() } ?: title,
+                subtitle = nowPlayingSubtitle,
+                key = nowPlayingKey,
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = 18.dp, top = 18.dp)
-                    .background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(999.dp))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(Color(0xFFFF4D4F).copy(alpha = recordingAlpha), RoundedCornerShape(999.dp))
-                )
-                Text(
-                    text = stringResource(R.string.settings_recording_status_recording),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        // Error overlay
-        if (playbackState == PlaybackState.ERROR) {
-            PlayerErrorOverlay(
-                playerError = playerError,
-                contentType = contentType,
-                hasAlternateStream = viewModel.hasAlternateStream(),
-                hasLastChannel = viewModel.hasLastChannel(),
-                onAction = handlePlayerNoticeAction
+                    .padding(top = 40.dp, start = 40.dp)
             )
-        }
 
-        PlayerControlsOverlayHost(
-            playerEngine = viewModel.playerEngine,
-            visible = showControls,
-            title = playbackTitle.ifBlank { title },
-            contentType = contentType,
-            isPlaying = isPlaying,
-            currentProgram = currentProgram,
-            currentChannelName = currentChannel?.name,
-            displayChannelNumber = displayChannelNumber,
-            aspectRatioLabel = aspectRatio.modeName,
-            subtitleTrackCount = availableSubtitleTracks.size,
-            audioTrackCount = availableAudioTracks.size,
-            videoQualityCount = availableVideoQualities.size,
-            currentRecordingStatus = currentChannelRecording?.status,
-            isMuted = isMuted,
-            playbackSpeed = playbackSpeed,
-            mediaTitle = mediaTitle,
-            playButtonFocusRequester = playButtonFocusRequester,
-            quickActionsFocusRequester = quickActionsFocusRequester,
-            modifier = Modifier.fillMaxSize(),
-            onClose = viewModel::toggleControls,
-            onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
-            onSeekBackward = { viewModel.seekBackward() },
-            onSeekForward = { viewModel.seekForward() },
-            onSeekBackwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.BACKWARD) },
-            onSeekBackwardHoldStop = { viewModel.stopProgressiveSeek() },
-            onSeekForwardHoldStart = { viewModel.startProgressiveSeek(SeekDirection.FORWARD) },
-            onSeekForwardHoldStop = { viewModel.stopProgressiveSeek() },
-            onRestartProgram = viewModel::restartCurrentProgram,
-            onOpenArchive = { showProgramHistory = true },
-            onStartRecording = viewModel::startManualRecording,
-            onStopRecording = viewModel::stopCurrentRecording,
-            onScheduleRecording = viewModel::scheduleRecording,
-            onScheduleDailyRecording = viewModel::scheduleDailyRecording,
-            onScheduleWeeklyRecording = viewModel::scheduleWeeklyRecording,
-            onToggleAspectRatio = viewModel::toggleAspectRatio,
-            onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
-            onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
-            onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
-            onOpenPlaybackSpeed = { showSpeedSelection = true },
-            hasNextEpisode = nextEpisode != null,
-            onPlayNextEpisode = viewModel::playNextEpisode,
-            onOpenSplitScreen = { showSplitDialog = true },
-            onToggleMute = viewModel::toggleMute,
-            isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
-            onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
-            onStopCasting = viewModel::stopCasting,
-            onSeekToPosition = viewModel::seekTo,
-            onSetScrubbingMode = viewModel::setScrubbingMode,
-            seekPreview = seekPreview,
-            onSeekPreviewPositionChanged = viewModel::updateSeekPreview,
-            onUserInteraction = viewModel::refreshControlsAutoHide
-        )
-
-        PlayerNumericInputOverlay(
-            state = numericChannelInput,
-            visible = contentType == "LIVE" && !showControls,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 40.dp)
-        )
-
-        PlayerAspectRatioToast(
-            aspectRatioLabel = aspectRatio.modeName,
-            controlsVisible = showControls,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 32.dp)
-        )
-
-        PlayerResolutionBadge(
-            visible = showResolution && !showControls && resolutionBadgeLabel != null,
-            resolutionLabel = resolutionBadgeLabel.orEmpty(),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(32.dp)
-        )
-        
-        // Resume Prompt Dialog
-        if (resumePrompt.show) {
-            PlayerResumePrompt(
-                title = resumePrompt.title,
-                onStartOver = { viewModel.dismissResumePrompt(resume = false) },
-                onResume = { viewModel.dismissResumePrompt(resume = true) }
-            )
-        }
-        
-        // Track Selection Dialog
-        PlayerTrackSelectionDialog(
-            trackType = showTrackSelection,
-            audioTracks = availableAudioTracks,
-            subtitleTracks = availableSubtitleTracks,
-            videoTracks = availableVideoQualities,
-            onDismiss = { showTrackSelection = null },
-            onSelectAudio = viewModel::selectAudioTrack,
-            onSelectVideo = viewModel::selectVideoQuality,
-            onSelectSubtitle = viewModel::selectSubtitleTrack
-        )
-        PlayerSpeedSelectionDialog(
-            visible = showSpeedSelection,
-            selectedSpeed = playbackSpeed,
-            onDismiss = { showSpeedSelection = false },
-            onSelectSpeed = viewModel::setPlaybackSpeed
-        )
-        PlayerEpisodeSelectionDialog(
-            visible = showEpisodePicker,
-            seriesTitle = currentSeries?.name ?: playbackTitle.ifBlank { title },
-            seasons = currentSeriesSeasons.orEmpty(),
-            currentEpisodeId = currentEpisode?.id ?: internalChannelId,
-            currentSeasonNumber = currentEpisode?.seasonNumber ?: seasonNumber,
-            onDismiss = { showEpisodePicker = false },
-            onSelectEpisode = { episode ->
-                showEpisodePicker = false
-                viewModel.playEpisode(episode)
-            }
-        )
-
-        // --- Overlays ---
-        if (showDiagnostics) {
-            val playerStats by viewModel.playerStats.collectAsStateWithLifecycle()
-            DiagnosticsOverlay(
-                stats = playerStats,
-                diagnostics = playerDiagnostics,
-                modifier = Modifier.align(Alignment.TopStart).padding(32.dp)
-            )
-        }
-
-        if (contentType == "LIVE") {
-            AnimatedVisibility(
-                visible = showChannelListOverlay,
-                enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
-                modifier = Modifier
-                    .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
-                    .fillMaxHeight()
-                    .width(sideOverlayWidth)
-                    .focusGroup()
-            ) {
-                ChannelListOverlay(
-                    channels = currentChannelList,
-                    recentChannels = recentChannels,
-                    currentChannelId = currentChannel?.id ?: internalChannelId,
-                    overlayFocusRequester = channelListFocusRequester,
-                    lastVisitedCategoryName = lastVisitedCategory?.name,
-                    onOpenLastGroup = { viewModel.openLastVisitedCategory() },
-                    onSelectChannel = { channelId -> viewModel.zapToChannel(channelId) },
-                    onOpenCategories = { viewModel.openCategoryListOverlay() },
-                    onDismiss = { viewModel.closeOverlays() },
-                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
-                )
-            }
-
-            AnimatedVisibility(
-                visible = showCategoryListOverlay,
-                enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
-                modifier = Modifier
-                    .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
-                    .fillMaxHeight()
-                    .width(sideOverlayWidth)
-                    .focusGroup()
-            ) {
-                CategoryListOverlay(
-                    categories = availableCategories,
-                    currentCategoryId = activeCategoryId,
-                    overlayFocusRequester = categoryListFocusRequester,
-                    onSelectCategory = { category ->
-                        viewModel.selectCategoryFromOverlay(category)
-                    },
-                    onDismiss = { viewModel.closeOverlays() },
-                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
-                )
-            }
-
-            AnimatedVisibility(
-                visible = showEpgOverlay,
-                enter = slideInHorizontally(initialOffsetX = { if (isRtl) -it else it }),
-                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) -it else it }),
-                modifier = Modifier
-                    .align(if (isRtl) Alignment.TopStart else Alignment.TopEnd)
-                    .fillMaxHeight()
-                    .width(epgOverlayWidth)
-                    .focusGroup()
-            ) {
-                EpgOverlay(
-                    currentChannel = currentChannel,
-                    displayChannelNumber = displayChannelNumber,
-                    currentProgram = currentProgram,
-                    nextProgram = nextProgram,
-                    upcomingPrograms = upcomingPrograms,
-                    overlayFocusRequester = epgFocusRequester,
-                    preferredFocusedProgramToken = lastFocusedEpgProgramToken,
-                    onFocusedProgramChange = { token -> lastFocusedEpgProgramToken = token },
-                    onDismiss = { viewModel.closeOverlays() },
-                    onOpenArchiveBrowser = {
-                        showProgramHistory = true
-                        viewModel.closeOverlays()
-                    },
-                    onPlayCatchUp = { program -> 
-                        viewModel.playCatchUp(program)
-                        viewModel.closeOverlays()
-                    },
-                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
-                )
-            }
-
-            AnimatedVisibility(
-                visible = showChannelInfoOverlay,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            // PlayerOptionsPanel: triggered by KEYCODE_MENU or a ≥700 ms hold on OK.
+            // Dismissed by the BackHandler just below. Fed directly from the player
+            // engine's track and quality lists so ordering matches the native player.
+            val speedPresets = remember { listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f) }
+            com.streamvault.app.ui.screens.player.overlay.components.PlayerOptionsPanel(
+                visible = showOptionsPanel,
+                audioOptions = availableAudioTracks.map { track ->
+                    com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                        id = track.id,
+                        label = track.name.ifBlank { track.language ?: track.id },
+                        selected = track.isSelected
+                    )
+                },
+                subtitleOptions = availableSubtitleTracks.map { track ->
+                    com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                        id = track.id,
+                        label = track.name.ifBlank { track.language ?: track.id },
+                        selected = track.isSelected
+                    )
+                },
+                speedOptions = speedPresets.map { preset ->
+                    com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                        id = preset.toString(),
+                        label = if (preset == 1.0f) "1×" else "${preset}×",
+                        selected = kotlin.math.abs(playbackSpeed - preset) < 0.01f
+                    )
+                },
+                qualityOptions = availableVideoQualities.map { track ->
+                    com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                        id = track.id,
+                        label = track.name.ifBlank { track.id },
+                        selected = track.isSelected
+                    )
+                },
+                onAudioSelected = { id ->
+                    viewModel.selectAudioTrack(id)
+                    showOptionsPanel = false
+                },
+                onSubtitleSelected = { id ->
+                    viewModel.selectSubtitleTrack(id.takeUnless { it.isBlank() })
+                    showOptionsPanel = false
+                },
+                onSpeedSelected = { id ->
+                    id.toFloatOrNull()?.let { viewModel.setPlaybackSpeed(it) }
+                    showOptionsPanel = false
+                },
+                onQualitySelected = { id ->
+                    viewModel.selectVideoQuality(id)
+                    showOptionsPanel = false
+                },
+                onDismiss = { showOptionsPanel = false },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .focusGroup()
-            ) {
-                ChannelInfoOverlay(
-                    currentChannel = currentChannel,
-                    displayChannelNumber = displayChannelNumber,
-                    currentProgram = currentProgram,
-                    nextProgram = nextProgram,
-                    focusRequester = channelInfoFocusRequester,
-                    lastVisitedCategoryName = lastVisitedCategory?.name,
-                    onDismiss = { viewModel.closeChannelInfoOverlay() },
-                    onOverlayInteracted = viewModel::onLiveOverlayInteraction,
-                    onOpenFullEpg = {
-                        viewModel.closeChannelInfoOverlay()
-                        viewModel.openEpgOverlay()
-                    },
-                    onOpenLastGroup = {
-                        viewModel.closeChannelInfoOverlay()
-                        viewModel.openLastVisitedCategory()
-                    },
-                    currentRecordingStatus = currentChannelRecording?.status,
-                    onStartRecording = viewModel::startManualRecording,
-                    onStopRecording = viewModel::stopCurrentRecording,
-                    onRestartProgram = { viewModel.restartCurrentProgram() },
-                    onToggleAspectRatio = { viewModel.toggleAspectRatio() },
-                    onToggleDiagnostics = { viewModel.toggleDiagnostics() },
-                    onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
-                    isPlaying = isPlaying,
-                    currentAspectRatio = aspectRatio.modeName,
-                    isDiagnosticsEnabled = showDiagnostics,
-                    onOpenSplitScreen = { showSplitDialog = true },
-                    subtitleTrackCount = availableSubtitleTracks.size,
-                    audioTrackCount = availableAudioTracks.size,
-                    videoQualityCount = availableVideoQualities.size,
-                    isMuted = isMuted,
-                    onToggleMute = viewModel::toggleMute,
-                    onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
-                    onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
-                    onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
-                    isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
-                    onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
-                    onStopCasting = viewModel::stopCasting
-                )
+                    .fillMaxWidth(0.78f)
+                    .padding(bottom = 36.dp)
+            )
+
+            // MiniGuideFloating: a glass sidebar for the "up next" strip. Exposed
+            // behind an explicit state so it never competes with the classic EPG
+            // overlay — opened on demand only.
+            val miniGuideEntries = remember(upcomingPrograms, currentProgram) {
+                val now = System.currentTimeMillis()
+                upcomingPrograms.map { program ->
+                    com.streamvault.app.ui.screens.player.overlay.components.MiniGuideEntry(
+                        program = program,
+                        isLive = now in program.startTime until program.endTime,
+                        isCurrent = program.id == currentProgram?.id
+                    )
+                }
             }
+            com.streamvault.app.ui.screens.player.overlay.components.MiniGuideFloating(
+                visible = showMiniGuide && contentType == "LIVE" && !anyOverlayVisible,
+                entries = miniGuideEntries,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 24.dp)
+                    .fillMaxHeight(0.72f)
+            )
         }
-
-        // ─── Cinematic overlays ───────────────────────────────────────
-        // NowPlayingChip: glass pill announcing what's playing, fades after 3s.
-        // Re-triggered each time the stream URL or episode changes.
-        val nowPlayingKey = remember(streamUrl, currentEpisode?.id) {
-            "$streamUrl|${currentEpisode?.id ?: 0}"
-        }
-        val nowPlayingSubtitle = currentEpisode?.let { ep ->
-            val season = ep.seasonNumber.takeIf { it > 0 }
-            val number = ep.episodeNumber.takeIf { it > 0 }
-            if (season != null && number != null) "S$season · E$number" else null
-        } ?: currentChannel?.let { channel ->
-            currentProgram?.title?.takeIf { it.isNotBlank() }
-        }
-        com.streamvault.app.ui.screens.player.overlay.components.NowPlayingChip(
-            title = playbackTitle.takeIf { it.isNotBlank() } ?: title,
-            subtitle = nowPlayingSubtitle,
-            key = nowPlayingKey,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = 40.dp, start = 40.dp)
-        )
-
-        // SkipIntroButton: only on series episodes, and only while we're plausibly
-        // in the opening titles window. Hidden the moment any overlay is visible.
-        val inIntroWindow = contentType == "SERIES_EPISODE" &&
-            currentPositionMs in 45_000L..150_000L &&
-            !anyOverlayVisible &&
-            !showControls
-        com.streamvault.app.ui.screens.player.overlay.components.SkipIntroButton(
-            visible = inIntroWindow,
-            onSkip = { viewModel.seekTo(150_000L) },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 48.dp, bottom = 48.dp)
-        )
-
-        // PlayerOptionsPanel: triggered by KEYCODE_MENU or a ≥700 ms hold on OK.
-        // Dismissed by the BackHandler just below. Fed directly from the player
-        // engine's track and quality lists so ordering matches the native player.
-        val speedPresets = remember { listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f) }
-        com.streamvault.app.ui.screens.player.overlay.components.PlayerOptionsPanel(
-            visible = showOptionsPanel,
-            audioOptions = availableAudioTracks.map { track ->
-                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
-                    id = track.id,
-                    label = track.name.ifBlank { track.language ?: track.id },
-                    selected = track.isSelected
-                )
-            },
-            subtitleOptions = availableSubtitleTracks.map { track ->
-                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
-                    id = track.id,
-                    label = track.name.ifBlank { track.language ?: track.id },
-                    selected = track.isSelected
-                )
-            },
-            speedOptions = speedPresets.map { preset ->
-                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
-                    id = preset.toString(),
-                    label = if (preset == 1.0f) "1×" else "${preset}×",
-                    selected = kotlin.math.abs(playbackSpeed - preset) < 0.01f
-                )
-            },
-            qualityOptions = availableVideoQualities.map { track ->
-                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
-                    id = track.id,
-                    label = track.name.ifBlank { track.id },
-                    selected = track.isSelected
-                )
-            },
-            onAudioSelected = { id ->
-                viewModel.selectAudioTrack(id)
-                showOptionsPanel = false
-            },
-            onSubtitleSelected = { id ->
-                viewModel.selectSubtitleTrack(id.takeUnless { it.isBlank() })
-                showOptionsPanel = false
-            },
-            onSpeedSelected = { id ->
-                id.toFloatOrNull()?.let { viewModel.setPlaybackSpeed(it) }
-                showOptionsPanel = false
-            },
-            onQualitySelected = { id ->
-                viewModel.selectVideoQuality(id)
-                showOptionsPanel = false
-            },
-            onDismiss = { showOptionsPanel = false },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(0.78f)
-                .padding(bottom = 36.dp)
-        )
-
-        // MiniGuideFloating: a glass sidebar for the "up next" strip. Exposed
-        // behind an explicit state so it never competes with the classic EPG
-        // overlay — opened on demand only.
-        val miniGuideEntries = remember(upcomingPrograms, currentProgram) {
-            val now = System.currentTimeMillis()
-            upcomingPrograms.map { program ->
-                com.streamvault.app.ui.screens.player.overlay.components.MiniGuideEntry(
-                    program = program,
-                    isLive = now in program.startTime until program.endTime,
-                    isCurrent = program.id == currentProgram?.id
-                )
-            }
-        }
-        com.streamvault.app.ui.screens.player.overlay.components.MiniGuideFloating(
-            visible = showMiniGuide && contentType == "LIVE" && !anyOverlayVisible,
-            entries = miniGuideEntries,
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 24.dp)
-                .fillMaxHeight(0.72f)
-        )
     }
 
     // Close the options panel / mini-guide on Back before the regular back handler.
@@ -1315,9 +1498,8 @@ private fun PlayerControlsOverlayHost(
     onCast: () -> Unit,
     onStopCasting: () -> Unit,
     onSeekToPosition: (Long) -> Unit,
-    onSetScrubbingMode: (Boolean) -> Unit,
+    onEnterPip: (() -> Unit)?,
     seekPreview: SeekPreviewState,
-    onSeekPreviewPositionChanged: (Long?) -> Unit,
     onUserInteraction: () -> Unit
 ) {
     val currentPosition by playerEngine.currentPosition.collectAsStateWithLifecycle()
@@ -1372,9 +1554,8 @@ private fun PlayerControlsOverlayHost(
         onCast = onCast,
         onStopCasting = onStopCasting,
         onSeekToPosition = onSeekToPosition,
-        onSetScrubbingMode = onSetScrubbingMode,
+        onEnterPip = onEnterPip,
         seekPreview = seekPreview,
-        onSeekPreviewPositionChanged = onSeekPreviewPositionChanged,
         onUserInteraction = onUserInteraction
     )
 }

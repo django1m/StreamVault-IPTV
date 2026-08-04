@@ -12,6 +12,13 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 
+// Delay after the current channel reaches READY before preloading the next one.
+// Preloading during startup steals bandwidth from the channel the user is
+// actually waiting for, which is worse on the 2 GB box's limited link. Waiting
+// until playback is settled keeps initial start fast while still pre-buffering
+// the next channel during idle viewing.
+private const val PRELOAD_SETTLE_DELAY_MS = 3_000L
+
 fun PlayerViewModel.playNext() {
     clearNumericChannelInput()
     if (channelList.isEmpty()) return
@@ -154,11 +161,13 @@ internal fun PlayerViewModel.changeChannel(index: Int) {
             .collect {
                 if (isActivePlaybackSession(requestVersion, channel.streamUrl)) {
                     playerEngine.setScrubbingMode(false)
+                    // Only now that the current channel is actually playing do
+                    // we schedule the next-channel preload, so it does not steal
+                    // startup bandwidth from the channel the user is waiting for.
+                    scheduleAdjacentPreload(index, requestVersion)
                 }
             }
     }
-
-    preloadAdjacentChannel(index)
 
     requestEpg(
         providerId = currentProviderId,
@@ -179,17 +188,25 @@ internal fun PlayerViewModel.changeChannel(index: Int) {
     }
 }
 
-internal fun PlayerViewModel.preloadAdjacentChannel(currentIndex: Int) {
-    if (channelList.size < 2) return
+internal fun PlayerViewModel.scheduleAdjacentPreload(currentIndex: Int, requestVersion: Long) {
+    preloadJob?.cancel()
+    if (channelList.size < 2 || currentContentType != ContentType.LIVE) return
     val nextIndex = (currentIndex + 1) % channelList.size
     val nextChannel = channelList[nextIndex]
-    viewModelScope.launch {
+    preloadJob = viewModelScope.launch {
+        // Let the just-tuned channel breathe before pre-buffering the next one.
+        delay(PRELOAD_SETTLE_DELAY_MS)
+        // The user may have zapped again during the settle delay; only preload
+        // if we are still on the same live channel and session.
+        if (!isActivePlaybackSession(requestVersion, channelList.getOrNull(currentIndex)?.streamUrl)) return@launch
+        if (currentChannelIndex != currentIndex) return@launch
         val nextUrl = resolvePlaybackUrl(
             nextChannel.streamUrl,
             nextChannel.id,
             nextChannel.providerId,
             ContentType.LIVE
         ) ?: return@launch
+        if (currentChannelIndex != currentIndex) return@launch
         playerEngine.preload(
             StreamInfo(
                 url = nextUrl,

@@ -82,6 +82,9 @@ import com.streamvault.app.ui.components.shell.VodClassicContentHeader
 import com.streamvault.app.ui.components.shell.VodClassicSplitLayout
 import com.streamvault.app.ui.components.shell.VodHeroStrip
 import com.streamvault.app.ui.components.shell.VodSectionHeader
+import com.streamvault.app.ui.design.contentScrollPadding
+import com.streamvault.app.ui.design.posterGridCells
+import com.streamvault.app.ui.design.posterGridSpacing
 import com.streamvault.app.ui.design.FocusRestoreHost
 import com.streamvault.app.ui.design.requestFocusSafely
 import com.streamvault.app.ui.model.VodViewMode
@@ -116,6 +119,10 @@ fun SeriesScreen(
 
     BackHandler(enabled = uiState.selectedCategory != null && !uiState.isReorderMode) {
         viewModel.selectCategory(null)
+        topBarFocusRequester.requestFocusSafely(
+            tag = "SeriesScreen",
+            target = "Top navigation bar"
+        )
     }
 
     BackHandler(enabled = uiState.selectedCategory == null && !uiState.isReorderMode) {
@@ -717,7 +724,7 @@ private fun SeriesVodContent(
 
     LazyVerticalGrid(
         state = gridState,
-        columns = GridCells.Adaptive(minSize = 136.dp),
+        columns = posterGridCells(),
         modifier = Modifier
             .fillMaxSize()
             .onPreviewKeyEvent { event ->
@@ -729,9 +736,9 @@ private fun SeriesVodContent(
                     } else false
                 } else false
             },
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = contentScrollPadding(),
+        horizontalArrangement = Arrangement.spacedBy(posterGridSpacing()),
+        verticalArrangement = Arrangement.spacedBy(posterGridSpacing() + 2.dp)
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             VodSectionHeader(
@@ -1122,7 +1129,7 @@ private fun SeriesVodClassicContent(
 
             LazyVerticalGrid(
                 state = classicGridState,
-                columns = GridCells.Adaptive(minSize = 136.dp),
+                columns = posterGridCells(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -1136,8 +1143,8 @@ private fun SeriesVodClassicContent(
                         } else false
                     },
                 contentPadding = PaddingValues(bottom = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(posterGridSpacing()),
+                verticalArrangement = Arrangement.spacedBy(posterGridSpacing() + 2.dp)
             ) {
                 if (uiState.isLoadingSelectedCategory) {
                     item(span = { GridItemSpan(maxLineSpan) }) {

@@ -162,6 +162,7 @@ fun PlayerErrorOverlay(
         add(PlayerNoticeAction.RETRY)
         if (contentType == "LIVE" && hasAlternateStream) add(PlayerNoticeAction.ALTERNATE_STREAM)
         if (contentType == "LIVE" && hasLastChannel) add(PlayerNoticeAction.LAST_CHANNEL)
+        add(PlayerNoticeAction.GO_BACK)
     }
 
     Box(
@@ -975,4 +976,5 @@ private fun playerNoticeActionLabel(action: PlayerNoticeAction): String =
         PlayerNoticeAction.LAST_CHANNEL -> stringResource(R.string.player_last_channel_action)
         PlayerNoticeAction.ALTERNATE_STREAM -> stringResource(R.string.player_try_alternate_stream)
         PlayerNoticeAction.OPEN_GUIDE -> stringResource(R.string.player_open_guide_action)
+        PlayerNoticeAction.GO_BACK -> stringResource(R.string.player_go_back_action)
     }

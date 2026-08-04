@@ -3,6 +3,7 @@ package com.streamvault.data.sync
 import com.streamvault.data.local.DatabaseTransactionRunner
 import com.streamvault.data.local.dao.CatalogSyncDao
 import com.streamvault.data.local.dao.MovieDao
+import com.streamvault.data.local.dao.StoredCategoryIdentity
 import com.streamvault.data.local.entity.CategoryEntity
 import com.streamvault.data.local.entity.CategoryImportStageEntity
 import com.streamvault.data.local.entity.ChannelEntity
@@ -26,18 +27,20 @@ internal class SyncCatalogStore(
 
     fun newSessionId(): Long = sessionIds.incrementAndGet()
 
-    suspend fun replaceLiveCatalog(providerId: Long, categories: List<CategoryEntity>?, channels: List<ChannelEntity>): Int {
+    suspend fun replaceLiveCatalog(providerId: Long, categories: List<CategoryEntity>?, channels: Sequence<ChannelEntity>): Int {
         val sessionId = newSessionId()
-        val stagedChannels = buildChannelStages(providerId, sessionId, channels)
         try {
             clearProviderStaging(providerId)
             categories?.let { stageCategories(providerId, sessionId, it) }
-            insertStageRows(stagedChannels, catalogSyncDao::insertChannelStages)
+            // Staged in batches off a Sequence — same pattern as movies/series.
+            // The previous List-based path materialised a second full copy of
+            // a 10k+ channel catalogue (distinct + stage rows) on the 2 GB box.
+            val acceptedCount = stageChannelSequence(providerId, sessionId, channels)
             transactionRunner.inTransaction {
                 categories?.let { applyCategories(providerId, sessionId, "LIVE") }
                 applyChannels(providerId, sessionId)
             }
-            return stagedChannels.size
+            return acceptedCount
         } finally {
             clearSession(providerId, sessionId)
         }
@@ -136,22 +139,79 @@ internal class SyncCatalogStore(
     }
 
     suspend fun stageCategories(providerId: Long, sessionId: Long, categories: List<CategoryEntity>) {
-        val rows = categories
-            .distinctBy { it.categoryId to it.type }
-            .map { category ->
-                CategoryImportStageEntity(
-                    sessionId = sessionId,
-                    providerId = providerId,
-                    categoryId = category.categoryId,
-                    name = category.name,
-                    parentId = category.parentId,
-                    type = category.type,
-                    isAdult = category.isAdult,
-                    syncFingerprint = categoryFingerprint(category)
-                )
-            }
+        val resolved = preserveKnownCategoryNames(
+            providerId,
+            categories.distinctBy { it.categoryId to it.type }
+        )
+        val rows = resolved.map { category ->
+            CategoryImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                categoryId = category.categoryId,
+                name = category.name,
+                parentId = category.parentId,
+                type = category.type,
+                isAdult = category.isAdult,
+                syncFingerprint = categoryFingerprint(category)
+            )
+        }
         insertStageRows(rows, catalogSyncDao::insertCategoryStages)
     }
+
+    /**
+     * When a provider's `get_*_categories` request fails mid-sync, categories fall back to a
+     * synthetic "Category <id>" placeholder name (see `SyncManagerCatalogStrategySupport`).
+     * Without this guard the placeholder would overwrite the real category name persisted by a
+     * previous healthy sync, so the user would suddenly see raw numeric ids (e.g. "Category 513")
+     * instead of the real label.
+     *
+     * For any incoming category that is a placeholder we restore the last-known-good
+     * name / parent / adult flag still stored in the DB. Genuinely new placeholder categories
+     * (no stored row) and real names are left untouched, so legitimate renames still apply and
+     * a later healthy sync can recover. The restored fields make the staged fingerprint match
+     * the stored row, so the apply step performs no spurious update.
+     */
+    private suspend fun preserveKnownCategoryNames(
+        providerId: Long,
+        categories: List<CategoryEntity>
+    ): List<CategoryEntity> {
+        val placeholderTypes = categories
+            .asSequence()
+            .filter { isPlaceholderCategoryName(it.categoryId, it.name) }
+            .map { it.type.name }
+            .toSet()
+        if (placeholderTypes.isEmpty()) {
+            return categories
+        }
+
+        val knownByTypeAndId = HashMap<Pair<String, Long>, StoredCategoryIdentity>()
+        placeholderTypes.forEach { typeName ->
+            catalogSyncDao.storedCategoryIdentities(providerId, typeName).forEach { stored ->
+                if (!isPlaceholderCategoryName(stored.categoryId, stored.name)) {
+                    knownByTypeAndId[typeName to stored.categoryId] = stored
+                }
+            }
+        }
+        if (knownByTypeAndId.isEmpty()) {
+            return categories
+        }
+
+        return categories.map { category ->
+            if (!isPlaceholderCategoryName(category.categoryId, category.name)) {
+                return@map category
+            }
+            val known = knownByTypeAndId[category.type.name to category.categoryId]
+                ?: return@map category
+            category.copy(
+                name = known.name,
+                parentId = known.parentId,
+                isAdult = known.isAdult
+            )
+        }
+    }
+
+    private fun isPlaceholderCategoryName(categoryId: Long, name: String): Boolean =
+        name == "$PLACEHOLDER_CATEGORY_PREFIX$categoryId"
 
     suspend fun finalizeStagedImport(
         providerId: Long,
@@ -227,27 +287,35 @@ internal class SyncCatalogStore(
     ): List<ChannelImportStageEntity> {
         val distinct = channels.distinctBy { it.streamId }
         return parallelMap(distinct) { channel ->
-            ChannelImportStageEntity(
-                sessionId = sessionId,
-                providerId = providerId,
-                streamId = channel.streamId,
-                name = channel.name,
-                logoUrl = channel.logoUrl,
-                groupTitle = channel.groupTitle,
-                categoryId = channel.categoryId,
-                categoryName = channel.categoryName,
-                streamUrl = channel.streamUrl,
-                epgChannelId = channel.epgChannelId,
-                number = channel.number,
-                catchUpSupported = channel.catchUpSupported,
-                catchUpDays = channel.catchUpDays,
-                catchUpSource = channel.catchUpSource,
-                isAdult = channel.isAdult,
-                logicalGroupId = channel.logicalGroupId,
-                errorCount = channel.errorCount,
-                syncFingerprint = channelFingerprint(channel)
-            )
+            channelStageEntity(providerId, sessionId, channel)
         }
+    }
+
+    private fun channelStageEntity(
+        providerId: Long,
+        sessionId: Long,
+        channel: ChannelEntity
+    ): ChannelImportStageEntity {
+        return ChannelImportStageEntity(
+            sessionId = sessionId,
+            providerId = providerId,
+            streamId = channel.streamId,
+            name = channel.name,
+            logoUrl = channel.logoUrl,
+            groupTitle = channel.groupTitle,
+            categoryId = channel.categoryId,
+            categoryName = channel.categoryName,
+            streamUrl = channel.streamUrl,
+            epgChannelId = channel.epgChannelId,
+            number = channel.number,
+            catchUpSupported = channel.catchUpSupported,
+            catchUpDays = channel.catchUpDays,
+            catchUpSource = channel.catchUpSource,
+            isAdult = channel.isAdult,
+            logicalGroupId = channel.logicalGroupId,
+            errorCount = channel.errorCount,
+            syncFingerprint = channelFingerprint(channel)
+        )
     }
 
     private suspend fun buildMovieStages(
@@ -327,6 +395,19 @@ internal class SyncCatalogStore(
                 async(Dispatchers.Default) { chunk.map(transform) }
             }.awaitAll().flatten()
         }
+    }
+
+    private suspend fun stageChannelSequence(
+        providerId: Long,
+        sessionId: Long,
+        channels: Sequence<ChannelEntity>
+    ): Int {
+        return stageDistinctRows(
+            items = channels,
+            keySelector = { channel -> channel.streamId },
+            stageBuilder = { channel -> channelStageEntity(providerId, sessionId, channel) },
+            insert = catalogSyncDao::insertChannelStages
+        )
     }
 
     private suspend fun stageMovieSequence(
@@ -546,6 +627,7 @@ internal class SyncCatalogStore(
 
     private companion object {
         private const val STAGE_BATCH_SIZE = 500
+        private const val PLACEHOLDER_CATEGORY_PREFIX = "Category "
         private val WHITESPACE_REGEX = Regex("\\s+")
         private val FINGERPRINT_PARALLELISM = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
     }

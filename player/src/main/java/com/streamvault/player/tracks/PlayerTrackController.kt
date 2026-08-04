@@ -7,6 +7,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.streamvault.player.PLAYER_TRACK_AUTO_ID
 import com.streamvault.player.PlayerTrack
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerTrackController(
     private val context: Context
 ) {
@@ -51,6 +53,12 @@ class PlayerTrackController(
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
             .setPreferredAudioLanguage(preferredAudioLanguageTag)
+            // Assurance qualité : pour les rares flux exposant plusieurs variantes
+            // (HLS/DASH multi-bitrate, .mkv multi-pistes vidéo), choisir d'emblée la
+            // plus haute au lieu de laisser l'ABR démarrer bas. Sans effet sur le
+            // .ts/.mp4 mono-débit du chemin par défaut (une seule piste = rien à
+            // choisir), donc inoffensif.
+            .setForceHighestSupportedBitrate(true)
             .apply {
                 resolvedMaxVideoHeightForCurrentNetwork(constrainResolutionForMultiView)?.let { maxHeight ->
                     setMaxVideoSize(Int.MAX_VALUE, maxHeight)
@@ -258,4 +266,3 @@ class PlayerTrackController(
             ?: parts.joinToString(" · ").ifBlank { "Quality ${index + 1}" }
     }
 }
-

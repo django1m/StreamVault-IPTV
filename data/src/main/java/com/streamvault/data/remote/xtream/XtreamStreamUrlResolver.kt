@@ -63,8 +63,21 @@ class XtreamStreamUrlResolver @Inject constructor(
 
         val kind = token?.kind ?: fallbackContentType?.let(XtreamUrlFactory::kindForContentType) ?: return null
         val streamId = token?.streamId ?: fallbackStreamId?.takeIf { it > 0 } ?: return null
-        val ext = token?.containerExtension ?: fallbackContainerExtension
-        val directSource = token?.directSource?.takeIf(UrlSecurityPolicy::isAllowedStreamEntryUrl)
+        // Pour le LIVE, on force le conteneur MPEG-TS et on ignore le directSource HLS.
+        // Les endpoints HLS (.m3u8) Xtream sont régulièrement dégénérés (manifest figé,
+        // séquence à 0, segments manquants) → Media3 stall sur l'écran vert. Le TS
+        // direct est un flux continu fiable, c'est ce qu'utilisent les clients IPTV
+        // de référence (TiviMate, MyTVOnline, etc.).
+        val ext = if (kind == XtreamStreamKind.LIVE) {
+            "ts"
+        } else {
+            token?.containerExtension ?: fallbackContainerExtension
+        }
+        val directSource = if (kind == XtreamStreamKind.LIVE) {
+            null
+        } else {
+            token?.directSource?.takeIf(UrlSecurityPolicy::isAllowedStreamEntryUrl)
+        }
         val decryptedPassword = credentialCrypto.decryptIfNeeded(provider.password)
 
         val fallbackResolvedUrl = XtreamUrlFactory.buildPlaybackUrl(

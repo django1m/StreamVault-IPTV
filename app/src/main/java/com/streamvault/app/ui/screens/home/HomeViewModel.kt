@@ -3,6 +3,7 @@ package com.streamvault.app.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.di.AuxiliaryPlayerEngine
+import com.streamvault.app.playback.PlayerEngineHandoffRegistry
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.screens.multiview.MultiViewManager
 import com.streamvault.app.ui.model.applyProviderCategoryDisplayPreferences
@@ -76,28 +77,64 @@ class HomeViewModel @Inject constructor(
     private val tvInputChannelSyncManager: TvInputChannelSyncManager,
     private val multiViewManager: MultiViewManager,
     @AuxiliaryPlayerEngine
-    private val playerEngineProvider: InjectProvider<PlayerEngine>
+    private val playerEngineProvider: InjectProvider<PlayerEngine>,
+    private val playerEngineHandoffRegistry: PlayerEngineHandoffRegistry
 ) : ViewModel() {
     private companion object {
         const val MIN_CHANNEL_SEARCH_QUERY_LENGTH = 2
+        const val CATEGORY_SEARCH_DEBOUNCE_MS = 200L
+        // Parental PIN brute-force guard: after this many consecutive wrong
+        // PINs, lock entry for the cooldown so a child can't just keep trying.
+        const val MAX_PIN_ATTEMPTS = 5
+        const val PIN_LOCKOUT_MS = 5 * 60 * 1000L
     }
 
     private val appContext = application
 
+    // In-memory PIN attempt state (process lifetime). Intentionally not
+    // persisted: a reboot clears it, which is an acceptable trade-off for a
+    // soft parental control and avoids storing a lockout an attacker could not
+    // bypass anyway without the PIN.
+    private var pinFailedAttempts = 0
+    private var pinLockoutUntilMs = 0L
+
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
+    /**
+     * Category list filtered by the sidebar search, debounced in the VM so
+     * D-pad typing does not re-filter (and re-measure the LazyColumn) on every
+     * keystroke. The query itself stays synchronous in [uiState] — the search
+     * field must echo instantly; only the filtering may lag 200 ms.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    val visibleCategories: StateFlow<List<Category>> = _uiState
+        .map { it.categories to it.categorySearchQuery }
+        .distinctUntilChanged()
+        .debounce { (_, query) -> if (query.isEmpty()) 0L else CATEGORY_SEARCH_DEBOUNCE_MS }
+        .map { (categories, query) ->
+            if (query.isEmpty()) {
+                categories
+            } else {
+                categories.filter { it.name.contains(query, ignoreCase = true) }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _localChannels = MutableStateFlow<List<Channel>>(emptyList())
     private val _preferredInitialCategoryId = MutableStateFlow<Long?>(null)
     private val _visibleChannelWindow = MutableStateFlow<Set<Long>>(emptySet())
     private val _epgProgramMap = MutableStateFlow<Map<String, Program>>(emptyMap())
     private var epgJob: Job? = null
+    private var xtreamFallbackJob: Job? = null
     private var loadChannelsJob: Job? = null
     private var categoriesJob: Job? = null
     private var recentChannelsJob: Job? = null
     private var previewPlaybackJob: Job? = null
     private var previewErrorJob: Job? = null
     private var previewPlayerEngine: PlayerEngine? = null
+    private var previewStreamInfo: StreamInfo? = null
+    private var previewChannelProviderId: Long = -1L
     private var previewSessionVersion: Long = 0L
     private var combinedCategoriesById: Map<Long, CombinedCategory> = emptyMap()
 
@@ -253,28 +290,42 @@ class HomeViewModel @Inject constructor(
             }
         }
 
+        // Bulk Room EPG: load now-playing for the whole filtered list as soon as it changes.
+        // Triggered on channel-id list (NOT filteredChannels itself) to avoid a loop since
+        // filteredChannels embeds currentProgram derived from _epgProgramMap.
+        viewModelScope.launch {
+            _uiState
+                .map { state -> state.filteredChannels.map(Channel::id) }
+                .distinctUntilChanged()
+                .collectLatest { ids ->
+                    val channels = _uiState.value.filteredChannels
+                    if (channels.isEmpty()) {
+                        epgJob?.cancel()
+                        xtreamFallbackJob?.cancel()
+                        _epgProgramMap.value = emptyMap()
+                        return@collectLatest
+                    }
+                    fetchRoomEpgForChannels(channels)
+                }
+        }
+
+        // Xtream on-demand fallback: only for the visible viewport (can hit the network).
         viewModelScope.launch {
             combine(
-                _uiState.map { it.filteredChannels.map(Channel::providerId).toSet() }.distinctUntilChanged(),
-                _uiState.map { it.filteredChannels }.distinctUntilChanged(),
+                _uiState.map { it.filteredChannels.map(Channel::id) }.distinctUntilChanged(),
                 _visibleChannelWindow.debounce(120)
-            ) { providerIds, channels, visibleIds ->
-                Triple(providerIds, channels, visibleIds)
-            }.collectLatest { (_, channels, visibleIds) ->
-                if (channels.isEmpty()) {
-                    epgJob?.cancel()
-                    _epgProgramMap.value = emptyMap()
-                    return@collectLatest
+            ) { _, visibleIds -> visibleIds }
+                .collectLatest { visibleIds ->
+                    val channels = _uiState.value.filteredChannels
+                    if (channels.isEmpty()) return@collectLatest
+                    val visibleChannels = if (visibleIds.isEmpty()) {
+                        channels.take(12)
+                    } else {
+                        channels.filter { it.id in visibleIds }
+                    }
+                    if (visibleChannels.isEmpty()) return@collectLatest
+                    fetchXtreamFallbackForChannels(visibleChannels)
                 }
-
-                val candidateIds = if (visibleIds.isEmpty()) {
-                    channels.take(12).map { it.id }.toSet()
-                } else {
-                    visibleIds
-                }
-
-                fetchEpgForChannels(channels.filter { it.id in candidateIds })
-            }
         }
 
         viewModelScope.launch {
@@ -901,6 +952,8 @@ class HomeViewModel @Inject constructor(
             when (val result = channelRepository.getStreamInfo(channel)) {
                 is Result.Success -> {
                     if (!isActivePreviewSession(previewVersion, channel.id)) return@launch
+                    previewStreamInfo = result.data
+                    previewChannelProviderId = channel.providerId
                     engine.stop()
                     engine.prepare(result.data)
                     engine.setVolume(1f)
@@ -929,6 +982,8 @@ class HomeViewModel @Inject constructor(
         previewPlayerEngine?.stop()
         previewPlayerEngine?.release()
         previewPlayerEngine = null
+        previewStreamInfo = null
+        previewChannelProviderId = -1L
         _uiState.update {
             it.copy(
                 previewChannelId = null,
@@ -939,52 +994,117 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Hands off the currently playing preview engine to the fullscreen player
+     * via [PlayerEngineHandoffRegistry]. PlayerViewModel will adopt it on its
+     * next prepare() and skip the network probe + ExoPlayer prepare — that
+     * second connection is what the panel rate-limits and is the root cause of
+     * the black-screen / stuck-spinner on the first preview→fullscreen entry.
+     *
+     * Returns false (and falls back to a regular [clearPreview]) when the
+     * preview engine is not actually playing the requested channel or the
+     * upstream stream info has not been resolved yet — in those cases there is
+     * nothing useful to hand over.
+     */
+    fun handoffPreviewForFullscreen(channel: Channel): Boolean {
+        val engine = previewPlayerEngine
+        val streamInfo = previewStreamInfo
+        if (engine == null ||
+            streamInfo == null ||
+            _uiState.value.previewChannelId != channel.id ||
+            // Never hand off an ERRORed engine: fullscreen would adopt it with
+            // skipEnginePrepare, its replayed error is dropped as pre-session
+            // by handlePlaybackError's guard, and no automatic recovery ever
+            // runs. Returning false forces a regular full prepare — a fresh
+            // real attempt at the stream instead of a frozen error state.
+            engine.playbackState.value == com.streamvault.player.PlaybackState.ERROR
+        ) {
+            clearPreview()
+            return false
+        }
+        previewSessionVersion++
+        previewPlaybackJob?.cancel()
+        previewErrorJob?.cancel()
+        previewPlaybackJob = null
+        previewErrorJob = null
+        playerEngineHandoffRegistry.park(
+            engine = engine,
+            channelId = channel.id,
+            providerId = channel.providerId.takeIf { it > 0L } ?: previewChannelProviderId,
+            streamInfo = streamInfo
+        )
+        previewPlayerEngine = null
+        previewStreamInfo = null
+        previewChannelProviderId = -1L
+        _uiState.update {
+            it.copy(
+                previewChannelId = null,
+                previewPlayerEngine = null,
+                isPreviewLoading = false,
+                previewErrorMessage = null
+            )
+        }
+        return true
+    }
+
     private fun isActivePreviewSession(version: Long, channelId: Long): Boolean =
         version == previewSessionVersion && _uiState.value.previewChannelId == channelId
 
-    private fun fetchEpgForChannels(channels: List<Channel>) {
+    private fun fetchRoomEpgForChannels(channels: List<Channel>) {
         epgJob?.cancel()
-        val lookupKeys = channels.mapNotNull(Channel::guideLookupKey).distinct()
+        val activeLookupKeys = channels.mapNotNull(Channel::guideLookupKey).distinct().toSet()
 
         epgJob = viewModelScope.launch {
             val now = System.currentTimeMillis()
-            val mergedProgramMap = buildMap {
+            val freshProgramMap = buildMap {
                 channels.groupBy { it.providerId }.forEach { (providerId, providerChannels) ->
-                    val freshProgramMap = epgRepository.getResolvedProgramsForChannels(
-                        providerId = providerId,
-                        channelIds = providerChannels.map { it.id },
-                        startTime = now - (60L * 60L * 1000L),
-                        endTime = now + (2L * 60L * 60L * 1000L)
-                    ).mapValues { (_, programs) ->
-                        programs.firstOrNull { it.startTime <= now && it.endTime > now }
-                            ?: programs.firstOrNull()
-                    }.mapNotNull { (lookupKey, program) ->
-                        program?.let { lookupKey to it }
-                    }.toMap()
-                    putAll(freshProgramMap)
                     putAll(
-                        fetchXtreamNowPlayingFallback(
+                        epgRepository.getResolvedProgramsForChannels(
                             providerId = providerId,
-                            channels = providerChannels,
-                            existingPrograms = freshProgramMap
-                        )
+                            channelIds = providerChannels.map { it.id },
+                            startTime = now - (60L * 60L * 1000L),
+                            endTime = now + (2L * 60L * 60L * 1000L)
+                        ).mapValues { (_, programs) ->
+                            programs.firstOrNull { it.startTime <= now && it.endTime > now }
+                                ?: programs.firstOrNull()
+                        }.mapNotNull { (lookupKey, program) ->
+                            program?.let { lookupKey to it }
+                        }.toMap()
                     )
                 }
             }
 
-            val channelEpgIds = lookupKeys.toSet()
             _epgProgramMap.update { existing ->
                 buildMap {
-                    putAll(existing)
-                    channelEpgIds.forEach { epgId ->
-                        if (mergedProgramMap.containsKey(epgId)) {
-                            put(epgId, mergedProgramMap.getValue(epgId))
-                        } else {
-                            remove(epgId)
-                        }
+                    // Keep entries (e.g. Xtream fallback results) for channels still on screen,
+                    // drop anything for channels that left the filtered list.
+                    existing.forEach { (key, value) ->
+                        if (key in activeLookupKeys) put(key, value)
                     }
+                    // Room is canonical: it overrides previous values.
+                    putAll(freshProgramMap)
                 }
             }
+        }
+    }
+
+    private fun fetchXtreamFallbackForChannels(channels: List<Channel>) {
+        xtreamFallbackJob?.cancel()
+        xtreamFallbackJob = viewModelScope.launch {
+            val existing = _epgProgramMap.value
+            val merged = buildMap {
+                channels.groupBy { it.providerId }.forEach { (providerId, providerChannels) ->
+                    putAll(
+                        fetchXtreamNowPlayingFallback(
+                            providerId = providerId,
+                            channels = providerChannels,
+                            existingPrograms = existing
+                        )
+                    )
+                }
+            }
+            if (merged.isEmpty()) return@launch
+            _epgProgramMap.update { current -> current + merged }
         }
     }
 
@@ -1286,11 +1406,34 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(showDialog = false, selectedChannelForDialog = null) }
     }
 
+    /** Remaining PIN lockout in ms, 0 when entry is allowed. */
+    fun pinLockoutRemainingMs(): Long =
+        (pinLockoutUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    private fun registerPinResult(success: Boolean) {
+        if (success) {
+            pinFailedAttempts = 0
+            pinLockoutUntilMs = 0L
+        } else {
+            pinFailedAttempts++
+            if (pinFailedAttempts >= MAX_PIN_ATTEMPTS) {
+                pinLockoutUntilMs = System.currentTimeMillis() + PIN_LOCKOUT_MS
+                pinFailedAttempts = 0
+            }
+        }
+    }
+
     suspend fun verifyPin(pin: String): Boolean {
-        return preferencesRepository.verifyParentalPin(pin)
+        if (pinLockoutRemainingMs() > 0L) return false
+        val ok = preferencesRepository.verifyParentalPin(pin)
+        registerPinResult(ok)
+        return ok
     }
 
     suspend fun unlockCategoryWithPin(category: Category, pin: String): Result<Unit> {
+        if (pinLockoutRemainingMs() > 0L) {
+            return Result.error("PIN locked")
+        }
         val providerId = _uiState.value.provider?.id
             ?: return Result.error("Locked category context is unavailable.")
         val result = unlockParentalCategory(
@@ -1300,6 +1443,7 @@ class HomeViewModel @Inject constructor(
                 pin = pin
             )
         )
+        registerPinResult(result is Result.Success)
         if (result is Result.Success) {
             selectCategory(category)
         }

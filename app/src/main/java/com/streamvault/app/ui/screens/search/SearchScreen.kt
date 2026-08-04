@@ -58,6 +58,9 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/** Nombre d'éléments affichés dans l'aperçu d'un rail (onglet « Tout ») avant de proposer « Voir tout ». */
+private const val RAIL_PREVIEW_COUNT = 18
+
 @HiltViewModel
 @OptIn(ExperimentalCoroutinesApi::class)
 class SearchViewModel @Inject constructor(
@@ -67,7 +70,7 @@ class SearchViewModel @Inject constructor(
     private val parentalControlManager: ParentalControlManager
 ) : ViewModel() {
     private companion object {
-        const val MAX_RESULTS_PER_SECTION = 120
+        const val MAX_RESULTS_PER_SECTION = 300
         const val MAX_RECENT_QUERIES = 6
     }
 
@@ -406,8 +409,13 @@ fun SearchScreen(
                             item {
                                 SearchResultRail(
                                     title = stringResource(R.string.search_live_tv),
-                                    items = uiState.channels.take(18),
-                                    keySelector = { it.id }
+                                    items = uiState.channels.take(RAIL_PREVIEW_COUNT),
+                                    keySelector = { it.id },
+                                    onSeeAll = if (uiState.channels.size > RAIL_PREVIEW_COUNT) {
+                                        { viewModel.onTabSelected(SearchTab.LIVE) }
+                                    } else {
+                                        null
+                                    }
                                 ) { channel ->
                                     val channelLocked = isLocked(
                                         categoryId = channel.categoryId,
@@ -434,8 +442,13 @@ fun SearchScreen(
                             item {
                                 SearchResultRail(
                                     title = stringResource(R.string.search_movies),
-                                    items = uiState.movies.take(18),
-                                    keySelector = { it.id }
+                                    items = uiState.movies.take(RAIL_PREVIEW_COUNT),
+                                    keySelector = { it.id },
+                                    onSeeAll = if (uiState.movies.size > RAIL_PREVIEW_COUNT) {
+                                        { viewModel.onTabSelected(SearchTab.MOVIES) }
+                                    } else {
+                                        null
+                                    }
                                 ) { movie ->
                                     val movieLocked = isLocked(
                                         categoryId = movie.categoryId,
@@ -462,8 +475,13 @@ fun SearchScreen(
                             item {
                                 SearchResultRail(
                                     title = stringResource(R.string.search_series),
-                                    items = uiState.series.take(18),
-                                    keySelector = { it.id }
+                                    items = uiState.series.take(RAIL_PREVIEW_COUNT),
+                                    keySelector = { it.id },
+                                    onSeeAll = if (uiState.series.size > RAIL_PREVIEW_COUNT) {
+                                        { viewModel.onTabSelected(SearchTab.SERIES) }
+                                    } else {
+                                        null
+                                    }
                                 ) { seriesItem ->
                                     val seriesLocked = isLocked(
                                         categoryId = seriesItem.categoryId,
@@ -793,11 +811,13 @@ private fun <T : Any> SearchResultRail(
     title: String,
     items: List<T>,
     keySelector: (T) -> Any,
+    onSeeAll: (() -> Unit)? = null,
     itemContent: @Composable (T) -> Unit
 ) {
     CategoryRow(
         title = title,
         items = items,
+        onSeeAll = onSeeAll,
         keySelector = keySelector
     ) { item ->
         itemContent(item)

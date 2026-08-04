@@ -31,6 +31,7 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.Icons
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +47,7 @@ import com.streamvault.app.device.rememberIsTelevisionDevice
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.streamvault.app.ui.components.CategoryRow
 import com.streamvault.app.ui.components.ChannelCard
@@ -63,6 +65,8 @@ import com.streamvault.app.ui.components.dialogs.RenameGroupDialog
 import com.streamvault.app.ui.components.ReorderTopBar
 import com.streamvault.app.ui.components.shell.AppNavigationChrome
 import com.streamvault.app.ui.components.shell.AppScreenScaffold
+import com.streamvault.app.ui.design.FormFactor
+import com.streamvault.app.ui.design.LocalFormFactor
 import com.streamvault.app.ui.design.FocusRestoreHost
 import com.streamvault.app.ui.design.requestFocusSafely
 import androidx.activity.compose.BackHandler
@@ -88,6 +92,7 @@ import java.util.Date
 import java.util.Locale
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
+import com.streamvault.app.ui.interaction.TvIconButton
 
 private enum class FocusRestoreTarget {
     CATEGORY,
@@ -149,14 +154,22 @@ fun HomeScreen(
     val isDenseMode = uiState.liveTvChannelMode != LiveTvChannelMode.COMFORTABLE
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val isTelevisionDevice = rememberIsTelevisionDevice()
-    val sidebarWidth = if (screenWidth < 900.dp) {
+    val formFactor = LocalFormFactor.current
+    val sidebarWidth = if (formFactor == FormFactor.Phone) {
+        // On a phone this column is collapsed by default and toggled from the
+        // channel list header, so it can afford to be comfortably readable while
+        // open — it is transient, not permanent real estate.
+        (screenWidth * 0.55f).coerceIn(180.dp, 260.dp)
+    } else if (screenWidth < 900.dp) {
         (screenWidth * 0.36f).coerceIn(188.dp, 220.dp)
     } else if (!isTelevisionDevice && screenWidth < 1280.dp) {
         (screenWidth * 0.28f).coerceIn(220.dp, 252.dp)
     } else {
         272.dp
     }
-    val channelSearchWidth = if (screenWidth < 900.dp) {
+    val channelSearchWidth = if (formFactor == FormFactor.Phone) {
+        (screenWidth * 0.42f).coerceIn(140.dp, 200.dp)
+    } else if (screenWidth < 900.dp) {
         (screenWidth * 0.34f).coerceIn(170.dp, 220.dp)
     } else if (!isTelevisionDevice && screenWidth < 1280.dp) {
         (screenWidth * 0.28f).coerceIn(220.dp, 280.dp)
@@ -208,7 +221,11 @@ fun HomeScreen(
         }
     }
 
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+    // App backgrounded (returned to the box launcher): stop the live preview so
+    // its audio does not keep playing behind the launcher. Use the PROCESS
+    // lifecycle — the nav-entry ON_STOP does not reliably fire here. In-app
+    // navigation away from Home is covered by the DisposableEffect below.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP, ProcessLifecycleOwner.get()) {
         viewModel.clearPreview()
     }
 
@@ -273,6 +290,11 @@ fun HomeScreen(
     val ambientContext = androidx.compose.ui.platform.LocalContext.current
     val ambientLoader = remember(ambientContext) { coil3.SingletonImageLoader.get(ambientContext) }
     LaunchedEffect(previewChannel?.logoUrl, previewChannel?.id) {
+        // Debounce: palette extraction decodes the logo (~30-80ms on the 2 GB
+        // Amlogic box). Without this, fast DPad scrolling re-runs it on every
+        // preview change and the backdrop flickers. The effect is cancelled and
+        // relaunched on each change, so we only extract once scrolling settles.
+        kotlinx.coroutines.delay(200)
         ambientPalette = com.streamvault.app.ui.design.ambientPaletteFrom(
             previewChannel?.logoUrl,
             ambientContext,
@@ -343,17 +365,15 @@ fun HomeScreen(
                 }
             } else {
                 val channelSearchFocusRequester = remember { FocusRequester() }
+                // Phone only: the category column starts collapsed so the channel
+                // list gets the full width. Always true elsewhere, so TV and
+                // tablet keep the permanent sidebar they have today.
+                var showCategorySidebar by rememberSaveable { mutableStateOf(false) }
                 val categoryFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
                 val channelFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
-                val visibleCategories = remember(uiState.categories, uiState.categorySearchQuery) {
-                    uiState.categories
-                        .asSequence()
-                        .filter {
-                            uiState.categorySearchQuery.isEmpty() ||
-                                it.name.contains(uiState.categorySearchQuery, ignoreCase = true)
-                        }
-                        .toList()
-                }
+                // Filtered + debounced in the ViewModel: typing on the D-pad
+                // no longer re-filters the list on every keystroke.
+                val visibleCategories by viewModel.visibleCategories.collectAsStateWithLifecycle()
                 val isCategoryLocked: (Category) -> Boolean = remember(uiState.parentalControlLevel, uiState.unlockedCategoryIds) {
                     { category ->
                         (category.isAdult || category.isUserProtected) &&
@@ -533,10 +553,18 @@ fun HomeScreen(
 
                 LaunchedEffect(focusRestoreNonce, uiState.categories, uiState.filteredChannels) {
                     val restoreTarget = pendingRestoreTarget ?: return@LaunchedEffect
-                    kotlinx.coroutines.delay(80)
-                    val restored = when (restoreTarget) {
+                    fun attemptRestore(): Boolean = when (restoreTarget) {
                         FocusRestoreTarget.CHANNEL -> requestChannelFocus(lastFocusedChannelId)
                         FocusRestoreTarget.CATEGORY -> requestCategoryFocus(lastFocusedCategoryId)
+                    }
+                    // Fast path: when returning to an already-composed list the
+                    // requester is attached and focus lands in the same frame —
+                    // no perceptible delay. Only pay the 80ms layout-settle wait
+                    // when the immediate attempt misses (fresh list / re-layout).
+                    var restored = attemptRestore()
+                    if (!restored) {
+                        kotlinx.coroutines.delay(80)
+                        restored = attemptRestore()
                     }
                     if (!restored) {
                         when (restoreTarget) {
@@ -588,249 +616,255 @@ fun HomeScreen(
                     val categorySearchFocusRequester = remember { FocusRequester() }
                     val focusManager = LocalFocusManager.current
                     
-                    Column(
-                        modifier = Modifier
-                            .width(sidebarWidth)
-                            .fillMaxHeight()
-                            .background(SurfaceElevated.copy(alpha = 0.88f), RoundedCornerShape(20.dp))
-                            .padding(top = 10.dp)
-                            .focusGroup()
-                    ) {
-                        // Sticky Header Part
-                        Column(modifier = Modifier.padding(horizontal = 10.dp)) {
-                            var showQuickFiltersDrawer by rememberSaveable(uiState.savedCategoryFilters) {
-                                mutableStateOf(false)
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 8.dp, start = 4.dp, end = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = stringResource(R.string.home_categories_title),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = OnSurface,
-                                    maxLines = 1,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                if (shouldShowLiveSourceSwitcher) {
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    LiveSourceSwitcher(
-                                        currentSource = uiState.activeLiveSource,
-                                        options = uiState.liveSourceOptions,
-                                        onSourceSelected = viewModel::switchLiveSource,
-                                        compact = true
-                                    )
+                    // On a phone the category column ate ~30% of the width. It is now
+                    // hidden by default and toggled from the channel list header; the
+                    // 243 lines below are rendered unchanged either way, so the TV path
+                    // (condition always true) is bit-for-bit identical.
+                    if (formFactor != FormFactor.Phone || showCategorySidebar) {
+                        Column(
+                            modifier = Modifier
+                                .width(sidebarWidth)
+                                .fillMaxHeight()
+                                .background(SurfaceElevated.copy(alpha = 0.88f), RoundedCornerShape(20.dp))
+                                .padding(top = 10.dp)
+                                .focusGroup()
+                        ) {
+                            // Sticky Header Part
+                            Column(modifier = Modifier.padding(horizontal = 10.dp)) {
+                                var showQuickFiltersDrawer by rememberSaveable(uiState.savedCategoryFilters) {
+                                    mutableStateOf(false)
                                 }
-                            }
-                            SearchInput(
-                                value = uiState.categorySearchQuery,
-                                onValueChange = {
-                                    if (!isReorderMode) {
-                                        viewModel.updateCategorySearchQuery(it)
-                                    }
-                                },
-                                placeholder = stringResource(R.string.home_search_categories),
-                                focusRequester = categorySearchFocusRequester,
-                                modifier = Modifier.padding(bottom = 10.dp),
-                                enabled = !isReorderMode
-                            )
-                            val shouldShowQuickFiltersControl = when (uiState.liveTvQuickFilterVisibilityMode) {
-                                LiveTvQuickFilterVisibilityMode.HIDE -> false
-                                LiveTvQuickFilterVisibilityMode.SHOW_WHEN_FILTERS_AVAILABLE -> uiState.savedCategoryFilters.isNotEmpty()
-                                LiveTvQuickFilterVisibilityMode.ALWAYS_VISIBLE -> true
-                            }
-                            if (shouldShowQuickFiltersControl) {
-                                val activeSavedFilter = uiState.activeCategoryFilter
-                                val filterSubtitle = when {
-                                    uiState.categorySearchQuery.isBlank() -> {
-                                        stringResource(R.string.home_quick_filters_showing_all)
-                                    }
-                                    activeSavedFilter != null -> {
-                                        stringResource(
-                                            R.string.home_quick_filters_active,
-                                            activeSavedFilter
-                                        )
-                                    }
-                                    else -> {
-                                        stringResource(
-                                            R.string.home_quick_filters_manual_search,
-                                            uiState.categorySearchQuery
-                                        )
-                                    }
-                                }
-                                TvClickableSurface(
-                                    onClick = { if (!isReorderMode) showQuickFiltersDrawer = !showQuickFiltersDrawer },
-                                    enabled = !isReorderMode,
+                                Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(bottom = 10.dp),
-                                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
-                                    colors = ClickableSurfaceDefaults.colors(
-                                        containerColor = SurfaceElevated,
-                                        focusedContainerColor = SurfaceHighlight.copy(alpha = 0.9f)
-                                    ),
-                                    border = ClickableSurfaceDefaults.border(
-                                        focusedBorder = Border(
-                                            border = BorderStroke(2.dp, Primary.copy(alpha = 0.85f)),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
-                                    ),
-                                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                                        .padding(bottom = 8.dp, start = 4.dp, end = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = stringResource(R.string.home_quick_filters_button),
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = OnSurface
-                                            )
-                                            Text(
-                                                text = if (showQuickFiltersDrawer) {
-                                                    stringResource(R.string.home_quick_filters_hide)
-                                                } else {
-                                                    stringResource(R.string.home_quick_filters_show)
-                                                },
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = Primary
-                                            )
-                                        }
-                                        Text(
-                                            text = filterSubtitle,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = OnSurfaceDim
+                                    Text(
+                                        text = stringResource(R.string.home_categories_title),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = OnSurface,
+                                        maxLines = 1,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (shouldShowLiveSourceSwitcher) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        LiveSourceSwitcher(
+                                            currentSource = uiState.activeLiveSource,
+                                            options = uiState.liveSourceOptions,
+                                            onSourceSelected = viewModel::switchLiveSource,
+                                            compact = true
                                         )
                                     }
                                 }
-                                if (showQuickFiltersDrawer) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(bottom = 8.dp),
-                                        horizontalArrangement = Arrangement.End
-                                    ) {
-                                        TvButton(
-                                            onClick = { showAddQuickFilterDialog = true },
-                                            enabled = !isReorderMode
-                                        ) {
-                                            Text(stringResource(R.string.home_quick_filters_add_chip))
+                                SearchInput(
+                                    value = uiState.categorySearchQuery,
+                                    onValueChange = {
+                                        if (!isReorderMode) {
+                                            viewModel.updateCategorySearchQuery(it)
+                                        }
+                                    },
+                                    placeholder = stringResource(R.string.home_search_categories),
+                                    focusRequester = categorySearchFocusRequester,
+                                    modifier = Modifier.padding(bottom = 10.dp),
+                                    enabled = !isReorderMode
+                                )
+                                val shouldShowQuickFiltersControl = when (uiState.liveTvQuickFilterVisibilityMode) {
+                                    LiveTvQuickFilterVisibilityMode.HIDE -> false
+                                    LiveTvQuickFilterVisibilityMode.SHOW_WHEN_FILTERS_AVAILABLE -> uiState.savedCategoryFilters.isNotEmpty()
+                                    LiveTvQuickFilterVisibilityMode.ALWAYS_VISIBLE -> true
+                                }
+                                if (shouldShowQuickFiltersControl) {
+                                    val activeSavedFilter = uiState.activeCategoryFilter
+                                    val filterSubtitle = when {
+                                        uiState.categorySearchQuery.isBlank() -> {
+                                            stringResource(R.string.home_quick_filters_showing_all)
+                                        }
+                                        activeSavedFilter != null -> {
+                                            stringResource(
+                                                R.string.home_quick_filters_active,
+                                                activeSavedFilter
+                                            )
+                                        }
+                                        else -> {
+                                            stringResource(
+                                                R.string.home_quick_filters_manual_search,
+                                                uiState.categorySearchQuery
+                                            )
                                         }
                                     }
-                                    if (uiState.savedCategoryFilters.isNotEmpty() || uiState.categorySearchQuery.isNotBlank()) {
-                                        SelectionChipRow(
-                                            title = stringResource(R.string.home_quick_filters_title),
-                                            chips = buildList {
-                                                add(
-                                                    SelectionChip(
-                                                        key = HOME_ALL_FILTER_KEY,
-                                                        label = stringResource(R.string.home_quick_filters_all)
-                                                    )
+                                    TvClickableSurface(
+                                        onClick = { if (!isReorderMode) showQuickFiltersDrawer = !showQuickFiltersDrawer },
+                                        enabled = !isReorderMode,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 10.dp),
+                                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+                                        colors = ClickableSurfaceDefaults.colors(
+                                            containerColor = SurfaceElevated,
+                                            focusedContainerColor = SurfaceHighlight.copy(alpha = 0.9f)
+                                        ),
+                                        border = ClickableSurfaceDefaults.border(
+                                            focusedBorder = Border(
+                                                border = BorderStroke(2.dp, Primary.copy(alpha = 0.85f)),
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                        ),
+                                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = stringResource(R.string.home_quick_filters_button),
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = OnSurface
                                                 )
-                                                addAll(
-                                                    uiState.savedCategoryFilters.map { filter ->
-                                                        SelectionChip(key = filter, label = filter)
-                                                    }
-                                                )
-                                            },
-                                            selectedKey = uiState.activeCategoryFilter ?: HOME_ALL_FILTER_KEY.takeIf {
-                                                uiState.categorySearchQuery.isBlank()
-                                            },
-                                            onChipSelected = { filter ->
-                                                if (!isReorderMode) {
-                                                    if (filter == HOME_ALL_FILTER_KEY) {
-                                                        viewModel.clearCategorySearchQuery()
+                                                Text(
+                                                    text = if (showQuickFiltersDrawer) {
+                                                        stringResource(R.string.home_quick_filters_hide)
                                                     } else {
-                                                        viewModel.applySavedCategoryFilter(filter)
+                                                        stringResource(R.string.home_quick_filters_show)
+                                                    },
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = Primary
+                                                )
+                                            }
+                                            Text(
+                                                text = filterSubtitle,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = OnSurfaceDim
+                                            )
+                                        }
+                                    }
+                                    if (showQuickFiltersDrawer) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 8.dp),
+                                            horizontalArrangement = Arrangement.End
+                                        ) {
+                                            TvButton(
+                                                onClick = { showAddQuickFilterDialog = true },
+                                                enabled = !isReorderMode
+                                            ) {
+                                                Text(stringResource(R.string.home_quick_filters_add_chip))
+                                            }
+                                        }
+                                        if (uiState.savedCategoryFilters.isNotEmpty() || uiState.categorySearchQuery.isNotBlank()) {
+                                            SelectionChipRow(
+                                                title = stringResource(R.string.home_quick_filters_title),
+                                                chips = buildList {
+                                                    add(
+                                                        SelectionChip(
+                                                            key = HOME_ALL_FILTER_KEY,
+                                                            label = stringResource(R.string.home_quick_filters_all)
+                                                        )
+                                                    )
+                                                    addAll(
+                                                        uiState.savedCategoryFilters.map { filter ->
+                                                            SelectionChip(key = filter, label = filter)
+                                                        }
+                                                    )
+                                                },
+                                                selectedKey = uiState.activeCategoryFilter ?: HOME_ALL_FILTER_KEY.takeIf {
+                                                    uiState.categorySearchQuery.isBlank()
+                                                },
+                                                onChipSelected = { filter ->
+                                                    if (!isReorderMode) {
+                                                        if (filter == HOME_ALL_FILTER_KEY) {
+                                                            viewModel.clearCategorySearchQuery()
+                                                        } else {
+                                                            viewModel.applySavedCategoryFilter(filter)
+                                                        }
+                                                        showQuickFiltersDrawer = false
                                                     }
-                                                    showQuickFiltersDrawer = false
-                                                }
-                                            },
-                                            modifier = Modifier.padding(bottom = 10.dp),
-                                            contentPadding = PaddingValues(horizontal = 0.dp)
-                                        )
-                                    } else {
-                                        Text(
-                                            text = stringResource(R.string.home_quick_filters_empty),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = OnSurfaceDim,
-                                            modifier = Modifier.padding(start = 4.dp, bottom = 10.dp)
-                                        )
+                                                },
+                                                modifier = Modifier.padding(bottom = 10.dp),
+                                                contentPadding = PaddingValues(horizontal = 0.dp)
+                                            )
+                                        } else {
+                                            Text(
+                                                text = stringResource(R.string.home_quick_filters_empty),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = OnSurfaceDim,
+                                                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        LazyColumn(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentPadding = PaddingValues(bottom = 16.dp)
-                        ) {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(bottom = 16.dp)
+                            ) {
 
-                        items(
-                            items = visibleCategories,
-                            key = { it.id },
-                            contentType = { "category" }
-                        ) { category ->
-                            val isLocked = isCategoryLocked(category)
-                            val categoryFocusRequester = categoryFocusRequesters.getOrPut(category.id) { FocusRequester() }
+                            items(
+                                items = visibleCategories,
+                                key = { it.id },
+                                contentType = { "category" }
+                            ) { category ->
+                                val isLocked = isCategoryLocked(category)
+                                val categoryFocusRequester = categoryFocusRequesters.getOrPut(category.id) { FocusRequester() }
 
-                            CategoryItem(
-                                category = category,
-                                isSelected = category.id == uiState.selectedCategory?.id,
-                                isLocked = isLocked,
-                                isPinned = category.id in uiState.pinnedCategoryIds,
-                                focusRequester = categoryFocusRequester,
-                                onClick = {
-                                    if (isReorderMode) return@CategoryItem
-                                    if (isLocked) {
-                                        pendingUnlockCategory = category
-                                        showPinDialog = true
-                                    } else {
-                                        viewModel.selectCategory(category)
-                                    }
-                                },
-                                onLongClick = {
-                                    if (isReorderMode || isLocked) return@CategoryItem
-                                    preferredRestoreTarget = FocusRestoreTarget.CATEGORY.name
-                                    viewModel.showCategoryOptions(category)
-                                },
-                                onJumpToSearch = {
-                                    runCatching { categorySearchFocusRequester.requestFocus() }.isSuccess
-                                },
-                                onJumpToContent = {
-                                    if (isLocked) {
-                                        pendingCategoryContentJumpCategoryId = null
-                                        false
-                                    } else if (uiState.selectedCategory?.id != category.id) {
-                                        pendingCategoryContentJumpCategoryId = category.id
-                                        viewModel.selectCategory(category)
-                                        true
-                                    } else if (uiState.isLoading) {
-                                        pendingCategoryContentJumpCategoryId = category.id
-                                        true
-                                    } else if (uiState.filteredChannels.isNotEmpty()) {
-                                        pendingCategoryContentJumpCategoryId = null
-                                        requestChannelFocusFromCategory()
-                                    } else {
-                                        pendingCategoryContentJumpCategoryId = null
-                                        false
-                                    }
-                                },
-                                onFocused = { lastFocusedCategoryId = category.id }
-                            )
+                                CategoryItem(
+                                    category = category,
+                                    isSelected = category.id == uiState.selectedCategory?.id,
+                                    isLocked = isLocked,
+                                    isPinned = category.id in uiState.pinnedCategoryIds,
+                                    focusRequester = categoryFocusRequester,
+                                    onClick = {
+                                        if (isReorderMode) return@CategoryItem
+                                        if (isLocked) {
+                                            pendingUnlockCategory = category
+                                            showPinDialog = true
+                                        } else {
+                                            viewModel.selectCategory(category)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (isReorderMode || isLocked) return@CategoryItem
+                                        preferredRestoreTarget = FocusRestoreTarget.CATEGORY.name
+                                        viewModel.showCategoryOptions(category)
+                                    },
+                                    onJumpToSearch = {
+                                        runCatching { categorySearchFocusRequester.requestFocus() }.isSuccess
+                                    },
+                                    onJumpToContent = {
+                                        if (isLocked) {
+                                            pendingCategoryContentJumpCategoryId = null
+                                            false
+                                        } else if (uiState.selectedCategory?.id != category.id) {
+                                            pendingCategoryContentJumpCategoryId = category.id
+                                            viewModel.selectCategory(category)
+                                            true
+                                        } else if (uiState.isLoading) {
+                                            pendingCategoryContentJumpCategoryId = category.id
+                                            true
+                                        } else if (uiState.filteredChannels.isNotEmpty()) {
+                                            pendingCategoryContentJumpCategoryId = null
+                                            requestChannelFocusFromCategory()
+                                        } else {
+                                            pendingCategoryContentJumpCategoryId = null
+                                            false
+                                        }
+                                    },
+                                    onFocused = { lastFocusedCategoryId = category.id }
+                                )
+                            }
                         }
                     }
-                }
+                    }
 
                 // Content - Channel Grid / Pro Preview
                 Row(
@@ -855,6 +889,21 @@ fun HomeScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                // Phone only: the way back to the collapsed
+                                // category column. Without it the categories
+                                // would be unreachable once hidden.
+                                if (formFactor == FormFactor.Phone) {
+                                    TvIconButton(
+                                        onClick = { showCategorySidebar = !showCategorySidebar }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Menu,
+                                            contentDescription = stringResource(R.string.home_categories_title),
+                                            tint = if (showCategorySidebar) Primary else OnSurfaceDim
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
                                 Text(
                                     text = displayedCategory?.name ?: if (hasBlockedCategorySearch) {
                                         stringResource(R.string.home_locked_short)
@@ -924,8 +973,10 @@ fun HomeScreen(
                             targetState = uiState.selectedCategory?.id,
                             animationSpec = tween(durationMillis = 80),
                             label = "category_content_transition"
-                        ) { _ ->
-                        if (uiState.isLoading) {
+                        ) { selectedCategoryId ->
+                            @Suppress("UNUSED_VARIABLE")
+                            val categoryTransitionKey = selectedCategoryId
+                            if (uiState.isLoading) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -941,19 +992,31 @@ fun HomeScreen(
                             }
                         } else if (uiState.errorMessage != null) {
                             val errorMsg = uiState.errorMessage
+                            val retryFocusRequester = remember { FocusRequester() }
+                            LaunchedEffect(errorMsg) {
+                                // Auto-focus the retry button so the user can act on it
+                                // without first hunting around with the D-pad.
+                                runCatching { retryFocusRequester.requestFocus() }
+                            }
                             Box(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Text(
                                         text = errorMsg ?: "",
                                         style = MaterialTheme.typography.titleMedium,
                                         color = OnBackground
                                     )
+                                    TvButton(
+                                        onClick = { viewModel.refreshData() },
+                                        modifier = Modifier.focusRequester(retryFocusRequester)
+                                    ) {
+                                        Text(text = stringResource(R.string.home_error_retry))
+                                    }
                                 }
                             }
                         } else if (!uiState.hasChannels) {
@@ -1123,7 +1186,7 @@ fun HomeScreen(
                                                     showPinDialog = true
                                                 } else if (isProMode) {
                                                     if (uiState.previewChannelId == channel.id) {
-                                                        viewModel.clearPreview()
+                                                        viewModel.handoffPreviewForFullscreen(channel)
                                                         onChannelClick(channel, uiState.selectedCategory, resolveProviderForChannel(channel))
                                                     } else {
                                                         viewModel.previewChannel(channel)
@@ -1168,8 +1231,8 @@ fun HomeScreen(
                                                 } else false
                                             }
                                     )
-                                }
                             }
+                        }
                         }
                         } // Crossfade
                     }

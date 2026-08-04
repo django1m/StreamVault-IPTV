@@ -145,6 +145,12 @@ class SettingsViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            preferencesRepository.playbackInactivityTimeoutSeconds.collect { seconds ->
+                _uiState.update { it.copy(playbackInactivityTimeoutSeconds = seconds) }
+            }
+        }
+
+        viewModelScope.launch {
             combine(
                 preferencesRepository.autoCheckAppUpdates,
                 preferencesRepository.lastAppUpdateCheckTimestamp
@@ -433,6 +439,12 @@ class SettingsViewModel @Inject constructor(
     fun setPlayerControlsTimeoutSeconds(seconds: Int) {
         viewModelScope.launch {
             preferencesRepository.setPlayerControlsTimeoutSeconds(seconds)
+        }
+    }
+
+    fun setPlaybackInactivityTimeoutSeconds(seconds: Int) {
+        viewModelScope.launch {
+            preferencesRepository.setPlaybackInactivityTimeoutSeconds(seconds)
         }
     }
 

@@ -67,6 +67,49 @@ class GetContinueWatchingTest {
     }
 
     @Test
+    fun series_tile_points_at_freshly_started_episode_even_before_first_progress_save() = runTest {
+        // Regression for the "next episode then app close goes back to episode
+        // 1" bug: the session-start write (resume=0, duration=0) for the new
+        // episode must win the series tile because it is the most recent
+        // non-completed entry of the series.
+        val useCase = GetContinueWatching(
+            playbackHistoryRepository = FakePlaybackHistoryRepository(
+                history = listOf(
+                    // ep3: just started (recordSessionStart row), most recent
+                    history(contentId = 12L, type = ContentType.SERIES_EPISODE, seriesId = 7L, lastWatchedAt = 500L, resumePositionMs = 0L, totalDurationMs = 0L),
+                    // ep2: completed
+                    history(contentId = 11L, type = ContentType.SERIES_EPISODE, seriesId = 7L, lastWatchedAt = 400L, resumePositionMs = 120_000L),
+                    // ep1: old incomplete entry — the bug used to resurface it
+                    history(contentId = 10L, type = ContentType.SERIES_EPISODE, seriesId = 7L, lastWatchedAt = 100L, resumePositionMs = 40_000L)
+                )
+            )
+        )
+
+        val result = useCase(providerId = 1L, scope = ContinueWatchingScope.SERIES).collectOnce()
+
+        assertThat(result.map { it.contentId }).containsExactly(12L)
+    }
+
+    @Test
+    fun without_session_start_row_series_tile_falls_back_to_oldest_incomplete_episode() = runTest {
+        // Documents the pre-fix behaviour: when the freshly started episode
+        // has no history row yet (exit before the first 30 s tick), the series
+        // tile falls back to the previous incomplete episode.
+        val useCase = GetContinueWatching(
+            playbackHistoryRepository = FakePlaybackHistoryRepository(
+                history = listOf(
+                    history(contentId = 11L, type = ContentType.SERIES_EPISODE, seriesId = 7L, lastWatchedAt = 400L, resumePositionMs = 120_000L),
+                    history(contentId = 10L, type = ContentType.SERIES_EPISODE, seriesId = 7L, lastWatchedAt = 100L, resumePositionMs = 40_000L)
+                )
+            )
+        )
+
+        val result = useCase(providerId = 1L, scope = ContinueWatchingScope.SERIES).collectOnce()
+
+        assertThat(result.map { it.contentId }).containsExactly(10L)
+    }
+
+    @Test
     fun rethrows_non_io_upstream_failures() = runTest {
         val expected = IllegalStateException("database broken")
         val useCase = GetContinueWatching(
@@ -93,7 +136,8 @@ class GetContinueWatchingTest {
         type: ContentType,
         seriesId: Long? = null,
         lastWatchedAt: Long,
-        resumePositionMs: Long
+        resumePositionMs: Long,
+        totalDurationMs: Long = 120_000L
     ) = PlaybackHistory(
         contentId = contentId,
         contentType = type,
@@ -101,7 +145,7 @@ class GetContinueWatchingTest {
         title = "$type-$contentId",
         streamUrl = "https://example.com/$contentId",
         resumePositionMs = resumePositionMs,
-        totalDurationMs = 120_000L,
+        totalDurationMs = totalDurationMs,
         lastWatchedAt = lastWatchedAt,
         seriesId = seriesId
     )
@@ -115,8 +159,8 @@ class GetContinueWatchingTest {
         override fun getUnwatchedCount(providerId: Long, seriesId: Long): Flow<Int> = flowOf(0)
         override suspend fun getPlaybackHistory(contentId: Long, contentType: ContentType, providerId: Long): PlaybackHistory? = null
         override suspend fun markAsWatched(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
-        override suspend fun recordPlayback(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
-        override suspend fun updateResumePosition(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
+        override suspend fun recordPlayback(history: PlaybackHistory, incrementWatchCount: Boolean) = com.streamvault.domain.model.Result.success(Unit)
+        override suspend fun updateResumePosition(history: PlaybackHistory, syncDenormalized: Boolean) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun removeFromHistory(contentId: Long, contentType: ContentType, providerId: Long) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun clearAllHistory() = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun clearHistoryForProvider(providerId: Long) = com.streamvault.domain.model.Result.success(Unit)

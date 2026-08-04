@@ -2,6 +2,7 @@ package com.streamvault.player.playback
 
 import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.mediacodec.MediaCodecRenderer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
@@ -26,6 +27,7 @@ enum class PlaybackErrorCategory {
     UNKNOWN
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 object PlayerErrorClassifier {
     fun classify(error: Throwable): PlaybackErrorCategory {
         val chain = generateSequence(error) { it.cause }.toList()

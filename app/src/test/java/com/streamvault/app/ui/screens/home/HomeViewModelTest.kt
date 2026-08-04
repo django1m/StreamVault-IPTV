@@ -122,7 +122,8 @@ class HomeViewModelTest {
             syncManager = syncManager,
             tvInputChannelSyncManager = tvInputChannelSyncManager,
             multiViewManager = multiViewManager,
-            playerEngineProvider = playerEngineProvider
+            playerEngineProvider = playerEngineProvider,
+            playerEngineHandoffRegistry = com.streamvault.app.playback.PlayerEngineHandoffRegistry()
         ).also(createdViewModels::add)
 
     private fun clearViewModel(viewModel: HomeViewModel) {

@@ -152,7 +152,7 @@ class ValidateAndAddProviderTest {
                 username = "Hakan1605",
                 password = "wg9daUwzfV",
                 name = "Imported Playlist",
-                xtreamFastSyncEnabled = true,
+                xtreamFastSyncEnabled = false,
                 epgSyncMode = ProviderEpgSyncMode.BACKGROUND,
                 id = 19L
             )

@@ -33,7 +33,7 @@ class ChannelRepositoryImpl @Inject constructor(
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver
 ) : ChannelRepository {
     private companion object {
-        const val GLOBAL_SEARCH_LIMIT = 200
+        const val GLOBAL_SEARCH_LIMIT = 300
         const val CATEGORY_SEARCH_LIMIT = 300
         const val MIN_SEARCH_QUERY_LENGTH = 2
         val QUALITY_HEIGHT_REGEX = Regex("(?<!\\d)(2160|1440|1080|720|576|480|360|240)p?(?!\\d)", RegexOption.IGNORE_CASE)
@@ -53,6 +53,9 @@ class ChannelRepositoryImpl @Inject constructor(
 
     override fun getChannels(providerId: Long): Flow<List<Channel>> =
         observeChannels(channelDao.getByProvider(providerId), providerId)
+
+    override fun getChannelCount(providerId: Long): Flow<Int> =
+        channelDao.getCount(providerId)
 
     override fun getChannelsByCategory(providerId: Long, categoryId: Long): Flow<List<Channel>> =
         observeChannels(channelFlow(providerId, categoryId), providerId)

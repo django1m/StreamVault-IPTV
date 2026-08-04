@@ -7,6 +7,7 @@
     <string name="nav_series">Séries</string>
     <string name="nav_epg">Guide</string>
     <string name="nav_settings">Paramètres</string>
+    <string name="nav_more">Plus</string>
     <string name="welcome_enter_app">Entrez dans l\'application</string>
     <string name="welcome_manage_providers">Gérer les fournisseurs</string>
     <string name="welcome_setup_provider">Configurer un fournisseur</string>
@@ -20,6 +21,7 @@
     <string name="welcome_feature_player">Contrôles de lecture unifiés, accès au guide et au contenu enregistré</string>
     <string name="welcome_manage_hint">Changez de fournisseur, actualisez les métadonnées ou ajoutez une nouvelle source.</string>
     <string name="home_incorrect_pin">Code PIN incorrect</string>
+    <string name="home_pin_locked_out">Trop de codes PIN incorrects. Réessayez dans %1$d min.</string>
     <string name="home_loading_categories">Chargement des catégories...</string>
     <string name="home_loading_channels">Chargement des chaînes...</string>
     <string name="home_categories_title">Catégories</string>
@@ -111,6 +113,8 @@
     <string name="app_update_available_body">FuzionTV %1$s est prête. Voulez-vous l\'installer maintenant ?</string>
     <string name="app_update_install">Installer</string>
     <string name="app_update_later">Plus tard</string>
+    <string name="app_update_downloading">Téléchargement…</string>
+    <string name="app_update_download_failed">Échec du téléchargement. Réessayer ?</string>
     <string name="dashboard_updated_series_badge">Série mise à jour</string>
     <string name="dashboard_stat_live">%1$d en direct</string>
     <string name="dashboard_stat_favorites">%1$d favoris</string>
@@ -312,6 +316,8 @@
     <string name="settings_media_session">Session multimédia système</string>
     <string name="settings_media_session_subtitle">Expose la lecture aux commandes multimédia du système Android. Désactivez cette option si la lecture plante sur un appareil spécifique à l’ouverture du lecteur.</string>
     <string name="settings_player_controls_timeout">Masquage auto des contrôles VOD</string>
+    <string name="settings_inactivity_guard">Arrêt auto si inactif (live)</string>
+    <string name="settings_inactivity_guard_off">Désactivé</string>
     <string name="settings_live_overlay_timeout">Masquage auto des superpositions TV en direct</string>
     <string name="settings_player_notice_timeout">Masquage auto des notifications de lecture</string>
     <string name="settings_player_diagnostics_timeout">Masquage auto de la superposition de diagnostics</string>
@@ -766,6 +772,7 @@
     <string name="player_last_channel_action">Dernière chaîne</string>
     <string name="player_try_alternate_stream">Flux alternatif</string>
     <string name="player_open_guide_action">Ouvrir le guide</string>
+    <string name="player_go_back_action">Retour à la liste</string>
     <string name="player_error_back">Ou appuyez sur Retour pour revenir</string>
     <string name="player_error_live_hint">Réessayez, revenez à la dernière chaîne ou appuyez sur Retour pour quitter la lecture.</string>
     <string name="player_channel_list_hint">Sélectionnez une chaîne à syntoniser instantanément. Retour ferme la liste.</string>
@@ -1141,6 +1148,8 @@
     <string name="dashboard_open_series">Ouvrir les séries</string>
     <string name="dashboard_library_ready">Votre bibliothèque IPTV est prête</string>
     <string name="dashboard_open_live_tv">Ouvrir la télévision en direct</string>
+    <string name="dashboard_subscription_expiring_format">Votre abonnement expire le %1$s. Contactez votre revendeur pour le renouveler.</string>
+    <string name="dashboard_subscription_expired">Votre abonnement a expiré. Contactez votre revendeur pour le renouveler.</string>
     <string name="dashboard_pinned_channels_format">Épinglé · %1$d chaînes</string>
     <string name="dashboard_channels_format">%1$d chaînes</string>
     <string name="favorites_all_favorites">Tous les favoris</string>
@@ -1193,7 +1202,6 @@
     <string name="section_top_live">Chaînes en direct</string>
     <string name="section_recommended_movies">Films populaires</string>
     <string name="section_recommended_series">Séries recommandées</string>
-    <string name="player_skip_intro">Passer l\'intro</string>
     <string name="player_now_playing">Lecture en cours</string>
     <string name="player_mini_guide_title">À suivre sur cette chaîne</string>
     <string name="player_options_title">Options de lecture</string>
@@ -1201,4 +1209,9 @@
     <string name="player_option_subtitles">Sous-titres</string>
     <string name="player_option_speed">Vitesse</string>
     <string name="player_option_quality">Qualité</string>
+    <string name="player_gesture_volume">Volume</string>
+    <string name="player_gesture_brightness">Luminosité</string>
+    <string name="player_gesture_rewind">Reculer de 10 secondes</string>
+    <string name="player_gesture_forward">Avancer de 10 secondes</string>
+    <string name="player_pip">Picture-in-picture</string>
 </resources>

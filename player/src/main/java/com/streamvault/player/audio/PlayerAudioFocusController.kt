@@ -62,11 +62,17 @@ class PlayerAudioFocusController(
     }
 
     fun requestAudioFocusIfNeeded(): Boolean {
-        if (bypassAudioFocus || hasAudioFocus) {
+        if (bypassAudioFocus) {
             isDucked = false
             dispatchVolume()
             return true
         }
+        // Defensive: do NOT short-circuit on hasAudioFocus == true. Some
+        // firmwares (notably Amlogic Android TV builds) can silently revoke
+        // audio focus without firing onAudioFocusChange, leaving our cached
+        // hasAudioFocus desynced from reality. requestAudioFocus is idempotent —
+        // the OS returns GRANTED immediately if we already hold focus — so
+        // re-requesting on every play() call is cheap and re-syncs the state.
         val request = audioFocusRequest ?: buildAudioFocusRequest().also { audioFocusRequest = it }
         val granted = audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         hasAudioFocus = granted
@@ -79,9 +85,32 @@ class PlayerAudioFocusController(
         return true
     }
 
-    fun onPauseOrStop() {
+    /**
+     * Called from the engine when the user presses pause. Per Android audio
+     * focus best practices we KEEP the focus on pause and only release it on
+     * full teardown ([release] / [onStop]) — this avoids the "pause then can't
+     * resume" failure mode on Amlogic boxes where re-requesting focus
+     * immediately after abandoning intermittently returns AUDIOFOCUS_REQUEST_FAILED,
+     * leaving playWhenReady stuck at false and the user thinking play/pause
+     * has died.
+     */
+    fun onPause() {
+        shouldResumeOnAudioFocusGain = false
+    }
+
+    fun onStop() {
         shouldResumeOnAudioFocusGain = false
         abandonAudioFocusIfHeld()
+    }
+
+    @Deprecated(
+        "Split into onPause() (keeps focus) and onStop() (abandons focus). " +
+            "Audible playback control should keep focus across a pause so " +
+            "resume cannot fail on a denied re-request.",
+        ReplaceWith("onPause() or onStop() depending on intent")
+    )
+    fun onPauseOrStop() {
+        onStop()
     }
 
     fun onPlaybackStarted() {

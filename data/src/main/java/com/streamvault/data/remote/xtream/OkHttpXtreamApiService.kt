@@ -32,7 +32,8 @@ import java.util.concurrent.TimeUnit.SECONDS
 @OptIn(ExperimentalSerializationApi::class)
 class OkHttpXtreamApiService(
     private val client: OkHttpClient,
-    private val json: Json
+    private val json: Json,
+    private val authInvalidationBus: XtreamAuthInvalidationBus? = null
 ) : XtreamApiService {
     private companion object {
         const val PREVIEW_INPUT_LIMIT = 512
@@ -118,16 +119,21 @@ class OkHttpXtreamApiService(
             call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val message = "HTTP ${response.code}"
+                    val retryAfterMs = parseRetryAfterHeader(response.header("Retry-After"))
                     when (response.code) {
-                        401 -> throw XtreamAuthenticationException(response.code, message)
+                        401 -> {
+                            authInvalidationBus?.emit()
+                            throw XtreamAuthenticationException(response.code, message)
+                        }
                         403 -> {
                             if (descriptor.action.isNullOrBlank()) {
+                                authInvalidationBus?.emit()
                                 throw XtreamAuthenticationException(response.code, message)
                             }
-                            throw XtreamRequestException(response.code, message)
+                            throw XtreamRequestException(response.code, message, retryAfterMs = retryAfterMs)
                         }
-                        in 500..599, 429 -> throw XtreamNetworkException(message)
-                        else -> throw XtreamRequestException(response.code, message)
+                        in 500..599, 429 -> throw XtreamNetworkException(message, retryAfterMs = retryAfterMs)
+                        else -> throw XtreamRequestException(response.code, message, retryAfterMs = retryAfterMs)
                     }
                 }
                 val body = response.body
@@ -149,6 +155,26 @@ class OkHttpXtreamApiService(
     private fun clientFor(profile: RequestProfile): OkHttpClient = when (profile) {
         RequestProfile.STANDARD -> client
         RequestProfile.HEAVY_CATALOG -> heavyCatalogClient
+    }
+
+    /**
+     * Parses an HTTP `Retry-After` header per RFC 7231 §7.1.3. Accepts either a
+     * delta-seconds integer or an HTTP-date. Returns the delay in milliseconds, or
+     * null if absent / malformed / non-positive.
+     */
+    private fun parseRetryAfterHeader(raw: String?): Long? {
+        val value = raw?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        value.toLongOrNull()?.let { seconds ->
+            if (seconds <= 0L) return null
+            return seconds * 1000L
+        }
+        return runCatching {
+            val parsed = java.time.ZonedDateTime
+                .parse(value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+            val deltaMs = parsed.toInstant().toEpochMilli() - System.currentTimeMillis()
+            if (deltaMs > 0L) deltaMs else null
+        }.getOrNull()
     }
 
     private fun describeEndpoint(endpoint: String): EndpointDescriptor {
@@ -213,16 +239,21 @@ class OkHttpXtreamApiService(
             call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val message = "HTTP ${response.code}"
+                    val retryAfterMs = parseRetryAfterHeader(response.header("Retry-After"))
                     when (response.code) {
-                        401 -> throw XtreamAuthenticationException(response.code, message)
+                        401 -> {
+                            authInvalidationBus?.emit()
+                            throw XtreamAuthenticationException(response.code, message)
+                        }
                         403 -> {
                             if (descriptor.action.isNullOrBlank()) {
+                                authInvalidationBus?.emit()
                                 throw XtreamAuthenticationException(response.code, message)
                             }
-                            throw XtreamRequestException(response.code, message)
+                            throw XtreamRequestException(response.code, message, retryAfterMs = retryAfterMs)
                         }
-                        in 500..599, 429 -> throw XtreamNetworkException(message)
-                        else -> throw XtreamRequestException(response.code, message)
+                        in 500..599, 429 -> throw XtreamNetworkException(message, retryAfterMs = retryAfterMs)
+                        else -> throw XtreamRequestException(response.code, message, retryAfterMs = retryAfterMs)
                     }
                 }
                 val body = response.body

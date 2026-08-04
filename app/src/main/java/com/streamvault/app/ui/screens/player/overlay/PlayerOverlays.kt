@@ -70,6 +70,8 @@ import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.ui.components.ChannelLogoBadge
 import com.streamvault.app.ui.components.rememberCrossfadeImageModel
 import com.streamvault.app.ui.components.shell.StatusPill
+import com.streamvault.app.ui.design.FormFactor
+import com.streamvault.app.ui.design.LocalFormFactor
 import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.screens.player.PlayerDiagnosticsUiState
 import com.streamvault.domain.model.RecordingStatus
@@ -351,6 +353,10 @@ fun ChannelInfoOverlay(
                 }
             }
 
+            // Read outside the LazyRow: its content lambda is a LazyListScope,
+            // not a @Composable scope, so CompositionLocals cannot be read there.
+            val allowMultiview = LocalFormFactor.current != FormFactor.Phone
+
             LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -435,17 +441,22 @@ fun ChannelInfoOverlay(
                         onInteraction = onOverlayInteracted
                     )
                 }
-                item {
-                    QuickActionButton(
-                        icon = stringResource(R.string.player_action_split),
-                        label = stringResource(R.string.player_multiview_short),
-                        onClick = {
-                            onOverlayInteracted()
-                            onDismiss()
-                            onOpenSplitScreen()
-                        },
-                        onInteraction = onOverlayInteracted
-                    )
+                // Multiview is TV/tablet only — four concurrent decoders is beyond
+                // what most phone SoCs expose, and the data cost is prohibitive on
+                // a mobile plan. See the route guard in AppNavigation.
+                if (allowMultiview) {
+                    item {
+                        QuickActionButton(
+                            icon = stringResource(R.string.player_action_split),
+                            label = stringResource(R.string.player_multiview_short),
+                            onClick = {
+                                onOverlayInteracted()
+                                onDismiss()
+                                onOpenSplitScreen()
+                            },
+                            onInteraction = onOverlayInteracted
+                        )
+                    }
                 }
                 item {
                     QuickActionButton(
@@ -808,8 +819,7 @@ fun ChannelListOverlay(
                             }
                         }
                     }
-                    items(channels.size) { index ->
-                        val channel = channels[index]
+                    itemsIndexed(channels, key = { _, ch -> ch.id }) { index, channel ->
                         val isSelected = channel.id == currentChannelId
                         val shouldRequestFocus = isSelected
                         val channelNumber = channel.number.takeIf { it > 0 } ?: (index + 1)
@@ -1182,8 +1192,10 @@ fun EpgOverlay(
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    items(displayPrograms.size) { index ->
-                        val program = displayPrograms[index]
+                    itemsIndexed(
+                        displayPrograms,
+                        key = { _, p -> if (p.id > 0) p.id else p.startTime }
+                    ) { index, program ->
                         val isNext = index == 0 && nextProgram != null
                         val focusToken = if (program.id > 0) program.id else program.startTime
                         val shouldRequestFocus = preferredFocusedProgramToken?.let { it == focusToken } ?: (index == 0)
@@ -1413,8 +1425,7 @@ fun CategoryListOverlay(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
                         )
                     }
-                    items(categories.size) { index ->
-                        val category = categories[index]
+                    itemsIndexed(categories, key = { _, c -> c.id }) { index, category ->
                         val isSelected = category.id == currentCategoryId
                         var isFocused by remember { mutableStateOf(false) }
                         val shouldRequestFocus = isSelected

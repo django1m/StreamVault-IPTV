@@ -1,11 +1,13 @@
 package com.streamvault.player.ui
 
 import android.graphics.Color
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.streamvault.player.PlayerSubtitleStyle
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class SubtitleStyleController {
     private var style: PlayerSubtitleStyle = PlayerSubtitleStyle()
 
@@ -36,4 +38,3 @@ class SubtitleStyleController {
         subtitleView.setBottomPaddingFraction(style.bottomPaddingFraction)
     }
 }
-

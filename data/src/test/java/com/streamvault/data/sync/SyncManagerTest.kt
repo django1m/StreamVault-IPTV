@@ -223,7 +223,8 @@ class SyncManagerTest {
         credentialCrypto = credentialCrypto,
         syncMetadataRepository = syncMetadataRepo,
         transactionRunner = transactionRunner,
-        preferencesRepository = preferencesRepo
+        preferencesRepository = preferencesRepo,
+        xtreamAuthInvalidationBus = com.streamvault.data.remote.xtream.XtreamAuthInvalidationBus()
     )
 
     // ── Initial state ───────────────────────────────────────────────

@@ -144,6 +144,11 @@ fun FullEpgScreen(
     var selectedProgram by remember { mutableStateOf<Pair<Channel, Program>?>(null) }
     var focusedChannel by remember { mutableStateOf<Channel?>(null) }
     var focusedProgram by remember { mutableStateOf<Program?>(null) }
+    // Per-channel FocusRequester registry so we can re-focus the previously
+    // focused row after a category / favorites filter rebuilds the LazyColumn
+    // (without this the focus snaps back to row 0, which is brutal on TV
+    // remotes).
+    val channelFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
     var topNavVisible by rememberSaveable { mutableStateOf(true) }
     var showCategoryPicker by rememberSaveable { mutableStateOf(false) }
     var showGuideOptions by rememberSaveable { mutableStateOf(false) }
@@ -162,6 +167,13 @@ fun FullEpgScreen(
     }
     val categoriesById = remember(uiState.categories) {
         uiState.categories.associateBy { it.id }
+    }
+    // O(1) index lookup for the focus memory — recomputed once per list, not
+    // once per focus event (the guide can hold thousands of rows).
+    val channelIndexById = remember(uiState.channels) {
+        HashMap<Long, Int>(uiState.channels.size).apply {
+            uiState.channels.forEachIndexed { index, channel -> put(channel.id, index) }
+        }
     }
 
     fun executeLockedGuideAction(action: LockedGuideAction) {
@@ -193,9 +205,24 @@ fun FullEpgScreen(
             focusedProgram = null
             return@LaunchedEffect
         }
-        val resolvedChannel = focusedChannel?.let { current ->
-            uiState.channels.firstOrNull { it.id == current.id }
-        } ?: uiState.channels.firstOrNull()
+        // Drop FocusRequester entries for channels that left the filtered
+        // window so the map doesn't grow unbounded across category changes.
+        val visibleIds = uiState.channels.mapTo(HashSet()) { it.id }
+        channelFocusRequesters.keys.retainAll(visibleIds)
+
+        // Resolution order: the channel focused in this composition, then the
+        // one remembered across navigation (ViewModel), then the SAME VISUAL
+        // POSITION when that channel left the filtered list — falling back to
+        // row 0 (the old behaviour) threw the user back to the top of the
+        // guide on every category or time-filter change.
+        val rememberedId = focusedChannel?.id ?: viewModel.lastFocusedChannelId
+        val resolvedChannel = rememberedId?.let { id ->
+            uiState.channels.firstOrNull { it.id == id }
+        }
+            ?: uiState.channels.getOrNull(
+                viewModel.lastFocusedChannelIndex.coerceIn(0, uiState.channels.lastIndex)
+            )
+            ?: uiState.channels.firstOrNull()
         focusedChannel = resolvedChannel
         val resolvedPrograms = resolvedChannel?.let { channel ->
             channel.guideLookupKey()?.let { lookupKey ->
@@ -210,6 +237,13 @@ fun FullEpgScreen(
             }
         } ?: resolvedPrograms.firstOrNull {
             System.currentTimeMillis() in it.startTime until it.endTime
+        }
+        // Re-arm focus on the resolved row. A small delay lets the LazyColumn
+        // emit / lay out the row before requestFocus(), otherwise the call
+        // silently no-ops when the requester is not yet attached.
+        resolvedChannel?.id?.let { id ->
+            kotlinx.coroutines.delay(50)
+            runCatching { channelFocusRequesters[id]?.requestFocus() }
         }
     }
 
@@ -351,6 +385,7 @@ fun FullEpgScreen(
                             guideWindowStart = uiState.guideWindowStart,
                             guideWindowEnd = uiState.guideWindowEnd,
                             density = uiState.selectedDensity,
+                            channelFocusRequesters = channelFocusRequesters,
                             onChannelClick = { channel ->
                                 if (isGuideChannelLocked(channel, categoriesById, uiState.parentalControlLevel)) {
                                     requestLockedGuideAction(LockedGuideAction.PlayChannel(channel, returnRoute))
@@ -370,11 +405,13 @@ fun FullEpgScreen(
                                 topNavVisible = isFirstRow
                                 focusedChannel = channel
                                 focusedProgram = currentProgram
+                                viewModel.onChannelFocused(channel.id, channelIndexById[channel.id] ?: -1)
                             },
                             onProgramFocused = { channel, program, isFirstRow ->
                                 topNavVisible = isFirstRow
                                 focusedChannel = channel
                                 focusedProgram = program
+                                viewModel.onChannelFocused(channel.id, channelIndexById[channel.id] ?: -1)
                             }
                         )
                     }

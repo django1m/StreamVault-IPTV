@@ -62,6 +62,27 @@ internal class SyncManagerXtreamSupport(
             val completed = outcomes.size
             progress(provider.id, onProgress, "Downloading $sectionLabel by category $completed/${categories.size}...")
 
+            // Hard stop on the FIRST throttle/ban signal (403/429). Continuing to
+            // fire category requests at a provider that is already rate-limit-banning
+            // us deepens the ban and burns the exit IP for live too. Abort the whole
+            // segmented burst at once — do not wait for 3 accumulated failures. The
+            // minutes-long provider cooldown recordFailure() sets then keeps the next
+            // sync pass off the provider until the ban clears. Whatever partial
+            // catalog succeeded before this point is applied by the caller.
+            if (windowOutcomes.any { timed ->
+                    (timed.outcome as? CategoryFetchOutcome.Failure)
+                        ?.error
+                        ?.let(adaptiveSyncPolicy::isThrottleSignal) == true
+                }) {
+                warnings += "$sectionLabel $recoveryAbortWarningSuffix"
+                Log.w(
+                    XTREAM_SUPPORT_TAG,
+                    "Xtream $sectionLabel category sync aborted for provider ${provider.id} on a throttle/ban signal (403/429) after $completed/${categories.size} categories — backing off to protect the exit IP."
+                )
+                stoppedEarly = true
+                continue
+            }
+
             if (!forceSequential && shouldRecoverRemainingCategoryRequests(categories.size, completed, outcomes.map { it.outcome })) {
                 forceSequential = true
                 warnings += sequentialModeWarning
@@ -114,7 +135,15 @@ internal class SyncManagerXtreamSupport(
                 ?.let(shouldRememberSequentialPreference)
                 ?: false
         }
-        val stoppedEarly = stressFailures >= minOf(3, pageWindow.size)
+        // A throttle/ban signal (403/429) stops the burst immediately — same
+        // exit-IP-protection rationale as the category path.
+        val throttled = outcomes.any { outcome ->
+            (outcome.outcome as? PageFetchOutcome.Failure)
+                ?.error
+                ?.let(adaptiveSyncPolicy::isThrottleSignal)
+                ?: false
+        }
+        val stoppedEarly = throttled || stressFailures >= minOf(3, pageWindow.size)
         val shouldDegrade = !stoppedEarly && pageWindow.size > 1 && stressFailures >= minOf(2, pageWindow.size)
         if (shouldDegrade) {
             warnings += sequentialModeWarning
@@ -348,8 +377,14 @@ internal class SyncManagerXtreamSupport(
             is XtreamAuthenticationException -> false
             is XtreamResponseTooLargeException -> false
             is XtreamParsingException -> attempt == 1
+            // 403/429 are the provider's rate-limit / abuse-ban signals: retrying the
+            // SAME request 3× at 150 ms–1.2 s only deepens the ban (and 429's
+            // Retry-After is ignored by this loop). Do NOT retry them here — the
+            // segmented strategy aborts on the first throttle and the adaptive policy
+            // applies a minutes-long provider cooldown instead. 408/409/5xx stay
+            // retryable (genuinely transient).
             is XtreamRequestException ->
-                error.statusCode in setOf(403, 408, 409, 429) || error.statusCode in 500..599
+                error.statusCode in setOf(408, 409) || error.statusCode in 500..599
             is XtreamNetworkException -> true
             is IOException -> true
             else -> isRetryable(error)

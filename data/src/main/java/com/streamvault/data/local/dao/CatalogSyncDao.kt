@@ -1,5 +1,6 @@
 package com.streamvault.data.local.dao
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -9,8 +10,25 @@ import com.streamvault.data.local.entity.ChannelImportStageEntity
 import com.streamvault.data.local.entity.MovieImportStageEntity
 import com.streamvault.data.local.entity.SeriesImportStageEntity
 
+/**
+ * Minimal projection of a stored category, used by the sync staging layer to keep the
+ * last-known-good name when a provider's `get_*_categories` request fails mid-sync and the
+ * catalog falls back to synthetic "Category <id>" placeholder names.
+ */
+data class StoredCategoryIdentity(
+    @ColumnInfo(name = "category_id") val categoryId: Long,
+    val name: String,
+    @ColumnInfo(name = "parent_id") val parentId: Long?,
+    @ColumnInfo(name = "is_adult") val isAdult: Boolean
+)
+
 @Dao
 interface CatalogSyncDao {
+    @Query(
+        "SELECT category_id, name, parent_id, is_adult FROM categories " +
+            "WHERE provider_id = :providerId AND type = :type"
+    )
+    suspend fun storedCategoryIdentities(providerId: Long, type: String): List<StoredCategoryIdentity>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChannelStages(rows: List<ChannelImportStageEntity>)
 

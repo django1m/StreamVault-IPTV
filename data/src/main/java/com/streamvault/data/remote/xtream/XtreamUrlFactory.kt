@@ -323,6 +323,59 @@ object XtreamUrlFactory {
 
     fun isInternalStreamUrl(url: String?): Boolean = parseInternalStreamUrl(url) != null
 
+    /**
+     * Fallback container extensions probed when the panel rejects an episode
+     * or movie URL (403/404). The advertised/remembered extension is always
+     * tried first by the caller; `mkv` leads here because the app's default
+     * (`mp4`, see [buildPlaybackUrl]) is what just failed, and panels that
+     * omit `container_extension` overwhelmingly serve MKV files.
+     */
+    val SERIES_FALLBACK_EXTENSIONS: List<String> = listOf("mkv", "mp4", "avi")
+
+    /**
+     * Parses a credentialed playback URL (`http(s)://host/live|movie|series/
+     * <user>/<pass>/<id>.<ext>`). Returns null for anything else. The token's
+     * providerId is -1 — callers only need kind/streamId/extension.
+     */
+    fun parsePlaybackUrl(url: String?): XtreamStreamToken? {
+        if (url.isNullOrBlank()) return null
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return null
+        return parseCredentialedStreamUrl(url, providerId = -1L)
+    }
+
+    /**
+     * Rewrites the container extension of a credentialed playback URL,
+     * preserving the rest of the URL byte-for-byte (already-encoded
+     * user/pass segments are never re-encoded). Returns null when [url] is
+     * not a credentialed Xtream playback URL or the extension is invalid.
+     */
+    fun replaceContainerExtension(url: String, newExtension: String): String? {
+        val ext = normalizeContainerExtension(newExtension) ?: return null
+        parsePlaybackUrl(url) ?: return null
+        val queryStart = url.indexOfFirst { it == '?' || it == '#' }
+        val base = if (queryStart >= 0) url.substring(0, queryStart) else url
+        val suffix = if (queryStart >= 0) url.substring(queryStart) else ""
+        val lastSlash = base.lastIndexOf('/')
+        if (lastSlash < 0 || lastSlash == base.lastIndex) return null
+        val lastSegment = base.substring(lastSlash + 1)
+        val dotIndex = lastSegment.lastIndexOf('.')
+        val stem = if (dotIndex > 0) lastSegment.substring(0, dotIndex) else lastSegment
+        return base.substring(0, lastSlash + 1) + stem + "." + ext + suffix
+    }
+
+    /**
+     * Masks a URL's host for diagnostics ("vpn.example.net" -> "vp****.example.net").
+     * Never includes credentials or path. Returns null when no host can be parsed.
+     */
+    fun maskHost(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val host = runCatching { URI(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        val labels = host.split('.')
+        val first = labels.first()
+        val maskedFirst = first.take(2) + "****"
+        return (listOf(maskedFirst) + labels.drop(1)).joinToString(".")
+    }
+
     fun sanitizeLogMessage(message: String): String {
         val queryRedacted = queryCredentialRegex.replace(message) { match ->
             match.groupValues[1] + "<redacted>"

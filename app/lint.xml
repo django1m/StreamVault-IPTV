@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <issue id="MissingTranslation" severity="ignore" />
+    <issue id="LocalContextGetResourceValueCall" severity="warning" />
+    <issue id="LocalContextConfigurationRead" severity="warning" />
+    <issue id="FlowOperatorInvokedInComposition" severity="warning" />
+</lint>

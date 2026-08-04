@@ -4,7 +4,11 @@ import java.io.IOException
 
 sealed class XtreamApiException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-class XtreamNetworkException(message: String, cause: Throwable? = null) : IOException(message, cause)
+class XtreamNetworkException(
+    message: String,
+    cause: Throwable? = null,
+    val retryAfterMs: Long? = null
+) : IOException(message, cause)
 
 class XtreamAuthenticationException(
     val statusCode: Int,
@@ -17,7 +21,8 @@ class XtreamParsingException(message: String, cause: Throwable? = null) : Xtream
 class XtreamRequestException(
     val statusCode: Int,
     message: String,
-    cause: Throwable? = null
+    cause: Throwable? = null,
+    val retryAfterMs: Long? = null
 ) : XtreamApiException(message, cause)
 
 class XtreamResponseTooLargeException(

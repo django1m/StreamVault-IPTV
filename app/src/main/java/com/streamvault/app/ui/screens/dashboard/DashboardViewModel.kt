@@ -30,9 +30,6 @@ import android.content.Context
 import com.streamvault.app.R
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.time.LocalDate
-import java.time.Year
-import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -69,6 +66,7 @@ class DashboardViewModel @Inject constructor(
         const val MOVIE_SHELF_LIMIT = 12
         const val SERIES_SHELF_LIMIT = 12
         const val HOME_SHORTCUT_LIMIT = 4
+        const val SUBSCRIPTION_WARNING_DAYS = 7
     }
 
     private val _uiState = MutableStateFlow(DashboardUiState())
@@ -85,16 +83,17 @@ class DashboardViewModel @Inject constructor(
                             observeFavoriteChannels(provider.id).onStart { emit(emptyList()) },
                             observeRecentChannels(provider.id).onStart { emit(emptyList()) },
                             observeContinueWatching(provider.id).onStart { emit(emptyList()) },
-                            movieRepository.getMovies(provider.id).map { movies ->
+                            // SQL-side ORDER BY + LIMIT instead of loading the
+                            // full 5k+ item catalogue to sort it in memory —
+                            // ×3 oversample absorbs the explicit-content filter.
+                            movieRepository.getFreshPreview(provider.id, limit = MOVIE_SHELF_LIMIT * 3).map { movies ->
                                 movies
                                     .filterNot(::shouldHideVodFromHome)
-                                    .sortedByDescending(::movieFreshnessScore)
                                     .take(MOVIE_SHELF_LIMIT)
                             }.onStart { emit(emptyList()) },
-                            seriesRepository.getSeries(provider.id).map { series ->
+                            seriesRepository.getFreshPreview(provider.id, limit = SERIES_SHELF_LIMIT * 3).map { series ->
                                 series
                                     .filterNot(::shouldHideVodFromHome)
-                                    .sortedByDescending(::seriesFreshnessScore)
                                     .take(SERIES_SHELF_LIMIT)
                             }.onStart { emit(emptyList()) }
                         ) { favoriteChannels, recentChannels, continueWatching, recentMovies, recentSeries ->
@@ -112,7 +111,7 @@ class DashboardViewModel @Inject constructor(
                             buildLiveContext(provider.id).onStart {
                                 emit(DashboardLiveContext(lastVisitedCategory = null, shortcuts = emptyList()))
                             },
-                            channelRepository.getChannels(provider.id).map { it.size }.onStart { emit(0) },
+                            channelRepository.getChannelCount(provider.id).onStart { emit(0) },
                             movieRepository.getLibraryCount(provider.id).onStart { emit(0) },
                             seriesRepository.getLibraryCount(provider.id).onStart { emit(0) }
                         ) { shelves, liveContext, liveChannelCount, movieCount, seriesCount ->
@@ -158,10 +157,13 @@ class DashboardViewModel @Inject constructor(
                                     expirationDate = provider.expirationDate,
                                     maxConnections = provider.maxConnections
                                 ),
-                                providerWarnings = when (syncState) {
-                                    is SyncState.Partial -> syncState.warnings
-                                    is SyncState.Error -> listOf(syncState.message)
-                                    else -> emptyList()
+                                providerWarnings = buildList {
+                                    buildSubscriptionWarning(provider.expirationDate)?.let(::add)
+                                    when (syncState) {
+                                        is SyncState.Partial -> addAll(syncState.warnings)
+                                        is SyncState.Error -> add(syncState.message)
+                                        else -> Unit
+                                    }
                                 },
                                 updateNotice = snapshot.updateNotice,
                                 isLoading = false
@@ -365,17 +367,23 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-    private fun movieFreshnessScore(movie: Movie): Long {
-        return parseDateScore(movie.releaseDate)
-            ?: movie.year?.toIntOrNull()?.toLong()
-            ?: movie.id
-    }
-
-    private fun seriesFreshnessScore(series: Series): Long {
-        return series.lastModified
-            .takeIf { it > 0L }
-            ?: parseDateScore(series.releaseDate)
-            ?: series.id
+    /**
+     * Proactive expiry warning: customers must hear about renewal from the
+     * dashboard BEFORE playback starts failing with opaque auth errors. The
+     * Xtream exp_date proxied by the panel can be absent (null) or sentinel
+     * (Long.MAX_VALUE = unlimited) — warn only on a real upcoming date.
+     */
+    private fun buildSubscriptionWarning(expirationDate: Long?): String? {
+        val expiresAt = expirationDate?.takeIf { it > 0L && it != Long.MAX_VALUE } ?: return null
+        val now = System.currentTimeMillis()
+        if (expiresAt <= now) {
+            return appContext.getString(R.string.dashboard_subscription_expired)
+        }
+        val daysLeft = (expiresAt - now) / (24L * 60 * 60 * 1000L)
+        if (daysLeft >= SUBSCRIPTION_WARNING_DAYS) return null
+        val formattedDate = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
+            .format(java.util.Date(expiresAt))
+        return appContext.getString(R.string.dashboard_subscription_expiring_format, formattedDate)
     }
 
     private fun shouldHideVodFromHome(movie: Movie): Boolean {
@@ -392,17 +400,6 @@ class DashboardViewModel @Inject constructor(
         val normalized = title.lowercase()
         val explicitTerms = listOf("porn", "porno", "xxx", "adult", "18+", "sex", "erotic", "hentai")
         return explicitTerms.any { term -> normalized.contains(term) }
-    }
-
-    private fun parseDateScore(raw: String?): Long? {
-        if (raw.isNullOrBlank()) return null
-
-        return runCatching {
-            LocalDate.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE).toEpochDay()
-        }.getOrNull()
-            ?: runCatching {
-                Year.parse(raw, DateTimeFormatter.ofPattern("yyyy")).atDay(1).toEpochDay()
-            }.getOrNull()
     }
 
     private fun compareVersionNames(left: String, right: String): Int {

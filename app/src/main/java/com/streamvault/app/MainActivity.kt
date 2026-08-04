@@ -18,12 +18,14 @@ import com.streamvault.app.navigation.PlayerNavigationRequest
 import com.streamvault.app.tv.LauncherRecommendationsManager
 import com.streamvault.app.tv.WatchNextManager
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
+import com.streamvault.app.ui.pip.LocalIsInPip
+import com.streamvault.app.ui.pip.PictureInPictureController
 import com.streamvault.app.ui.theme.StreamVaultTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
@@ -73,6 +75,15 @@ class MainActivity : ComponentActivity() {
     val externalNavigationRequestFlow: StateFlow<ExternalNavigationRequest?> =
         _externalNavigationRequestFlow.asStateFlow()
 
+    // ── Picture-in-Picture (mobile only) ──────────────────────────────────
+    val pipController: PictureInPictureController by lazy { PictureInPictureController(this) }
+
+    private val _isInPip = MutableStateFlow(false)
+    val isInPip: StateFlow<Boolean> = _isInPip.asStateFlow()
+
+    /** Set by the player so PiP action buttons can drive the running playback. */
+    var onPipControl: ((Int) -> Unit)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
@@ -87,6 +98,24 @@ class MainActivity : ComponentActivity() {
         // This fixes keyboard-covers-input-field on API 30+ where adjustResize is
         // ignored when the theme sets windowFullscreen=true.
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // NOTE: enableEdgeToEdge() was called here for the mobile variant and has
+        // been removed. It was largely redundant — setDecorFitsSystemWindows(false)
+        // above already hands insets to Compose for every variant, and
+        // MobileScreenScaffold applies WindowInsets.systemBars itself — while
+        // adding a window-level variable (transparent system bars, contrast
+        // enforcement) to a build that showed "audio plays, no picture". The main
+        // engine renders into a SurfaceView, which is composited below the window
+        // and is sensitive to window opacity, so the mobile window is kept as
+        // close to the known-good TV configuration as possible.
+        if (pipController.isSupported) {
+            // The window itself is left untouched — PiP needs no window flags,
+            // only PictureInPictureParams. Anything that made the window
+            // translucent would break the SurfaceView rendering described above.
+            addOnPictureInPictureModeChangedListener { info ->
+                _isInPip.value = info.isInPictureInPictureMode
+            }
+            pipController.registerControls { control -> onPipControl?.invoke(control) }
+        }
         handleExternalIntent(intent)
         if (isTelevisionDevice()) {
             lifecycleScope.launch {
@@ -96,7 +125,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
-            val appLanguage by preferencesRepository.appLanguage.collectAsState(initial = "system")
+            val appLanguage by preferencesRepository.appLanguage.collectAsStateWithLifecycle(initialValue = "system")
             val currentContext = LocalContext.current
             
             val configuration = remember(appLanguage) {
@@ -133,9 +162,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val inPip by isInPip.collectAsStateWithLifecycle()
+
             CompositionLocalProvider(
                 LocalContext provides localizedContext,
-                LocalLayoutDirection provides layoutDirection
+                LocalLayoutDirection provides layoutDirection,
+                LocalIsInPip provides inPip
             ) {
                 StreamVaultTheme {
                     AppNavigation(mainActivity = this@MainActivity)
@@ -148,6 +180,27 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleExternalIntent(intent)
+    }
+
+    /**
+     * Pre-API-31 fallback for auto-enter.
+     *
+     * From API 31 the system handles this via `setAutoEnterEnabled`, and this
+     * callback is NOT delivered reliably under gesture navigation — which is
+     * precisely why auto-enter was introduced. Calling it on 31+ as well would
+     * risk entering PiP twice.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            pipController.enterIfPlaying()
+        }
+    }
+
+    override fun onDestroy() {
+        pipController.unregisterControls()
+        onPipControl = null
+        super.onDestroy()
     }
 
     fun clearExternalNavigationRequest() {

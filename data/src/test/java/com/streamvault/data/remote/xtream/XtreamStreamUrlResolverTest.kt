@@ -46,36 +46,7 @@ class XtreamStreamUrlResolverTest {
     }
 
     @Test
-    fun resolveWithMetadata_prefers_allowed_direct_source() = runBlocking {
-        val resolver = XtreamStreamUrlResolver(
-            providerDao = FakeProviderDao(
-                ProviderEntity(
-                    id = 9,
-                    name = "Xtream",
-                    type = ProviderType.XTREAM_CODES,
-                    serverUrl = "https://portal.example.com",
-                    username = "alice",
-                    password = "secret"
-                )
-            ),
-            credentialCrypto = credentialCrypto
-        )
-        val url = XtreamUrlFactory.buildInternalStreamUrl(
-            providerId = 9,
-            kind = XtreamStreamKind.LIVE,
-            streamId = 456,
-            containerExtension = "ts",
-            directSource = "http://edge.example.com/live/456/index.ts?exp=1774017000"
-        )
-
-        val resolved = resolver.resolveWithMetadata(url)
-
-        assertThat(resolved?.url).isEqualTo("http://edge.example.com/live/456/index.ts?exp=1774017000")
-        assertThat(resolved?.expirationTime).isEqualTo(1_774_017_000_000L)
-    }
-
-    @Test
-    fun resolveWithMetadata_ignores_unsupported_direct_source_scheme() = runBlocking {
+    fun resolveWithMetadata_forces_ts_for_live_and_ignores_hls_direct_source() = runBlocking {
         val resolver = XtreamStreamUrlResolver(
             providerDao = FakeProviderDao(
                 ProviderEntity(
@@ -94,12 +65,69 @@ class XtreamStreamUrlResolverTest {
             kind = XtreamStreamKind.LIVE,
             streamId = 456,
             containerExtension = "m3u8",
-            directSource = "ftp://edge.example.com/live/456/index.m3u8"
+            directSource = "http://cdn.example.com/live/alice/secret/456.m3u8?token=abc"
         )
 
         val resolved = resolver.resolveWithMetadata(url)
 
-        assertThat(resolved?.url).isEqualTo("https://portal.example.com/live/alice/secret/456.m3u8")
+        assertThat(resolved?.url).isEqualTo("https://portal.example.com/live/alice/secret/456.ts")
+    }
+
+    @Test
+    fun resolveWithMetadata_movie_prefers_allowed_direct_source() = runBlocking {
+        val resolver = XtreamStreamUrlResolver(
+            providerDao = FakeProviderDao(
+                ProviderEntity(
+                    id = 9,
+                    name = "Xtream",
+                    type = ProviderType.XTREAM_CODES,
+                    serverUrl = "https://portal.example.com",
+                    username = "alice",
+                    password = "secret"
+                )
+            ),
+            credentialCrypto = credentialCrypto
+        )
+        val url = XtreamUrlFactory.buildInternalStreamUrl(
+            providerId = 9,
+            kind = XtreamStreamKind.MOVIE,
+            streamId = 456,
+            containerExtension = "mp4",
+            directSource = "http://edge.example.com/movie/456/file.mp4?exp=1774017000"
+        )
+
+        val resolved = resolver.resolveWithMetadata(url)
+
+        assertThat(resolved?.url).isEqualTo("http://edge.example.com/movie/456/file.mp4?exp=1774017000")
+        assertThat(resolved?.expirationTime).isEqualTo(1_774_017_000_000L)
+    }
+
+    @Test
+    fun resolveWithMetadata_movie_ignores_unsupported_direct_source_scheme() = runBlocking {
+        val resolver = XtreamStreamUrlResolver(
+            providerDao = FakeProviderDao(
+                ProviderEntity(
+                    id = 9,
+                    name = "Xtream",
+                    type = ProviderType.XTREAM_CODES,
+                    serverUrl = "https://portal.example.com",
+                    username = "alice",
+                    password = "secret"
+                )
+            ),
+            credentialCrypto = credentialCrypto
+        )
+        val url = XtreamUrlFactory.buildInternalStreamUrl(
+            providerId = 9,
+            kind = XtreamStreamKind.MOVIE,
+            streamId = 456,
+            containerExtension = "mp4",
+            directSource = "ftp://edge.example.com/movie/456/file.mp4"
+        )
+
+        val resolved = resolver.resolveWithMetadata(url)
+
+        assertThat(resolved?.url).isEqualTo("https://portal.example.com/movie/alice/secret/456.mp4")
     }
 
     @Test

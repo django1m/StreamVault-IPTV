@@ -84,6 +84,11 @@ abstract class RepositoryModule {
     @Binds @Singleton
     abstract fun bindCredentialCrypto(impl: AndroidKeystoreCredentialCrypto): CredentialCrypto
 
+    @Binds @Singleton
+    abstract fun bindNetworkAvailability(
+        impl: com.streamvault.app.util.AndroidNetworkAvailability
+    ): com.streamvault.app.util.NetworkAvailability
+
     companion object {
         @Provides
         @Singleton

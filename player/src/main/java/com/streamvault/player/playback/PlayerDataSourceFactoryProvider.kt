@@ -1,6 +1,7 @@
 package com.streamvault.player.playback
 
 import android.content.Context
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -9,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerDataSourceFactoryProvider(
     private val context: Context,
     private val baseClient: OkHttpClient
@@ -30,6 +32,14 @@ class PlayerDataSourceFactoryProvider(
                 .connectTimeout(profile.connectTimeoutMs, TimeUnit.MILLISECONDS)
                 .readTimeout(profile.readTimeoutMs, TimeUnit.MILLISECONDS)
                 .writeTimeout(profile.writeTimeoutMs, TimeUnit.MILLISECONDS)
+                .apply {
+                    // Whole-call timeout only for bounded probes (PRELOAD). Never
+                    // for continuous streams — their body never ends, so a
+                    // callTimeout would terminate legitimate playback.
+                    if (profile.callTimeoutMs > 0L) {
+                        callTimeout(profile.callTimeoutMs, TimeUnit.MILLISECONDS)
+                    }
+                }
                 .build()
         }
         val httpFactory = OkHttpDataSource.Factory(client).apply {
@@ -49,4 +59,3 @@ class PlayerDataSourceFactoryProvider(
         return profile to factory
     }
 }
-

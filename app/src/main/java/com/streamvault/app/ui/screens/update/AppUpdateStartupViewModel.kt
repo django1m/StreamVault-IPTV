@@ -3,10 +3,12 @@ package com.streamvault.app.ui.screens.update
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.BuildConfig
+import com.streamvault.app.update.AppUpdateDownloadState
 import com.streamvault.app.update.AppUpdateDownloadStatus
 import com.streamvault.app.update.AppUpdateInstaller
 import com.streamvault.app.update.AppUpdateInfo
 import com.streamvault.data.preferences.PreferencesRepository
+import com.streamvault.domain.model.Result
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +75,8 @@ class AppUpdateStartupViewModel @Inject constructor(
         initialValue = null
     )
 
+    val downloadState: StateFlow<AppUpdateDownloadState> = appUpdateInstaller.downloadState
+
     fun dismissForThisVersion(versionCode: Int) {
         suppressedThisSession.value = true
         viewModelScope.launch {
@@ -81,10 +85,10 @@ class AppUpdateStartupViewModel @Inject constructor(
     }
 
     fun install() {
-        suppressedThisSession.value = true
         viewModelScope.launch {
             val state = appUpdateInstaller.refreshState()
             if (state.status == AppUpdateDownloadStatus.Downloaded) {
+                suppressedThisSession.value = true
                 appUpdateInstaller.installDownloadedUpdate()
                 return@launch
             }
@@ -97,7 +101,17 @@ class AppUpdateStartupViewModel @Inject constructor(
                 releaseNotes = preferencesRepository.cachedAppUpdateReleaseNotes.first(),
                 publishedAt = null
             )
-            appUpdateInstaller.startDownload(info)
+            if (appUpdateInstaller.startDownload(info) is Result.Error) return@launch
+            val finalState = appUpdateInstaller.downloadState.first {
+                it.status == AppUpdateDownloadStatus.Downloaded ||
+                    it.status == AppUpdateDownloadStatus.Failed
+            }
+            if (finalState.status == AppUpdateDownloadStatus.Downloaded) {
+                suppressedThisSession.value = true
+                appUpdateInstaller.installDownloadedUpdate()
+            }
+            // Si Failed: le dialog reste affiché avec l'état d'erreur, l'utilisateur
+            // peut réessayer via le bouton Installer ou fermer via Plus tard.
         }
     }
 }

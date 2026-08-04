@@ -2,6 +2,7 @@ package com.streamvault.app.ui.screens.player.overlay
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.testTag
@@ -27,6 +28,7 @@ class PlayerOverlayGoldenTest {
     fun playerControlsOverlay_vod_matchesGolden() {
         composeRule.setContent {
             StreamVaultTheme {
+                val playButtonFocusRequester = remember { FocusRequester() }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -49,7 +51,7 @@ class PlayerOverlayGoldenTest {
                         currentRecordingStatus = null,
                         isMuted = false,
                         mediaTitle = null,
-                        playButtonFocusRequester = FocusRequester(),
+                        playButtonFocusRequester = playButtonFocusRequester,
                         onClose = {},
                         onTogglePlayPause = {},
                         onSeekBackward = {},

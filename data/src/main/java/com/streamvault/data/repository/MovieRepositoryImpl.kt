@@ -74,7 +74,7 @@ class MovieRepositoryImpl @Inject constructor(
     private val transactionRunner: DatabaseTransactionRunner
 ) : MovieRepository {
     private companion object {
-        const val SEARCH_RESULT_LIMIT = 200
+        const val SEARCH_RESULT_LIMIT = 300
         const val MIN_SEARCH_QUERY_LENGTH = 2
         const val BROWSE_WINDOW_BUFFER = 80
         const val XTREAM_MOVIE_HYDRATION_TIMEOUT_MILLIS = 60_000L

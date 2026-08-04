@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.Surface
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -44,6 +45,7 @@ class StreamVaultTvInputService : TvInputService() {
 
     override fun onCreateSession(inputId: String): Session = StreamVaultSession(this)
 
+    @androidx.annotation.OptIn(UnstableApi::class)
     private inner class StreamVaultSession(context: Context) : Session(context) {
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         private val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {

@@ -143,6 +143,7 @@ data class SettingsUiState(
     val playerDecoderMode: DecoderMode = DecoderMode.AUTO,
     val playerPlaybackSpeed: Float = 1f,
     val playerControlsTimeoutSeconds: Int = 5,
+    val playbackInactivityTimeoutSeconds: Int = 0, // 0 = disabled ("are you still watching?")
     val playerLiveOverlayTimeoutSeconds: Int = 4,
     val playerNoticeTimeoutSeconds: Int = 6,
     val playerDiagnosticsTimeoutSeconds: Int = 15,

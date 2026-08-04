@@ -17,6 +17,7 @@ hilt-navigation-compose = "1.3.0"
 hilt-work = "1.3.0"
 retrofit = "2.12.0"
 okhttp = "4.12.0"
+wireguard = "1.0.20230706"
 coil = "3.4.0"
 coroutines = "1.10.2"
 lifecycle = "2.10.0"
@@ -83,6 +84,7 @@ retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = 
 retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+wireguard-tunnel = { group = "com.wireguard.android", name = "tunnel", version.ref = "wireguard" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 leakcanary-android = { group = "com.squareup.leakcanary", name = "leakcanary-android", version.ref = "leakcanary" }

@@ -277,7 +277,7 @@ class FavoritesViewModel @Inject constructor(
                                                 val s = entry.seasonNumber
                                                 val e = entry.episodeNumber
                                                 if (s != null && e != null) {
-                                                    append(appContext.getString(R.string.favorites_content_type_episode_format, s, e))
+                                                    append(appContext.getString(R.string.favorites_content_type_episode_format, s.toInt(), e.toInt()))
                                                 } else {
                                                     append(appContext.getString(R.string.favorites_content_type_episode))
                                                     entry.seasonNumber?.let { append(" S$it") }

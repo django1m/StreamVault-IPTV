@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mobile-flavor theme overlay.
+
+  Resource merging happens per RESOURCE, not per file: redefining
+  Theme.StreamVault here overrides only that style. Theme.StreamVault.CastChooser
+  from src/main/res/values/themes.xml stays intact and must NOT be copied here.
+
+  DELIBERATELY A MINIMAL DELTA FROM THE TV THEME. The TV theme is known-good with
+  the video pipeline, and the main engine renders into a SurfaceView
+  (`useSurfaceView = true`, chosen for the box's hardware scaler). A SurfaceView
+  is composited on its own layer *below* the window and needs the window to punch
+  an opaque-backed hole; a translucent window breaks that and yields the classic
+  "audio plays, picture stays black".
+
+  So this keeps the same parent family, the same opaque black background and the
+  same explicit `windowIsTranslucent=false` as TV. The ONLY intentional
+  difference is dropping `windowFullscreen`: hiding the status bar permanently is
+  right on a 10-foot screen and wrong while browsing on a phone. Immersion is
+  applied at runtime, inside the player only — see ui/system/ImmersiveMode.kt.
+-->
+<resources>
+    <style name="Theme.StreamVault" parent="@android:style/Theme.NoTitleBar">
+        <item name="android:windowNoTitle">true</item>
+        <!-- Not fullscreen: the only deliberate difference from the TV theme. -->
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <!-- Draw behind the display cutout in landscape rather than letterbox
+             the video. API 28 = minSdk, so no versioned resource needed.
+             `shortEdges` (not `always`, which is API 30+). -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <!-- Intentionally no statusBarColor / navigationBarColor: with
+             targetSdk 36 they are ignored on Android 15+, where edge-to-edge is
+             enforced. Bar appearance is handled by enableEdgeToEdge(). -->
+    </style>
+</resources>

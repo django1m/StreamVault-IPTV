@@ -269,14 +269,20 @@ internal class SyncManagerXtreamLiveStrategy(
             .map { failure -> categoryFailureWarning("Live TV", failure.categoryName, failure.error) } +
             fallbackWarnings
 
-        val channels = finalOutcomes
-            .asSequence()
-            .filterIsInstance<CategoryFetchOutcome.Success<Channel>>()
-            .flatMap { it.items.asSequence() }
-            .filter { it.streamId > 0L }
-            .associateBy { it.streamId }
-            .values
-            .toList()
+        // Single-pass dedup: on a 10k+ channel panel the previous
+        // associateBy{}.values.toList() chain built a full LinkedHashMap plus
+        // a list copy — two extra catalogue-sized allocations on a 2 GB box.
+        val seenStreamIds = HashSet<Long>()
+        val channels = ArrayList<Channel>()
+        finalOutcomes.forEach { outcome ->
+            if (outcome is CategoryFetchOutcome.Success<Channel>) {
+                outcome.items.forEach { channel ->
+                    if (channel.streamId > 0L && seenStreamIds.add(channel.streamId)) {
+                        channels += channel
+                    }
+                }
+            }
+        }
         val failedCategories = finalOutcomes.count { it is CategoryFetchOutcome.Failure }
         val emptyCategories = finalOutcomes.count { it is CategoryFetchOutcome.Empty }
         val successfulCategories = finalOutcomes.count { it is CategoryFetchOutcome.Success }

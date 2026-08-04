@@ -6,6 +6,8 @@ import com.streamvault.data.local.entity.ProgramEntity
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.data.mapper.toEntity
 import com.streamvault.data.parser.XmltvParser
+import com.streamvault.data.remote.NetworkTimeoutConfig
+import java.util.concurrent.TimeUnit
 import com.streamvault.data.util.rankSearchResults
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.Result
@@ -43,6 +45,18 @@ class EpgRepositoryImpl @Inject constructor(
 ) : EpgRepository {
 
     private val providerRefreshMutexes = ConcurrentHashMap<Long, Mutex>()
+
+    // XMLTV downloads can be 50–200 MB and take minutes on slow links. The
+    // base OkHttpClient has a 30s read timeout that aborts these mid-stream;
+    // we use the heavy-catalog timeouts (5 min read, 5.5 min call) so a long
+    // download finishes instead of failing the EPG sync.
+    private val epgHttpClient: OkHttpClient by lazy {
+        okHttpClient.newBuilder()
+            .readTimeout(NetworkTimeoutConfig.XTREAM_HEAVY_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .writeTimeout(NetworkTimeoutConfig.XTREAM_HEAVY_WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .callTimeout(NetworkTimeoutConfig.XTREAM_HEAVY_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .build()
+    }
 
     companion object {
         private const val MAX_EPG_SIZE_BYTES = 200L * 1_048_576 // 200 MB
@@ -177,7 +191,7 @@ class EpgRepositoryImpl @Inject constructor(
                     programDao.deleteByProvider(stagingProviderId)
 
                     val request = Request.Builder().url(epgUrl).build()
-                    val response = okHttpClient.newCall(request).execute()
+                    val response = epgHttpClient.newCall(request).execute()
 
                     if (!response.isSuccessful) {
                         return@withLock Result.error("Failed to download EPG: HTTP ${response.code}")

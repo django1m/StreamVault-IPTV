@@ -20,7 +20,8 @@ data class AppUpdateInfo(
     val releaseUrl: String,
     val downloadUrl: String?,
     val releaseNotes: String,
-    val publishedAt: String?
+    val publishedAt: String?,
+    val sha256: String? = null
 )
 
 /**
@@ -38,7 +39,11 @@ class AppUpdateChecker @Inject constructor(
     suspend fun fetchLatestRelease(): Result<AppUpdateInfo> = withContext(Dispatchers.IO) {
         try {
             val baseUrl = BuildConfig.FUZIONTV_BASE_URL.trimEnd('/')
-            val url = "$baseUrl/api/v1/updates/latest?current=0"
+            // `variant` scopes the lookup to this build's update channel. Without
+            // it the backend defaults to "tv", which would offer a TV APK to a
+            // phone (and, since mobile versionCodes are offset by +100000, would
+            // otherwise let a phone release reach the whole box fleet).
+            val url = "$baseUrl/api/v1/updates/latest?current=0&variant=${BuildConfig.APP_VARIANT}"
             val request = Request.Builder()
                 .url(url)
                 .header("Accept", "application/json")
@@ -83,6 +88,11 @@ class AppUpdateChecker @Inject constructor(
                 } else {
                     null
                 }
+                val sha256 = if (json.has("sha256") && !json.isNull("sha256")) {
+                    json.optString("sha256").trim().takeIf { it.isNotEmpty() }
+                } else {
+                    null
+                }
 
                 if (versionName.isBlank() || versionCode == null) {
                     return@withContext Result.error("Update check failed: malformed update response")
@@ -98,7 +108,8 @@ class AppUpdateChecker @Inject constructor(
                         releaseUrl = downloadUrl,
                         downloadUrl = downloadUrl,
                         releaseNotes = releaseNotes ?: "",
-                        publishedAt = null
+                        publishedAt = null,
+                        sha256 = sha256
                     )
                 )
             }

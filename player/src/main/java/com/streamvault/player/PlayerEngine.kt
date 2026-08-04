@@ -38,9 +38,31 @@ interface PlayerEngine {
     val mediaTitle: StateFlow<String?>
 
     fun prepare(streamInfo: StreamInfo)
+    /**
+     * Re-prepare the engine with the last [StreamInfo] passed to [prepare],
+     * fully resetting the retry state and re-attaching live streams to the
+     * live edge. No-op if [prepare] was never called.
+     *
+     * Used by the mid-stream stall watchdog to force-reconnect a live channel
+     * that Media3 has silently parked in BUFFERING (panel stopped feeding
+     * bytes without closing the socket, so [PlayerRetryPolicy] never fires).
+     */
+    fun restart()
     fun play()
     fun pause()
     fun stop()
+
+    /**
+     * Stop playback and CLOSE the upstream network connection (frees the
+     * provider line), but KEEP audio focus. Used when the app goes to the
+     * background: a plain [pause] leaves the socket open (the line stays
+     * counted busy upstream, which can starve other users), while a plain
+     * [stop] releases audio focus — and re-requesting it on resume
+     * intermittently fails on Amlogic S905X5M, leaving play/pause feeling dead.
+     * This closes the source without touching focus, so [restart] resumes
+     * cleanly. No-op concerns: safe to call when already idle.
+     */
+    fun stopForBackground()
     fun seekTo(positionMs: Long)
     fun seekForward(ms: Long = 10_000)
     fun seekBackward(ms: Long = 10_000)

@@ -10,6 +10,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import com.streamvault.app.ui.permissions.RequestNotificationPermission
+import com.streamvault.app.ui.design.FormFactor
+import com.streamvault.app.ui.design.LocalFormFactor
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -228,6 +231,21 @@ fun AppNavigation(mainActivity: MainActivity) {
     val navController = rememberNavController()
     val externalNavigationRequest = mainActivity.externalNavigationRequestFlow.collectAsStateWithLifecycle().value
 
+    // Watch the device activation token: if a background sync receives a 401
+    // and the worker clears the activation, route the user back to the
+    // activation screen instead of leaving them on a dead session.
+    val authGate: AuthGateViewModel = hiltViewModel()
+    val authState by authGate.authState.collectAsStateWithLifecycle()
+    LaunchedEffect(authState) {
+        if (authState != AuthGateViewModel.AuthState.REVOKED) return@LaunchedEffect
+        val currentRoute = navController.currentBackStackEntry?.destination?.route
+        if (currentRoute == Routes.ACTIVATION || currentRoute == Routes.WELCOME) return@LaunchedEffect
+        navController.navigate(Routes.ACTIVATION) {
+            popUpTo(navController.graph.id) { inclusive = true }
+            launchSingleTop = true
+        }
+    }
+
     LaunchedEffect(externalNavigationRequest) {
         when (val request = externalNavigationRequest) {
             is ExternalNavigationRequest.Player -> {
@@ -290,11 +308,22 @@ fun AppNavigation(mainActivity: MainActivity) {
 
     val updateViewModel: AppUpdateStartupViewModel = hiltViewModel()
     val pendingUpdate by updateViewModel.pendingUpdate.collectAsStateWithLifecycle()
+    val updateDownloadState by updateViewModel.downloadState.collectAsStateWithLifecycle()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
     val isBlockedForUpdate = currentRoute == Routes.ACTIVATION || currentRoute == Routes.WELCOME
+
+    // Reuses the same gate as the update dialog: the notification prompt only
+    // appears once the user is past activation and onboarding. Asking on the
+    // first frame, before anything has been explained, is how you get denied
+    // permanently. No-op on TV and below API 33.
+    RequestNotificationPermission(
+        shouldAsk = currentRoute != null && !isBlockedForUpdate
+    )
+
     pendingUpdate?.takeUnless { isBlockedForUpdate }?.let { update ->
         AppUpdateStartupDialog(
             update = update,
+            downloadState = updateDownloadState,
             onInstall = { updateViewModel.install() },
             onLater = { updateViewModel.dismissForThisVersion(update.versionCode) }
         )
@@ -726,9 +755,19 @@ fun AppNavigation(mainActivity: MainActivity) {
         }
 
         composable(Routes.MULTI_VIEW) {
-            MultiViewScreen(
-                onBack = { navController.popBackStack() }
-            )
+            // Multiview drives up to four simultaneous IPTV streams. On a phone
+            // that means four concurrent hardware decoders — more than many SoCs
+            // expose — plus roughly 8 GB/h of data. It stays available on TV and
+            // tablet; on a phone the route is a hard no-op back to where we came
+            // from. This is the safety net behind the hidden entry points: even a
+            // deep link or a restored back stack cannot land here.
+            if (LocalFormFactor.current == FormFactor.Phone) {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            } else {
+                MultiViewScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
         }
     }
         SnackbarHost(

@@ -36,6 +36,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -118,6 +119,7 @@ internal fun EpgGrid(
     guideWindowStart: Long,
     guideWindowEnd: Long,
     density: GuideDensity,
+    channelFocusRequesters: MutableMap<Long, androidx.compose.ui.focus.FocusRequester>,
     onChannelClick: (Channel) -> Unit,
     onProgramClick: (Channel, Program) -> Unit,
     onChannelFocused: (Channel, Program?, Boolean) -> Unit,
@@ -172,6 +174,9 @@ internal fun EpgGrid(
                         programsByChannel[lookupKey].orEmpty()
                     }.orEmpty()
                     val isFirstRow = index == 0
+                    val channelFocusRequester = channelFocusRequesters.getOrPut(channel.id) {
+                        androidx.compose.ui.focus.FocusRequester()
+                    }
                     EpgRow(
                         channel = channel,
                         isFavorite = channel.id in favoriteChannelIds,
@@ -186,6 +191,7 @@ internal fun EpgGrid(
                         rowHeight = rowHeight,
                         markerStepMs = markerStepMs,
                         scrollState = horizontalScrollState,
+                        channelFocusRequester = channelFocusRequester,
                         onChannelClick = { onChannelClick(channel) },
                         onChannelFocused = { onChannelFocused(channel, it, isFirstRow) },
                         onProgramClick = { program -> onProgramClick(channel, program) },
@@ -218,14 +224,19 @@ private fun GuideTimelineHeader(
     } else {
         stringResource(R.string.epg_outside_window)
     }
-    val hourMarkers = buildList {
-        var marker = windowStart
-        while (marker <= windowEnd) {
-            add(marker)
-            marker += markerStepMs
-        }
-        if (lastOrNull() != windowEnd) {
-            add(windowEnd)
+    // Memoize: the marker list only depends on the window bounds + step, not on
+    // the `now` tick that recomposes this header every 30s. Without the key the
+    // list is re-allocated on every recomposition (and on every horizontal pan).
+    val hourMarkers = remember(windowStart, windowEnd, markerStepMs) {
+        buildList {
+            var marker = windowStart
+            while (marker <= windowEnd) {
+                add(marker)
+                marker += markerStepMs
+            }
+            if (lastOrNull() != windowEnd) {
+                add(windowEnd)
+            }
         }
     }
 
@@ -331,6 +342,7 @@ fun EpgRow(
     rowHeight: Dp,
     markerStepMs: Long,
     scrollState: androidx.compose.foundation.ScrollState,
+    channelFocusRequester: androidx.compose.ui.focus.FocusRequester? = null,
     onChannelClick: () -> Unit,
     onChannelFocused: (Program?) -> Unit,
     onProgramClick: (Program) -> Unit,
@@ -353,6 +365,53 @@ fun EpgRow(
         GuideDensity.CINEMATIC -> 26.dp
     }
 
+    // Viewport culling: only compose the programs (and hour markers) whose time
+    // range intersects the currently scrolled-into-view window, plus one screen
+    // of margin on each side. On the 2 GB Amlogic box a wide guide (12-24 h) would
+    // otherwise compose dozens of ProgramItem per row even though they sit far
+    // off-screen, which is the main cause of jank when opening/panning the guide.
+    // ProgramItem positions itself absolutely (padding(start = itemStart)), so
+    // dropping off-screen items does not shift the layout of the survivors.
+    val screenDensity = LocalDensity.current
+    val visibleTimeWindow by remember(
+        windowStart, windowEnd, totalTimelineWidth, timelineViewportWidth, screenDensity
+    ) {
+        derivedStateOf {
+            val totalPx = with(screenDensity) { totalTimelineWidth.toPx() }
+            if (totalPx <= 0f) {
+                windowStart to windowEnd
+            } else {
+                val viewportPx = with(screenDensity) { timelineViewportWidth.toPx() }
+                val scrollPx = scrollState.value.toFloat()
+                val marginPx = viewportPx // one extra screen on each side
+                val startRatio = ((scrollPx - marginPx) / totalPx).coerceIn(0f, 1f)
+                val endRatio = ((scrollPx + viewportPx + marginPx) / totalPx).coerceIn(0f, 1f)
+                val visStart = windowStart + (startRatio * totalDuration).toLong()
+                val visEnd = windowStart + (endRatio * totalDuration).toLong()
+                visStart to visEnd
+            }
+        }
+    }
+    // Always keep the now-airing program composed even when it is scrolled out of
+    // view: it is the focus anchor (nowProgramRequester) used by focusProperties
+    // enter, and requesting focus on an unattached FocusRequester would throw.
+    val visiblePrograms by remember(programs, currentProgram) {
+        derivedStateOf {
+            if (programs.isEmpty()) {
+                programs
+            } else {
+                val (visStart, visEnd) = visibleTimeWindow
+                val current = currentProgram
+                programs.filter { p ->
+                    (p.endTime >= visStart && p.startTime <= visEnd) ||
+                        (current != null &&
+                            p.startTime == current.startTime &&
+                            p.endTime == current.endTime)
+                }
+            }
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -364,6 +423,13 @@ fun EpgRow(
             modifier = Modifier
                 .width(channelRailWidth)
                 .fillMaxHeight()
+                .let { base ->
+                    if (channelFocusRequester != null) {
+                        base.focusRequester(channelFocusRequester)
+                    } else {
+                        base
+                    }
+                }
                 .onFocusChanged {
                     if (it.isFocused && !isFocused) {
                         onChannelFocused(currentProgram)
@@ -477,7 +543,9 @@ fun EpgRow(
                         }
                     }
                 }
+                val (visMarkerStart, visMarkerEnd) = visibleTimeWindow
                 markers.forEach { marker ->
+                    if (marker < visMarkerStart || marker > visMarkerEnd) return@forEach
                     val markerRatio = ((marker - windowStart).toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
                     Box(
                         modifier = Modifier
@@ -492,7 +560,7 @@ fun EpgRow(
                         Text(stringResource(R.string.epg_no_schedule_short), color = OnSurfaceDim)
                     }
                 } else {
-                    programs.forEach { program ->
+                    visiblePrograms.forEach { program ->
                         val isCurrent = currentProgram != null &&
                             program.startTime == currentProgram!!.startTime &&
                             program.endTime == currentProgram!!.endTime

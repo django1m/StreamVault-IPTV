@@ -3,6 +3,10 @@ package com.streamvault.app.ui.interaction
 import android.view.InputDevice
 import android.view.MotionEvent
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,12 +43,27 @@ fun Modifier.mouseClickable(
         // Phone / tablet path: intercept touch so the first tap fires the action without
         // needing the TV Surface's "focus first, then click on second tap" behaviour.
         if (enabled) {
-            this.pointerInput(onClick, onLongClick) {
-                detectTapGestures(
-                    onTap = { _ -> onClick() },
-                    onLongPress = onLongClick?.let { lc -> { _ -> lc() } }
-                )
-            }
+            // TV Surfaces signal interaction by scaling on FOCUS, which touch never
+            // grants — so without this a tap looks completely dead. Emitting press
+            // interactions ourselves lets a standard M3 ripple render the feedback.
+            val interactionSource = remember { MutableInteractionSource() }
+            this
+                .indication(interactionSource, ripple())
+                .pointerInput(onClick, onLongClick) {
+                    detectTapGestures(
+                        onPress = { offset ->
+                            val press = PressInteraction.Press(offset)
+                            interactionSource.emit(press)
+                            val released = tryAwaitRelease()
+                            interactionSource.emit(
+                                if (released) PressInteraction.Release(press)
+                                else PressInteraction.Cancel(press)
+                            )
+                        },
+                        onTap = { _ -> onClick() },
+                        onLongPress = onLongClick?.let { lc -> { _ -> lc() } }
+                    )
+                }
         } else {
             this
         }

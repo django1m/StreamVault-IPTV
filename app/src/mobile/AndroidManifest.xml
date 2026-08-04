@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mobile-flavor manifest overlay. Merged on top of src/main/AndroidManifest.xml,
+  which is NOT modified: the TV build must stay exactly as deployed on customer
+  boxes. The acceptance criterion for this file is that the merged tvRelease
+  manifest still diffs empty against the pre-flavor reference.
+
+  Merge rules that matter here:
+    - Elements keyed by android:name (uses-permission, activity, service) support
+      tools:node="remove" and attribute-level tools:replace.
+    - <intent-filter> is ADDITIVE, never merged by key. That is why MainActivity
+      below redeclares no intent-filter: doing so would duplicate every filter
+      from src/main. It is also why LEANBACK_LAUNCHER is left alone — a
+      tools:node="remove" on a nested <category> has no addressable target. A
+      phone launcher simply ignores that category since the same filter also
+      carries LAUNCHER, so the app still appears exactly once.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- API 33+: playback notification, update download progress, and the
+         RecordingForegroundService declared in data/src/main/AndroidManifest.xml.
+         Requested at runtime, never at first frame. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- TV Provider permissions: inert on a phone (the provider does not exist)
+         and needlessly alarming in the app's permission listing. -->
+    <uses-permission
+        android:name="com.android.providers.tv.permission.READ_EPG_DATA"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"
+        tools:node="remove" />
+
+    <!-- A phone or tablet always has one. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="true"
+        tools:replace="android:required" />
+
+    <application tools:remove="android:banner">
+
+        <!-- Only the attributes that differ from src/main. The merger keeps
+             exported, launchMode, configChanges, windowSoftInputMode and every
+             intent-filter from the main manifest.
+
+             NOTE: supportsPictureInPicture is declared but PiP is NOT
+             implemented yet (out of scope, 2026-07-25). The declaration is inert
+             on its own — PiP can only be entered by an explicit
+             enterPictureInPictureMode() call — so it costs nothing and means no
+             manifest change when the feature lands. configChanges in main
+             already covers orientation|screenSize|screenLayout|
+             smallestScreenSize, which is the other prerequisite. -->
+        <activity
+            android:name=".MainActivity"
+            android:screenOrientation="fullUser"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            tools:replace="android:screenOrientation" />
+
+        <!-- TV Input Framework integrations: nothing on a phone will ever bind
+             these, and shipping them only adds surface. -->
+        <activity
+            android:name=".tvinput.TvInputSetupActivity"
+            tools:node="remove" />
+        <service
+            android:name=".tvinput.StreamVaultTvInputService"
+            tools:node="remove" />
+
+    </application>
+</manifest>

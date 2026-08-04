@@ -74,6 +74,8 @@ import com.streamvault.app.ui.components.cinematic.focusGlow
 import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppShapes
 import com.streamvault.app.ui.design.LocalAppSpacing
+import com.streamvault.app.ui.design.LocalFormFactor
+import com.streamvault.app.ui.design.isTouch
 import com.streamvault.app.ui.design.glassSurface
 import com.streamvault.app.ui.interaction.mouseClickable
 import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
@@ -105,6 +107,26 @@ fun AppScreenScaffold(
     backdrop: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // Single branch point for the whole app's chrome. Every feature screen keeps
+    // calling this with AppNavigationChrome.TopBar; off TV that parameter is
+    // simply ignored and the touch shell takes over. This is why the nine screens
+    // needed no changes at all to get a bottom bar / navigation rail.
+    if (LocalFormFactor.current.isTouch) {
+        MobileScreenScaffold(
+            currentRoute = currentRoute,
+            onNavigate = onNavigate,
+            title = title,
+            subtitle = subtitle,
+            modifier = modifier,
+            showScreenHeader = showScreenHeader,
+            header = header,
+            contentPadding = contentPadding,
+            backdrop = backdrop,
+            content = content
+        )
+        return
+    }
+
     val spacing = LocalAppSpacing.current
 
     Box(
@@ -840,7 +862,7 @@ private fun RailButton(
     }
 }
 
-private data class DestinationItem(
+internal data class DestinationItem(
     val route: String,
     @StringRes val labelRes: Int,
     val icon: ImageVector
@@ -855,7 +877,7 @@ private fun findActiveDestinationItem(
         .maxByOrNull { it.route.length }
         ?: items.firstOrNull { it.route == currentRoute }
 
-private fun buildDestinationItems(): List<DestinationItem> = listOf(
+internal fun buildDestinationItems(): List<DestinationItem> = listOf(
     DestinationItem(Routes.HOME, R.string.nav_home, Icons.Default.Home),
     DestinationItem(Routes.LIVE_TV, R.string.nav_live_tv, Icons.Default.PlayArrow),
     DestinationItem(Routes.MOVIES, R.string.nav_movies, Icons.Default.Star),

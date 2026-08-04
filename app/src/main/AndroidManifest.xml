@@ -7,7 +7,6 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
-    <uses-permission android:name="android.permission.BIND_TV_INPUT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -51,10 +50,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
-            <intent-filter>
+            <intent-filter tools:ignore="AppLinkUrlError">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="audio/x-mpegurl" />
                 <data android:mimeType="audio/mpegurl" />
                 <data android:mimeType="application/x-mpegurl" />
@@ -84,6 +82,14 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
             android:theme="@style/Theme.StreamVault.CastChooser" />
+
+        <activity
+            android:name=".vpn.VpnConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <activity
             android:name=".tvinput.TvInputSetupActivity"

@@ -5,19 +5,30 @@ import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.FrameLayout
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.streamvault.player.PlayerSurfaceResizeMode
 import com.streamvault.player.R
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerViewBinder(
     private val subtitleStyleController: SubtitleStyleController
 ) {
     private var boundPlayerView: PlayerView? = null
     private var boundResizeMode: PlayerSurfaceResizeMode = PlayerSurfaceResizeMode.FIT
 
-    fun createRenderView(context: Context, resizeMode: PlayerSurfaceResizeMode): View {
-        return (LayoutInflater.from(context).inflate(R.layout.player_texture_view, null) as PlayerView).apply {
+    fun createRenderView(
+        context: Context,
+        resizeMode: PlayerSurfaceResizeMode,
+        useSurfaceView: Boolean = false
+    ): View {
+        val parent = FrameLayout(context)
+        // SurfaceView : laisse le scaler matériel (VPP) de la box agrandir le flux
+        // sous-natif (upscaling plus net + GPU/RAM déchargés) — réservé au lecteur
+        // plein écran. TextureView pour la mosaïque/preview (plans d'overlay limités).
+        val layoutRes = if (useSurfaceView) R.layout.player_surface_view else R.layout.player_texture_view
+        return (LayoutInflater.from(context).inflate(layoutRes, parent, false) as PlayerView).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT

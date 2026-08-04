@@ -4,8 +4,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.streamvault.app.ui.design.LocalFormFactor
+import com.streamvault.app.ui.design.isTouch
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonBorder
@@ -22,6 +26,23 @@ import androidx.tv.material3.ClickableSurfaceScale
 import androidx.tv.material3.ClickableSurfaceShape
 import androidx.tv.material3.IconButton
 import androidx.tv.material3.Surface
+
+/**
+ * Material's minimum touch target. TV Material enforces no minimum — its targets
+ * are sized for a focus ring, not a fingertip — so anything smaller than this is
+ * unhittable on a phone. Only widens; larger components are untouched.
+ */
+private val MinTouchTarget = 48.dp
+
+/**
+ * Enlarges a control to [MinTouchTarget] on touch devices, no-op on TV.
+ *
+ * Kept as a modifier rather than a wrapper Box so it composes with whatever
+ * layout modifiers the caller already passed.
+ */
+@Composable
+private fun Modifier.touchTargetSize(): Modifier =
+    if (LocalFormFactor.current.isTouch) sizeIn(minWidth = MinTouchTarget, minHeight = MinTouchTarget) else this
 
 /**
  * Drop-in replacement for TV Material3 Surface(onClick) that automatically adds
@@ -45,7 +66,9 @@ fun TvClickableSurface(
     Surface(
         onClick = onClick,
         onLongClick = onLongClick,
-        modifier = modifier.mouseClickable(onClick = onClick, enabled = enabled, onLongClick = onLongClick),
+        modifier = modifier
+            .touchTargetSize()
+            .mouseClickable(onClick = onClick, enabled = enabled, onLongClick = onLongClick),
         enabled = enabled,
         shape = shape,
         colors = colors,
@@ -77,7 +100,9 @@ fun TvButton(
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.mouseClickable(onClick = onClick, enabled = enabled),
+        modifier = modifier
+            .touchTargetSize()
+            .mouseClickable(onClick = onClick, enabled = enabled),
         enabled = enabled,
         scale = scale,
         glow = glow,
@@ -103,7 +128,9 @@ fun TvIconButton(
 ) {
     IconButton(
         onClick = onClick,
-        modifier = modifier.mouseClickable(onClick = onClick, enabled = enabled),
+        modifier = modifier
+            .touchTargetSize()
+            .mouseClickable(onClick = onClick, enabled = enabled),
         enabled = enabled,
         content = content,
     )

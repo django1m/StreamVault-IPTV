@@ -4,10 +4,21 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
+
+/**
+ * Set to true by the theme when the system's animator scale is 0 (reduced
+ * motion accessibility setting). Composables that opt into the helpers below
+ * collapse their animations to a snap.
+ */
+val LocalReducedMotion = staticCompositionLocalOf { false }
 
 object AppMotion {
     const val Fast = 120
@@ -57,4 +68,43 @@ object AppMotion {
         dampingRatio = 0.72f,
         stiffness = 520f
     )
+
+    private val SnapFloat: FiniteAnimationSpec<Float> = snap()
+    private val SnapDp: FiniteAnimationSpec<Dp> = snap()
+    private val SnapColor: FiniteAnimationSpec<Color> = snap()
+
+    @Composable
+    @ReadOnlyComposable
+    fun focusSpec(): FiniteAnimationSpec<Float> =
+        if (LocalReducedMotion.current) SnapFloat else FocusSpec
+
+    @Composable
+    @ReadOnlyComposable
+    fun focusSpring(): FiniteAnimationSpec<Float> =
+        if (LocalReducedMotion.current) SnapFloat else FocusSpring
+
+    @Composable
+    @ReadOnlyComposable
+    fun scaleSpring(): FiniteAnimationSpec<Float> =
+        if (LocalReducedMotion.current) SnapFloat else ScaleSpring
+
+    @Composable
+    @ReadOnlyComposable
+    fun heroEnterSpring(): FiniteAnimationSpec<Float> =
+        if (LocalReducedMotion.current) SnapFloat else HeroEnterSpring
+
+    @Composable
+    @ReadOnlyComposable
+    fun overlayFade(): FiniteAnimationSpec<Float> =
+        if (LocalReducedMotion.current) SnapFloat else OverlayFade
+
+    @Composable
+    @ReadOnlyComposable
+    fun dpSpring(): FiniteAnimationSpec<Dp> =
+        if (LocalReducedMotion.current) SnapDp else DpSpring
+
+    @Composable
+    @ReadOnlyComposable
+    fun ambientColorSpring(): FiniteAnimationSpec<Color> =
+        if (LocalReducedMotion.current) SnapColor else AmbientColorSpring
 }

@@ -2,6 +2,24 @@
 
 All notable product changes are recorded in this document.
 
+## 1.3.31 (519) - 04/07/2026
+
+### Fixed
+- Fixed the preview→fullscreen handoff parking an ERRORed preview engine: the fullscreen player adopted it with `skipEnginePrepare`, the replayed error was dropped as pre-session, and no automatic recovery ran. An ERRORed preview now falls back to a regular full prepare.
+- Fixed advisory-mode demotion under panel rate limiting: a 403 on the announced extension stays advisory (engine still gets its real attempt) even when the back-to-back alternate probes get false 404/5xx answers, and the reported HTTP code is now the initial one.
+
+## 1.3.30 (518) - 04/07/2026
+
+### Fixed
+- Fixed an app crash when re-entering the player screen after a playback failure: the singleton engines' error flow (`replay = 1`) replayed the previous session's error into the new `PlayerViewModel` during construction, before its fields were initialized (NPE in `tryAlternateEngineInternal`). Fixed in three layers: pre-session error guard in `handlePlaybackError`, replay-cache purge in all three engines' `release()`, and field declaration order.
+- Fixed silent pre-playback probe failures: Xtream stream probe rejections (401/403/404/5xx) are now reported to the admin backend as diagnostics, with HTTP code, content type, tried extensions, and masked host.
+
+### Changed
+- Series and movie playback now retries alternate container extensions (`mkv`/`mp4`/`avi`) when the panel rejects the announced one with 403/404 — panels that omit `container_extension` in `get_series_info` used to fail on the `.mp4` default. Winning extensions are remembered per series/provider for the rest of the session.
+- A fully rejected 401/403 series/movie probe is now advisory: the engine still gets one real playback attempt (its HTTP client differs from the probe's) before the provider-refusal message is shown.
+- Probe and terminal playback error messages are now in French and actionable (e.g. suggesting the line's package may not include series when live/movies work).
+- Playback errors are now always logged with sanitized URLs and HTTP context, not only when they become terminal.
+
 ## 1.0.4 - 11/04/2026
 
 ### Changed

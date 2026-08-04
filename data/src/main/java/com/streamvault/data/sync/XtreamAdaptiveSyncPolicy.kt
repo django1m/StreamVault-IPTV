@@ -143,21 +143,39 @@ internal class XtreamAdaptiveSyncPolicy {
                 else -> 0
             }
             val finalStress = (nextStress + extraStress).coerceAtMost(5)
-            val backoffMs = when {
-                signal == StressSignal.THROTTLED -> 900L + (1_100L * finalStress)
+            val computedBackoffMs = when {
+                // A 403/429 from this provider is an exit-IP abuse ban that lasts
+                // MINUTES, not milliseconds. A ~6 s backoff just lets the next sync
+                // pass re-hammer the still-banned IP and re-burn live. Cool the whole
+                // provider for minutes so the ban can clear before we touch it again.
+                // This gates ONLY catalog-sync requests (via awaitTurn) — never live
+                // playback, which uses a separate HTTP path — so a long cooldown has
+                // zero cost to viewing.
+                signal == StressSignal.THROTTLED -> 60_000L + (60_000L * finalStress)
                 signal == StressSignal.TIMEOUT -> 350L * finalStress
                 signal == StressSignal.CONNECTION_RESET || signal == StressSignal.CONNECTION_FAILURE -> 250L * finalStress
                 else -> 0L
             }
+            // RFC 7231 §7.1.3 — when the upstream server explicitly tells us to wait
+            // (Retry-After on 429/503), honour it strictly. Capped at 5 minutes so a
+            // hostile or misconfigured upstream cannot pin a provider indefinitely.
+            val retryAfterMs = retryAfterMsOf(error)?.coerceAtMost(5L * 60L * 1000L)
+            val effectiveBackoffMs = maxOf(computedBackoffMs, retryAfterMs ?: 0L)
             state.copy(
                 stressLevel = finalStress,
-                backoffUntilMs = System.currentTimeMillis() + backoffMs,
+                backoffUntilMs = System.currentTimeMillis() + effectiveBackoffMs,
                 successStreak = 0,
                 timeoutStreak = nextTimeoutStreak,
                 resetStreak = nextResetStreak,
                 connectionFailureStreak = nextConnectionFailureStreak
             )
         }
+    }
+
+    private fun retryAfterMsOf(error: Throwable): Long? = when (error) {
+        is XtreamNetworkException -> error.retryAfterMs
+        is XtreamRequestException -> error.retryAfterMs
+        else -> null
     }
 
     fun retryDelayFor(providerId: Long, attempt: Int): Long {
@@ -183,6 +201,15 @@ internal class XtreamAdaptiveSyncPolicy {
     }
 
     fun isProviderStress(error: Throwable): Boolean = classify(error) != StressSignal.NONE
+
+    /**
+     * A hard throttle/ban signal: HTTP 403/429 or an auth refusal this provider
+     * returns when it rate-limit-bans the exit IP. Distinct from generic stress
+     * (timeouts/resets): a throttle means "you are hitting me too hard — every
+     * further request deepens the ban and can burn the exit IP for live too", so
+     * the caller must ABORT the segmented burst, not retry through it.
+     */
+    fun isThrottleSignal(error: Throwable): Boolean = classify(error) == StressSignal.THROTTLED
 
     private enum class StressSignal {
         NONE,
@@ -212,16 +239,20 @@ internal class XtreamAdaptiveSyncPolicy {
             return 0L
         }
         val health = providerHealth[providerId] ?: ProviderHealth()
+        // This provider rate-limits player_api.php hard (~1 req/IP): a 250 ms cadence
+        // (up to 4 req/s) tripped its abuse ban ~40 requests into an 80-category
+        // series burst and got the whole exit IP banned — live included. Space
+        // segmented requests to stay at/under ~1 req/s so the burst never trips it.
         val baseSpacingMs = when (stage) {
-            Stage.CATEGORY -> 250L
-            Stage.PAGED -> 180L
+            Stage.CATEGORY -> 800L
+            Stage.PAGED -> 600L
             else -> 0L
         }
         val stressSpacingMs = when {
-            health.stressLevel >= 4 -> 900L
-            health.stressLevel >= 3 -> 650L
-            health.stressLevel >= 2 -> 400L
-            health.stressLevel >= 1 -> 200L
+            health.stressLevel >= 4 -> 1_600L
+            health.stressLevel >= 3 -> 1_100L
+            health.stressLevel >= 2 -> 700L
+            health.stressLevel >= 1 -> 350L
             else -> 0L
         }
         return baseSpacingMs + stressSpacingMs

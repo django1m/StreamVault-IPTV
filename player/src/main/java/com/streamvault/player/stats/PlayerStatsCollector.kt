@@ -1,6 +1,7 @@
 package com.streamvault.player.stats
 
 import androidx.media3.common.Format
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.streamvault.domain.model.VideoFormat
 import com.streamvault.player.PlayerStats
@@ -32,6 +33,7 @@ import kotlinx.coroutines.launch
  * Because everything runs on one thread, fields are plain `var`s with no `@Volatile`
  * or `AtomicInteger` overhead.
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerStatsCollector(
     private val scopeProvider: () -> CoroutineScope,
     private val currentPosition: MutableStateFlow<Long>,
@@ -170,6 +172,19 @@ class PlayerStatsCollector(
     fun stop() {
         pollingJob?.cancel()
         pollingJob = null
+    }
+
+    /**
+     * Starts the polling loop only if it is not already running. Unlike
+     * [start] (which cancels and relaunches), this is safe to call from every
+     * player event without churning coroutines — it makes the position pump
+     * self-healing: any READY/BUFFERING/isPlaying signal revives it even when
+     * the event that stopped it never gets a counterpart (e.g. an
+     * isPlaying=true lost during an engine swap or a player recreate).
+     */
+    fun ensureStarted() {
+        if (pollingJob?.isActive == true) return
+        start()
     }
 
     private companion object {
