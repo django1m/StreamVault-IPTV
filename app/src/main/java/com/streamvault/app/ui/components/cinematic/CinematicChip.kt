@@ -55,7 +55,7 @@ fun CinematicChip(
     }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.06f else 1f,
-        animationSpec = AppMotion.ScaleSpring,
+        animationSpec = AppMotion.scaleSpring(),
         label = "chipScale"
     )
     val textColor by animateColorAsState(

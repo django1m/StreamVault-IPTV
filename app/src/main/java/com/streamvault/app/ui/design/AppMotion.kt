@@ -12,6 +12,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 
 /**
  * Set to true by the theme when the system's animator scale is 0 (reduced
@@ -54,6 +55,16 @@ object AppMotion {
         easing = FastOutSlowInEasing
     )
 
+    /**
+     * Slide companion to [OverlayFade]. `AnimatedVisibility`'s slide/expand transitions
+     * need an `IntOffset` spec and the specs above are all Float/Dp/Color, which is why
+     * every overlay in the player fell back to Compose's default spring.
+     */
+    val OverlaySlide: FiniteAnimationSpec<IntOffset> = tween(
+        durationMillis = 220,
+        easing = FastOutSlowInEasing
+    )
+
     val AmbientColorSpring: FiniteAnimationSpec<Color> = spring(
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = 120f
@@ -72,6 +83,7 @@ object AppMotion {
     private val SnapFloat: FiniteAnimationSpec<Float> = snap()
     private val SnapDp: FiniteAnimationSpec<Dp> = snap()
     private val SnapColor: FiniteAnimationSpec<Color> = snap()
+    private val SnapOffset: FiniteAnimationSpec<IntOffset> = snap()
 
     @Composable
     @ReadOnlyComposable
@@ -97,6 +109,11 @@ object AppMotion {
     @ReadOnlyComposable
     fun overlayFade(): FiniteAnimationSpec<Float> =
         if (LocalReducedMotion.current) SnapFloat else OverlayFade
+
+    @Composable
+    @ReadOnlyComposable
+    fun overlaySlide(): FiniteAnimationSpec<IntOffset> =
+        if (LocalReducedMotion.current) SnapOffset else OverlaySlide
 
     @Composable
     @ReadOnlyComposable

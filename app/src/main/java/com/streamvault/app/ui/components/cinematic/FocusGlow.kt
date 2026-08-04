@@ -33,7 +33,7 @@ fun Modifier.focusGlow(
     if (!profile.allowHalo) return@composed this
     val alpha by animateFloatAsState(
         targetValue = if (isFocused) 1f else 0f,
-        animationSpec = AppMotion.FocusSpring,
+        animationSpec = AppMotion.focusSpring(),
         label = "focusGlowAlpha"
     )
     if (alpha <= 0.01f) return@composed this
