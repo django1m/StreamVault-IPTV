@@ -51,6 +51,7 @@ import com.streamvault.app.ui.theme.Primary
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import com.streamvault.app.ui.design.AppMotion
 
 /**
  * Transient heads-up displays of the player: the zap banner, numeric channel entry, the
@@ -68,8 +69,8 @@ fun PlayerZapOverlay(
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + slideInHorizontally(),
-        exit = fadeOut() + slideOutHorizontally(),
+        enter = fadeIn(AppMotion.overlayFade()) + slideInHorizontally(AppMotion.overlaySlide()),
+        exit = fadeOut(AppMotion.overlayFade()) + slideOutHorizontally(AppMotion.overlaySlide()),
         modifier = modifier
     ) {
         Box(
@@ -123,8 +124,8 @@ fun PlayerNumericInputOverlay(
 ) {
     AnimatedVisibility(
         visible = visible && state != null,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 2 }),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 2 }),
+        enter = fadeIn(AppMotion.overlayFade()) + slideInVertically(AppMotion.overlaySlide()) { -it / 2 },
+        exit = fadeOut(AppMotion.overlayFade()) + slideOutVertically(AppMotion.overlaySlide()) { -it / 2 },
         modifier = modifier
     ) {
         val inputState = state ?: return@AnimatedVisibility
@@ -171,8 +172,8 @@ fun PlayerAspectRatioToast(
 
     AnimatedVisibility(
         visible = show && !controlsVisible,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+        enter = fadeIn(AppMotion.overlayFade()) + slideInVertically(AppMotion.overlaySlide()) { -it },
+        exit = fadeOut(AppMotion.overlayFade()) + slideOutVertically(AppMotion.overlaySlide()) { -it },
         modifier = modifier
     ) {
         Box(

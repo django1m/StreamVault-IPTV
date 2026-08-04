@@ -88,6 +88,7 @@ import java.util.Locale
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.design.AppMotion
 
 @Composable
 private fun PlayerOverlayPanel(
@@ -912,8 +913,8 @@ fun ChannelListOverlay(
             // Up arrow — fades in when there are channels scrolled above the visible area
             AnimatedVisibility(
                 visible = canScrollUp,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(AppMotion.overlayFade()),
+                exit = fadeOut(AppMotion.overlayFade()),
                 modifier = Modifier.align(Alignment.TopCenter)
             ) {
                 Box(
@@ -940,8 +941,8 @@ fun ChannelListOverlay(
             // Down arrow — fades in when there are channels below the visible area
             AnimatedVisibility(
                 visible = canScrollDown,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(AppMotion.overlayFade()),
+                exit = fadeOut(AppMotion.overlayFade()),
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 Box(

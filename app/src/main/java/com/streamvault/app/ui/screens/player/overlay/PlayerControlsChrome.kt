@@ -1,10 +1,8 @@
 package com.streamvault.app.ui.screens.player.overlay
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -70,6 +68,7 @@ import androidx.tv.material3.Text
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.streamvault.app.R
 import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.AppMotion
 import com.streamvault.app.ui.design.LocalFormFactor
 import com.streamvault.app.ui.design.isTouch
 import com.streamvault.app.ui.screens.player.overlay.components.PlayerChromeTokens
@@ -173,8 +172,13 @@ fun PlayerControlsOverlay(
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + expandVertically(),
-        exit = fadeOut() + shrinkVertically(),
+        // Was fadeIn() + expandVertically(): expandVertically re-measures the whole bar
+        // on every frame of the transition, which is the worst thing to ask of a Mali-G310.
+        // The container now only fades; each bar slides in from its own edge via
+        // animateEnterExit below, which is both cheaper and directionally correct — a
+        // single container slide would have dragged the top bar up from the bottom.
+        enter = fadeIn(AppMotion.overlayFade()),
+        exit = fadeOut(AppMotion.overlayFade()),
         modifier = modifier
     ) {
         Box(
@@ -199,7 +203,12 @@ fun PlayerControlsOverlay(
                 contentType = contentType,
                 clockLabelOverride = clockLabelOverride,
                 onClose = onClose,
-                modifier = Modifier.align(Alignment.TopCenter)
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .animateEnterExit(
+                        enter = slideInVertically(AppMotion.overlaySlide()) { -it },
+                        exit = slideOutVertically(AppMotion.overlaySlide()) { -it }
+                    )
             )
 
             PlayerBottomBar(
@@ -221,7 +230,12 @@ fun PlayerControlsOverlay(
                 mediaTitle = mediaTitle,
                 playButtonFocusRequester = playButtonFocusRequester,
                 quickActionsFocusRequester = quickActionsFocusRequester,
-                modifier = Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .animateEnterExit(
+                        enter = slideInVertically(AppMotion.overlaySlide()) { it },
+                        exit = slideOutVertically(AppMotion.overlaySlide()) { it }
+                    ),
                 onRestartProgram = onRestartProgram,
                 onOpenArchive = onOpenArchive,
                 onStartRecording = onStartRecording,

@@ -26,6 +26,7 @@ import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppHeroStyles
 import com.streamvault.domain.model.Program
+import com.streamvault.app.ui.design.AppMotion
 
 data class MiniGuideEntry(
     val program: Program,
@@ -46,8 +47,8 @@ fun MiniGuideFloating(
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
-        exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+        enter = fadeIn(AppMotion.overlayFade()) + slideInHorizontally(AppMotion.overlaySlide()) { it },
+        exit = fadeOut(AppMotion.overlayFade()) + slideOutHorizontally(AppMotion.overlaySlide()) { it },
         modifier = modifier
     ) {
         val hero = LocalAppHeroStyles.current

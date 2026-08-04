@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.streamvault.app.R
 import com.streamvault.app.ui.design.AppColors
 import kotlin.math.roundToInt
+import com.streamvault.app.ui.design.AppMotion
 
 /**
  * Centre overlay shown while a touch gesture is in flight: the ±10 s seek step,
@@ -42,8 +43,8 @@ fun PlayerGestureHud(
 ) {
     AnimatedVisibility(
         visible = feedback != null,
-        enter = fadeIn(),
-        exit = fadeOut(),
+        enter = fadeIn(AppMotion.overlayFade()),
+        exit = fadeOut(AppMotion.overlayFade()),
         modifier = modifier
     ) {
         Box(

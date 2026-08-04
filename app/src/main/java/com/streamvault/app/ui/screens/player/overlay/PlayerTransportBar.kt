@@ -48,6 +48,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.streamvault.app.ui.components.ChannelLogoBadge
+import com.streamvault.app.ui.design.AppMotion
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
 
 /**
  * The two transport chromes that fill the bottom bar: LIVE (zapping, EPG progress,
@@ -505,7 +510,11 @@ internal fun PlayerVodInfo(
         )
     }
 
-    AnimatedVisibility(visible = seekPreview.visible) {
+    AnimatedVisibility(
+        visible = seekPreview.visible,
+        enter = fadeIn(AppMotion.overlayFade()) + scaleIn(AppMotion.scaleSpring(), initialScale = 0.92f),
+        exit = fadeOut(AppMotion.overlayFade()) + scaleOut(AppMotion.scaleSpring(), targetScale = 0.92f)
+    ) {
         Column {
             Spacer(modifier = Modifier.height(12.dp))
             PlayerSeekPreviewCard(

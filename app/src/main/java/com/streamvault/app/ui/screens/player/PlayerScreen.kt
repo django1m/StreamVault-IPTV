@@ -109,6 +109,7 @@ import com.streamvault.app.ui.screens.player.overlay.PlayerSpeedSelectionDialog
 import com.streamvault.app.ui.screens.multiview.MultiViewViewModel
 import com.streamvault.app.ui.screens.multiview.MultiViewPlannerDialog
 import com.streamvault.app.navigation.Routes
+import com.streamvault.app.ui.design.AppMotion
 
 
 
@@ -1029,8 +1030,8 @@ fun PlayerScreen(
 
             AnimatedVisibility(
                 visible = playerNotice != null && !(playbackState == PlaybackState.BUFFERING && playerNotice?.isRetryNotice == false),
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(AppMotion.overlayFade()),
+                exit = fadeOut(AppMotion.overlayFade()),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 116.dp)
@@ -1239,8 +1240,10 @@ fun PlayerScreen(
             if (contentType == "LIVE") {
                 AnimatedVisibility(
                     visible = showChannelListOverlay,
-                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                    enter = slideInHorizontally(AppMotion.overlaySlide()) { if (isRtl) it else -it } +
+                        fadeIn(AppMotion.overlayFade()),
+                    exit = slideOutHorizontally(AppMotion.overlaySlide()) { if (isRtl) it else -it } +
+                        fadeOut(AppMotion.overlayFade()),
                     modifier = Modifier
                         .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
                         .fillMaxHeight()
@@ -1263,8 +1266,10 @@ fun PlayerScreen(
 
                 AnimatedVisibility(
                     visible = showCategoryListOverlay,
-                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                    enter = slideInHorizontally(AppMotion.overlaySlide()) { if (isRtl) it else -it } +
+                        fadeIn(AppMotion.overlayFade()),
+                    exit = slideOutHorizontally(AppMotion.overlaySlide()) { if (isRtl) it else -it } +
+                        fadeOut(AppMotion.overlayFade()),
                     modifier = Modifier
                         .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
                         .fillMaxHeight()
@@ -1285,8 +1290,10 @@ fun PlayerScreen(
 
                 AnimatedVisibility(
                     visible = showEpgOverlay,
-                    enter = slideInHorizontally(initialOffsetX = { if (isRtl) -it else it }),
-                    exit = slideOutHorizontally(targetOffsetX = { if (isRtl) -it else it }),
+                    enter = slideInHorizontally(AppMotion.overlaySlide()) { if (isRtl) -it else it } +
+                        fadeIn(AppMotion.overlayFade()),
+                    exit = slideOutHorizontally(AppMotion.overlaySlide()) { if (isRtl) -it else it } +
+                        fadeOut(AppMotion.overlayFade()),
                     modifier = Modifier
                         .align(if (isRtl) Alignment.TopStart else Alignment.TopEnd)
                         .fillMaxHeight()
@@ -1317,8 +1324,8 @@ fun PlayerScreen(
 
                 AnimatedVisibility(
                     visible = showChannelInfoOverlay,
-                    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    enter = slideInVertically(AppMotion.overlaySlide()) { it } + fadeIn(AppMotion.overlayFade()),
+                    exit = slideOutVertically(AppMotion.overlaySlide()) { it } + fadeOut(AppMotion.overlayFade()),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()

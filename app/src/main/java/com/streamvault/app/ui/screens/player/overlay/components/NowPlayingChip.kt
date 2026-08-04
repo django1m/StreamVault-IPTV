@@ -22,6 +22,7 @@ import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppHeroStyles
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppMotion
 
 /**
  * Glass pill that fades in when playback starts, announces the title / episode, then
@@ -45,8 +46,8 @@ fun NowPlayingChip(
     }
     AnimatedVisibility(
         visible = visible && !title.isNullOrBlank(),
-        enter = fadeIn(),
-        exit = fadeOut(),
+        enter = fadeIn(AppMotion.overlayFade()),
+        exit = fadeOut(AppMotion.overlayFade()),
         modifier = modifier
     ) {
         val hero = LocalAppHeroStyles.current
