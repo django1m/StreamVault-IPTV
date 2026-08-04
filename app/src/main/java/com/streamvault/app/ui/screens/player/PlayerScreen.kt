@@ -376,11 +376,10 @@ fun PlayerScreen(
     LaunchedEffect(showControls) {
         if (showControls) {
             delay(100)
-            if (contentType == "LIVE") {
-                quickActionsFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player quick actions")
-            } else {
-                playButtonFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player transport")
-            }
+            // Play/pause on both content types now: the transport and the settings live
+            // in one strip, and its centre of gravity is the play button — landing on
+            // "previous channel" instead was an artefact of the old two-row layout.
+            playButtonFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player transport")
         } else {
             viewModel.cancelControlsAutoHide()
             focusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player root")

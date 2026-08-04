@@ -74,43 +74,58 @@ object PlayerChromeTokens {
      * on focus but the slot is ALWAYS occupied, so focusing a button never reflows the
      * row — on a 10-foot UI a 16dp jump under the cursor reads as a glitch.
      */
-    val LabelSlot: Dp = 16.dp
+    val LabelSlot: Dp = 14.dp
 
     /** Max width of a label before it ellipsises. Keeps long strings from widening the row. */
-    val LabelMaxWidth: Dp = 96.dp
+    val LabelMaxWidth: Dp = 88.dp
 
-    val RowGap: Dp = 10.dp
-    val GroupGap: Dp = 20.dp
+    val RowGap: Dp = 8.dp
+
+    /** Separates the transport cluster from the settings cluster inside the single row. */
+    val GroupGap: Dp = 22.dp
 
     /**
-     * Opacity of the dark base under the glass gradient. Tuned against the worst case —
-     * chrome over a fully white frame — where anything below ~0.6 leaves white text on
-     * pale grey. Above ~0.8 it stops reading as glass and becomes a slab.
+     * Opacity of the dark base under the glass gradient. Tuned on the worst real case:
+     * a news channel's burned-in lower third sitting exactly where the bar lands. Below
+     * ~0.8 that white banner reads straight through and fights the controls; much above
+     * ~0.88 the panel stops reading as glass and becomes a slab. The gradient sheen and
+     * hairline border on top are what keep it translucent to the eye.
      */
-    const val BarBaseOpacity: Float = 0.72f
+    const val BarBaseOpacity: Float = 0.84f
 
+    // Sized for an appliance-style OSD: the bar is something you glance at over the
+    // picture, not a page. Every dp here is one the video does not get.
     @Composable
     @ReadOnlyComposable
     fun iconButton(): Dp = when (LocalFormFactor.current) {
-        FormFactor.Phone -> 42.dp
+        FormFactor.Phone -> 36.dp
+        FormFactor.Tablet -> 38.dp
+        FormFactor.Tv -> 40.dp
+    }
+
+    @Composable
+    @ReadOnlyComposable
+    fun primaryButton(): Dp = when (LocalFormFactor.current) {
+        FormFactor.Phone -> 44.dp
         FormFactor.Tablet -> 46.dp
         FormFactor.Tv -> 50.dp
     }
 
     @Composable
     @ReadOnlyComposable
-    fun primaryButton(): Dp = when (LocalFormFactor.current) {
-        FormFactor.Phone -> 54.dp
-        FormFactor.Tablet -> 58.dp
-        FormFactor.Tv -> 64.dp
+    fun barPadding(): Dp = when (LocalFormFactor.current) {
+        FormFactor.Phone -> 12.dp
+        FormFactor.Tablet -> 14.dp
+        FormFactor.Tv -> 16.dp
     }
 
+    /** Logo badge in the bar header. */
     @Composable
     @ReadOnlyComposable
-    fun barPadding(): Dp = when (LocalFormFactor.current) {
-        FormFactor.Phone -> 16.dp
-        FormFactor.Tablet -> 20.dp
-        FormFactor.Tv -> 26.dp
+    fun channelBadge(): Dp = when (LocalFormFactor.current) {
+        FormFactor.Phone -> 36.dp
+        FormFactor.Tablet -> 40.dp
+        FormFactor.Tv -> 44.dp
     }
 }
 

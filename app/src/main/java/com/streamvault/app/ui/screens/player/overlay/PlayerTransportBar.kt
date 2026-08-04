@@ -53,6 +53,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.fadeIn
+import androidx.compose.ui.graphics.Color
 
 /**
  * The two transport chromes that fill the bottom bar: LIVE (zapping, EPG progress,
@@ -70,7 +71,12 @@ private data class PlayerIconActionSpec(
     val label: String,
     val onClick: () -> Unit,
     val contentDescription: String = label,
-    val selected: Boolean = false
+    val selected: Boolean = false,
+    /** Play/pause: bigger and accent-filled, the anchor of the strip. */
+    val isPrimary: Boolean = false,
+    val restingTint: Color? = null,
+    val onHoldStart: (() -> Unit)? = null,
+    val onHoldStop: (() -> Unit)? = null
 )
 
 @Composable
@@ -115,6 +121,55 @@ internal fun PlayerLiveInfo(
 ) {
     val isRecording = currentRecordingStatus == RecordingStatus.RECORDING
     val hasArchive = currentProgram?.hasArchive == true
+
+    val transportActions = buildList {
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.SkipPrevious,
+                label = stringResource(R.string.player_action_previous_channel),
+                onClick = onZapPrevious
+            )
+        )
+        add(
+            PlayerIconActionSpec(
+                icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
+                label = stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
+                contentDescription = stringResource(R.string.player_playback_label),
+                isPrimary = true,
+                onClick = onTogglePlayPause
+            )
+        )
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.SkipNext,
+                label = stringResource(R.string.player_action_next_channel),
+                onClick = onZapNext
+            )
+        )
+        if (hasArchive) {
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.Restart,
+                    label = stringResource(R.string.player_restart),
+                    onClick = onRestartProgram
+                )
+            )
+        }
+        add(
+            PlayerIconActionSpec(
+                icon = if (isRecording) PlayerIcons.RecordStop else PlayerIcons.Record,
+                label = stringResource(
+                    if (isRecording) R.string.player_stop_recording else R.string.player_record
+                ),
+                selected = isRecording,
+                // Red is the one colour convention worth spending here: a recording
+                // indicator that looks like every other control is a recording nobody
+                // notices is running.
+                restingTint = AppColors.Live,
+                onClick = if (isRecording) onStopRecording else onStartRecording
+            )
+        )
+    }
 
     val actions = buildList {
         add(
@@ -190,29 +245,44 @@ internal fun PlayerLiveInfo(
         )
     }
 
-    // Channel badge + programme blurb: carried over from ChannelInfoOverlay, which OK
-    // no longer opens. Without them the bar would be a downgrade on the one thing the
-    // banner did well — telling you what you are actually watching.
+    // Appliance-style header: one dense line identifying the channel, one for the
+    // programme. The description moved back to the INFO banner — the bar is for
+    // controlling, the banner for reading, and two wrapped lines of synopsis were the
+    // single biggest thing pushing this panel over half the screen.
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalAlignment = Alignment.Top
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         ChannelLogoBadge(
             channelName = currentChannelName.orEmpty(),
             logoUrl = channelLogoUrl,
-            modifier = Modifier.size(64.dp)
+            modifier = Modifier.size(PlayerChromeTokens.channelBadge())
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            FlowRow(
+            Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                PlayerMetaPill(text = stringResource(R.string.player_live_now), accent = true)
-                PlayerMetaPill(text = stringResource(R.string.player_live_channel, displayChannelNumber))
+                // The channel number is the primary landmark on a live OSD — it is what
+                // you dial and what you recognise — so it gets the accent, not a pill.
+                Text(
+                    text = displayChannelNumber.toString(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = AppColors.Brand,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = currentChannelName.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
                 if (hasArchive) {
                     PlayerMetaPill(text = stringResource(R.string.player_archive_badge))
                 }
@@ -221,119 +291,42 @@ internal fun PlayerLiveInfo(
                 }
             }
             Text(
-                text = currentProgram?.title ?: mediaTitle ?: currentChannelName.orEmpty(),
-                style = MaterialTheme.typography.headlineSmall,
+                text = currentProgram?.title
+                    ?: mediaTitle
+                    ?: stringResource(R.string.player_no_guide_data),
+                style = MaterialTheme.typography.titleMedium,
                 color = AppColors.TextPrimary,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = if (currentProgram != null) {
-                    stringResource(
-                        R.string.channel_number_name_format,
-                        displayChannelNumber,
-                        currentChannelName.orEmpty()
-                    )
-                } else {
-                    stringResource(R.string.player_no_guide_data)
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = AppColors.TextTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            currentProgram?.description?.takeIf { it.isNotBlank() }?.let { description ->
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.TextSecondary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
         }
     }
-
-    Spacer(modifier = Modifier.height(16.dp))
 
     val start = currentProgram?.startTime ?: 0L
     val end = currentProgram?.endTime ?: 0L
     if (start > 0 && end > 0) {
+        Spacer(modifier = Modifier.height(10.dp))
         val now = System.currentTimeMillis()
         PlayerScrubBar(
             fraction = (now - start).toFloat() / (end - start),
             startLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(start)),
             endLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(end))
         )
-        Spacer(modifier = Modifier.height(16.dp))
     }
 
-    // Transport. `down = quickActionsFocusRequester` on every button so the action row
-    // is one press away whichever transport button holds focus. The play/pause button
-    // finally carries `playButtonFocusRequester` on LIVE too — until now that requester
-    // was handed to the row below as an `up` target without ever being attached, which
-    // would have thrown as soon as vertical focus navigation started working here.
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(
-            PlayerChromeTokens.RowGap,
-            Alignment.CenterHorizontally
-        ),
-        verticalAlignment = Alignment.Top
-    ) {
-        PlayerIconButton(
-            icon = PlayerIcons.SkipPrevious,
-            label = stringResource(R.string.player_action_previous_channel),
-            onClick = onZapPrevious,
-            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
-        )
-        PlayerIconButton(
-            icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
-            label = stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
-            contentDescription = stringResource(R.string.player_playback_label),
-            accent = true,
-            size = PlayerChromeTokens.primaryButton(),
-            onClick = onTogglePlayPause,
-            modifier = Modifier
-                .focusRequester(playButtonFocusRequester)
-                .focusProperties { down = quickActionsFocusRequester }
-        )
-        PlayerIconButton(
-            icon = PlayerIcons.SkipNext,
-            label = stringResource(R.string.player_action_next_channel),
-            onClick = onZapNext,
-            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
-        )
-        if (hasArchive) {
-            PlayerIconButton(
-                icon = PlayerIcons.Restart,
-                label = stringResource(R.string.player_restart),
-                onClick = onRestartProgram,
-                modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
-            )
-        }
-        PlayerIconButton(
-            icon = if (isRecording) PlayerIcons.RecordStop else PlayerIcons.Record,
-            label = stringResource(
-                if (isRecording) R.string.player_stop_recording else R.string.player_record
-            ),
-            selected = isRecording,
-            // Red is the one colour convention worth spending here: a recording
-            // indicator that looks like every other control is a recording nobody
-            // notices is running.
-            restingTint = AppColors.Live,
-            onClick = if (isRecording) onStopRecording else onStartRecording,
-            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
-        )
-    }
+    Spacer(modifier = Modifier.height(10.dp))
 
-    Spacer(modifier = Modifier.height(8.dp))
-
+    // ONE control row: transport cluster, a gap, then the settings cluster. Two stacked
+    // rows cost a full button height plus a caption slot for no navigational benefit —
+    // LEFT/RIGHT walks the whole strip, and there is no up/down ambiguity left to get
+    // wrong. It also removes the `up`/`down` focusProperties entirely.
     PlayerIconActionRow(
-        actions = actions,
+        actions = transportActions + actions,
         firstActionFocusRequester = quickActionsFocusRequester,
-        upFocusRequester = playButtonFocusRequester
+        primaryFocusRequester = playButtonFocusRequester,
+        primaryIndex = transportActions.indexOfFirst { it.isPrimary },
+        groupBreakAfter = transportActions.lastIndex
     )
 }
 
@@ -486,28 +479,14 @@ internal fun PlayerVodInfo(
         )
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        PlayerMetaPill(
-            text = if (contentType == "MOVIE") {
-                stringResource(R.string.player_type_movie)
-            } else {
-                stringResource(R.string.player_type_series)
-            },
-            accent = true
-        )
-        if (isMuted) {
+    // No title row here: the top bar already shows the title and the content-type pill.
+    // Repeating them cost a whole line for information the eye had just read. Only the
+    // muted badge stays — that is state, not a label.
+    if (isMuted) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             PlayerMetaPill(text = stringResource(R.string.player_muted_badge))
         }
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyMedium,
-            color = AppColors.TextSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Spacer(modifier = Modifier.height(8.dp))
     }
 
     AnimatedVisibility(
@@ -540,86 +519,78 @@ internal fun PlayerVodInfo(
         modifier = Modifier.semantics { contentDescription = playbackLabel }
     )
 
-    Spacer(modifier = Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(10.dp))
 
-    // Transport. `down = quickActionsFocusRequester` on every button so the action row
-    // below is always one press away, whichever transport button holds focus.
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(
-            PlayerChromeTokens.RowGap,
-            Alignment.CenterHorizontally
-        ),
-        verticalAlignment = Alignment.Top
-    ) {
-        PlayerIconButton(
-            icon = PlayerIcons.Rewind,
-            label = stringResource(R.string.player_rewind),
-            onClick = onSeekBackward,
-            onHoldStart = onSeekBackwardHoldStart,
-            onHoldStop = onSeekBackwardHoldStop,
-            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+    // ONE control row, same as LIVE: transport cluster, gap, settings cluster.
+    val transportActions = buildList {
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.Rewind,
+                label = stringResource(R.string.player_rewind),
+                onClick = onSeekBackward,
+                onHoldStart = onSeekBackwardHoldStart,
+                onHoldStop = onSeekBackwardHoldStop
+            )
         )
-        PlayerIconButton(
-            icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
-            label = stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
-            contentDescription = playbackLabel,
-            accent = true,
-            size = PlayerChromeTokens.primaryButton(),
-            onClick = onTogglePlayPause,
-            modifier = Modifier
-                .focusRequester(playButtonFocusRequester)
-                .focusProperties { down = quickActionsFocusRequester }
+        add(
+            PlayerIconActionSpec(
+                icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
+                label = stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
+                contentDescription = playbackLabel,
+                isPrimary = true,
+                onClick = onTogglePlayPause
+            )
         )
-        PlayerIconButton(
-            icon = PlayerIcons.Forward,
-            label = stringResource(R.string.player_forward),
-            onClick = onSeekForward,
-            onHoldStart = onSeekForwardHoldStart,
-            onHoldStop = onSeekForwardHoldStop,
-            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.Forward,
+                label = stringResource(R.string.player_forward),
+                onClick = onSeekForward,
+                onHoldStart = onSeekForwardHoldStart,
+                onHoldStop = onSeekForwardHoldStop
+            )
         )
         if (hasNextEpisode) {
-            PlayerIconButton(
-                icon = PlayerIcons.SkipNext,
-                label = stringResource(R.string.player_next_episode),
-                onClick = onPlayNextEpisode,
-                modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.SkipNext,
+                    label = stringResource(R.string.player_next_episode),
+                    onClick = onPlayNextEpisode
+                )
             )
         }
     }
 
-    Spacer(modifier = Modifier.height(8.dp))
-
     PlayerIconActionRow(
-        actions = actions,
+        actions = transportActions + actions,
         firstActionFocusRequester = quickActionsFocusRequester,
-        upFocusRequester = playButtonFocusRequester
+        primaryFocusRequester = playButtonFocusRequester,
+        primaryIndex = transportActions.indexOfFirst { it.isPrimary },
+        groupBreakAfter = transportActions.lastIndex
     )
 }
 
-/**
- * Single centred row of icon buttons.
- *
- * Replaces the old `FlowRow` of text pills: with up to ten labelled buttons that row
- * wrapped onto two lines and ate a third of the screen. Icons keep it to one line, and
- * the caption only appears under whichever button holds focus.
- */
 @Composable
 private fun PlayerIconActionRow(
     actions: List<PlayerIconActionSpec>,
     firstActionFocusRequester: FocusRequester,
-    upFocusRequester: FocusRequester? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Attached to [primaryIndex]; this is what the bar focuses when it opens. */
+    primaryFocusRequester: FocusRequester? = null,
+    primaryIndex: Int = -1,
+    /** Index after which a wider gap separates the transport cluster from the rest. */
+    groupBreakAfter: Int = -1
 ) {
     if (actions.isEmpty()) return
+    val primaryButtonSize = PlayerChromeTokens.primaryButton()
+    val iconButtonSize = PlayerChromeTokens.iconButton()
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(
             PlayerChromeTokens.RowGap,
             Alignment.CenterHorizontally
         ),
-        verticalAlignment = Alignment.Top
+        verticalAlignment = Alignment.CenterVertically
     ) {
         actions.forEachIndexed { index, action ->
             PlayerIconButton(
@@ -627,21 +598,25 @@ private fun PlayerIconActionRow(
                 label = action.label,
                 contentDescription = action.contentDescription,
                 selected = action.selected,
+                accent = action.isPrimary,
+                restingTint = action.restingTint,
+                size = if (action.isPrimary) primaryButtonSize else iconButtonSize,
+                onHoldStart = action.onHoldStart,
+                onHoldStop = action.onHoldStop,
                 onClick = action.onClick,
-                modifier = Modifier
-                    .then(
-                        if (index == 0) {
-                            Modifier.focusRequester(firstActionFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
-                    .focusProperties {
-                        if (index == 0 && upFocusRequester != null) {
-                            up = upFocusRequester
-                        }
+                modifier = Modifier.then(
+                    when {
+                        index == primaryIndex && primaryFocusRequester != null ->
+                            Modifier.focusRequester(primaryFocusRequester)
+
+                        index == 0 -> Modifier.focusRequester(firstActionFocusRequester)
+                        else -> Modifier
                     }
+                )
             )
+            if (index == groupBreakAfter) {
+                Spacer(modifier = Modifier.width(PlayerChromeTokens.GroupGap))
+            }
         }
     }
 }

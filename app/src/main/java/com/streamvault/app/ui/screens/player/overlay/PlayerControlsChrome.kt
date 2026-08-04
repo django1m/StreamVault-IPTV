@@ -288,9 +288,9 @@ private fun PlayerTopBar(
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val isTelevisionDevice = rememberIsTelevisionDevice()
     val topBarHeight = when {
-        screenWidth < 700.dp -> 100.dp
-        !isTelevisionDevice && screenWidth < 1280.dp -> 116.dp
-        else -> 132.dp
+        screenWidth < 700.dp -> 84.dp
+        !isTelevisionDevice && screenWidth < 1280.dp -> 92.dp
+        else -> 104.dp
     }
     val horizontalPadding = when {
         screenWidth < 700.dp -> 18.dp
@@ -432,10 +432,7 @@ private fun PlayerBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .playerChromeScrim(fromTop = false)
-            .padding(
-                horizontal = if (isVod) 40.dp else 32.dp,
-                vertical = if (isVod) 24.dp else 24.dp
-            )
+            .padding(horizontal = 32.dp, vertical = 16.dp)
     ) {
         PlayerGlassBar(
             modifier = if (isVod) {
@@ -451,10 +448,7 @@ private fun PlayerBottomBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(
-                        horizontal = if (isVod) 24.dp else 24.dp,
-                        vertical = if (isVod) 18.dp else 22.dp
-                    )
+                    .padding(horizontal = 22.dp, vertical = 14.dp)
             ) {
                 if (contentType == "LIVE") {
                     PlayerLiveInfo(
