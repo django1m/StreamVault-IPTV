@@ -273,7 +273,12 @@ class PremiumRouteGoldenTest {
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             AppScreenScaffold(
-                                currentRoute = Routes.FAVORITES,
+                                // `Routes.FAVORITES` was removed when the standalone
+                                // Favorites screen was retired — saved items now live in
+                                // the FAVORITES virtual category inside Live TV. This
+                                // golden only exercises shell chrome, so it points at the
+                                // route that actually hosts them.
+                                currentRoute = Routes.LIVE_TV,
                                 onNavigate = {},
                                 title = "Saved",
                                 subtitle = "Manage favorite channels, movies, and series from one premium hub."

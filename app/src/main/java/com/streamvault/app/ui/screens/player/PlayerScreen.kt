@@ -1110,7 +1110,10 @@ fun PlayerScreen(
                     { it.enterIfPlaying() }
                 },
                 seekPreview = seekPreview,
-                onUserInteraction = viewModel::refreshControlsAutoHide
+                onUserInteraction = viewModel::refreshControlsAutoHide,
+                // Same panel the hold-OK gesture and MENU open. The controls bar keeps
+                // only what a viewer reaches for mid-playback; the rest lives here.
+                onOpenOptionsPanel = { showOptionsPanel = true }
             )
 
             PlayerNumericInputOverlay(
@@ -1500,7 +1503,8 @@ private fun PlayerControlsOverlayHost(
     onSeekToPosition: (Long) -> Unit,
     onEnterPip: (() -> Unit)?,
     seekPreview: SeekPreviewState,
-    onUserInteraction: () -> Unit
+    onUserInteraction: () -> Unit,
+    onOpenOptionsPanel: () -> Unit = {}
 ) {
     val currentPosition by playerEngine.currentPosition.collectAsStateWithLifecycle()
     val duration by playerEngine.duration.collectAsStateWithLifecycle()
@@ -1556,7 +1560,8 @@ private fun PlayerControlsOverlayHost(
         onSeekToPosition = onSeekToPosition,
         onEnterPip = onEnterPip,
         seekPreview = seekPreview,
-        onUserInteraction = onUserInteraction
+        onUserInteraction = onUserInteraction,
+        onOpenOptionsPanel = onOpenOptionsPanel
     )
 }
 

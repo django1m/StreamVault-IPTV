@@ -108,50 +108,44 @@ object PlayerChromeTokens {
 }
 
 /**
- * The glass container every piece of player chrome sits in.
+ * Full-bleed legibility scrim behind a chrome bar.
  *
- * The target box (Amlogic S905X5M, 2 GB) resolves to [com.streamvault.app.ui.design.DeviceClass.Mid],
- * which means `allowBlur == false` — there is no GPU budget for a real backdrop blur.
- * Legibility over a bright video frame therefore comes from [scrimFromTop] / the
- * bottom scrim, not from blurring. Never add `Modifier.blur` here.
+ * Separate from [PlayerGlassBar] on purpose: the scrim has to reach the screen edges
+ * (a gradient that stops where the panel stops draws a visible seam over video), while
+ * the glass panel itself is inset. Two nodes, two jobs.
+ *
+ * This is also *the* reason the chrome stays readable at all. The target box
+ * (Amlogic S905X5M, 2 GB) resolves to [com.streamvault.app.ui.design.DeviceClass.Mid],
+ * so `allowBlur == false` — there is no real backdrop blur to lean on, and a bright
+ * video frame would otherwise swallow white text. Never swap this for `Modifier.blur`.
  */
+fun Modifier.playerChromeScrim(fromTop: Boolean): Modifier = this.background(
+    Brush.verticalGradient(
+        if (fromTop) {
+            listOf(AppColors.ScrimTop, Color.Transparent)
+        } else {
+            listOf(Color.Transparent, AppColors.ScrimBottom)
+        }
+    )
+)
+
+/** The glass panel every piece of player chrome sits in. */
 @Composable
 fun PlayerGlassBar(
     modifier: Modifier = Modifier,
     level: GlassLevel = GlassLevel.High,
     shape: Shape = LocalAppShapes.current.xLarge,
-    scrim: PlayerBarScrim = PlayerBarScrim.None,
     contentPadding: Dp = PlayerChromeTokens.barPadding(),
     content: @Composable BoxScope.() -> Unit
 ) {
-    val scrimBrush = when (scrim) {
-        PlayerBarScrim.None -> null
-        PlayerBarScrim.FromTop -> Brush.verticalGradient(
-            listOf(AppColors.ScrimTop, Color.Transparent)
-        )
-        PlayerBarScrim.FromBottom -> Brush.verticalGradient(
-            listOf(Color.Transparent, AppColors.ScrimBottom)
-        )
-    }
-    Box(modifier = modifier) {
-        if (scrimBrush != null) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(scrimBrush)
-            )
-        }
-        GlassSurface(
-            level = level,
-            shape = shape,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Box(modifier = Modifier.padding(contentPadding), content = content)
-        }
+    GlassSurface(
+        level = level,
+        shape = shape,
+        modifier = modifier
+    ) {
+        Box(modifier = Modifier.padding(contentPadding), content = content)
     }
 }
-
-enum class PlayerBarScrim { None, FromTop, FromBottom }
 
 /**
  * Icon-first control for the transport / action rows.

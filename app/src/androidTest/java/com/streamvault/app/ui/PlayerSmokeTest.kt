@@ -9,6 +9,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -103,7 +104,12 @@ class PlayerSmokeTest {
             }
         }
 
-        composeRule.onNodeWithText(">").assertIsFocused()
+        // Anchored on the contentDescription, not on the glyph: the play button has
+        // rendered an icon (never the text ">") since well before this rework, so the
+        // previous assertion could not match and the test silently stopped guarding
+        // anything. `player_playback_label` is set on the button's own semantics node,
+        // which is the same node `focusable` marks as focused.
+        composeRule.onNodeWithContentDescription("Playback").assertIsFocused()
     }
 
     @Test

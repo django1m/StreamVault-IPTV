@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
@@ -65,9 +66,18 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
+import androidx.compose.ui.graphics.vector.ImageVector
 import com.streamvault.app.R
+import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.LocalFormFactor
 import com.streamvault.app.ui.design.isTouch
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerChromeTokens
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerGlassBar
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerIconButton
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerIcons
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerMetaPill
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerScrubBar
+import com.streamvault.app.ui.screens.player.overlay.components.playerChromeScrim
 import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.ui.components.rememberCrossfadeImageModel
 import com.streamvault.app.ui.screens.player.NumericChannelInputState
@@ -88,6 +98,19 @@ import com.streamvault.app.ui.interaction.TvIconButton
 private data class PlayerActionSpec(
     val label: String,
     val onClick: () -> Unit
+)
+
+/**
+ * One button of an icon action row. [label] doubles as the focus caption, so it stays
+ * short; [contentDescription] carries the full sentence for screen readers when the
+ * two differ (e.g. label "1.5x" / description "Speed 1.5x").
+ */
+private data class PlayerIconActionSpec(
+    val icon: ImageVector,
+    val label: String,
+    val onClick: () -> Unit,
+    val contentDescription: String = label,
+    val selected: Boolean = false
 )
 
 @Composable
@@ -144,6 +167,13 @@ fun PlayerControlsOverlay(
     seekPreview: SeekPreviewState = SeekPreviewState(),
     clockLabelOverride: String? = null,
     onUserInteraction: () -> Unit = {},
+    /**
+     * Opens the hold-OK options panel. The bar only carries the controls a viewer
+     * reaches for mid-playback; everything rarer (cast, recording schedules, archive,
+     * split screen, diagnostics) lives one press away behind this button instead of
+     * inflating the bar into a wall of buttons.
+     */
+    onOpenOptionsPanel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -225,7 +255,8 @@ fun PlayerControlsOverlay(
                 onSeekForwardHoldStop = onSeekForwardHoldStop,
                 onSeekToPosition = onSeekToPosition,
                 onEnterPip = onEnterPip,
-                seekPreview = seekPreview
+                seekPreview = seekPreview,
+                onOpenOptionsPanel = onOpenOptionsPanel
             )
         }
     }
@@ -414,47 +445,37 @@ private fun PlayerTopBar(
         modifier = modifier
             .fillMaxWidth()
             .height(topBarHeight)
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color.Black.copy(alpha = 0.8f), Color.Transparent)
-                )
-            )
+            .playerChromeScrim(fromTop = true)
             .padding(horizontal = horizontalPadding, vertical = verticalPadding)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.Top
         ) {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 PlayerMetaPill(
                     text = when (contentType) {
                         "LIVE" -> stringResource(R.string.nav_live_tv)
                         "MOVIE" -> stringResource(R.string.player_type_movie)
                         else -> stringResource(R.string.player_type_series)
-                    }
+                    },
+                    accent = true
                 )
-                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
+                    color = AppColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                if (contentType != "LIVE") {
-                    Text(
-                        text = if (contentType == "MOVIE") {
-                            stringResource(R.string.player_type_movie)
-                        } else {
-                            stringResource(R.string.player_type_series)
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.6f)
-                    )
-                }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 val currentTime = remember(clockLabelOverride) {
                     mutableStateOf(
                         clockLabelOverride ?: SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
@@ -473,24 +494,15 @@ private fun PlayerTopBar(
                 Text(
                     text = currentTime.value,
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.8f),
-                    modifier = Modifier.padding(end = 16.dp)
+                    color = AppColors.TextSecondary,
+                    modifier = Modifier.padding(top = 12.dp)
                 )
 
-                TvClickableSurface(
-                    onClick = onClose,
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = Color.White.copy(alpha = 0.12f),
-                        focusedContainerColor = Primary.copy(alpha = 0.9f)
-                    )
-                ) {
-                    Text(
-                        text = stringResource(R.string.player_close),
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
-                    )
-                }
+                PlayerIconButton(
+                    icon = Icons.Default.Close,
+                    label = stringResource(R.string.player_close),
+                    onClick = onClose
+                )
             }
         }
     }
@@ -545,47 +557,36 @@ private fun PlayerBottomBar(
     onSeekToPosition: (Long) -> Unit,
     onEnterPip: (() -> Unit)?,
     seekPreview: SeekPreviewState,
+    onOpenOptionsPanel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isVod = contentType != "LIVE"
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.84f))
-                )
-            )
+            .playerChromeScrim(fromTop = false)
             .padding(
-                horizontal = if (isVod) 18.dp else 32.dp,
-                vertical = if (isVod) 14.dp else 24.dp
+                horizontal = if (isVod) 40.dp else 32.dp,
+                vertical = if (isVod) 24.dp else 24.dp
             )
     ) {
-        Surface(
+        PlayerGlassBar(
             modifier = if (isVod) {
                 Modifier
-                    .fillMaxWidth(0.88f)
+                    .fillMaxWidth()
                     .align(Alignment.Center)
             } else {
                 Modifier.fillMaxWidth()
             },
-            shape = RoundedCornerShape(if (isVod) 22.dp else 28.dp),
-            colors = SurfaceDefaults.colors(containerColor = Color(0xFF0C1624).copy(alpha = 0.92f))
+            shape = RoundedCornerShape(if (isVod) 26.dp else 28.dp),
+            contentPadding = 0.dp
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(
-                                Primary.copy(alpha = 0.10f),
-                                Color.Transparent
-                            )
-                        )
-                    )
                     .padding(
-                        horizontal = if (isVod) 18.dp else 24.dp,
-                        vertical = if (isVod) 14.dp else 22.dp
+                        horizontal = if (isVod) 24.dp else 24.dp,
+                        vertical = if (isVod) 18.dp else 22.dp
                     )
             ) {
                 if (contentType == "LIVE") {
@@ -654,7 +655,8 @@ private fun PlayerBottomBar(
                         onSeekBackwardHoldStop = onSeekBackwardHoldStop,
                         onSeekForwardHoldStart = onSeekForwardHoldStart,
                         onSeekForwardHoldStop = onSeekForwardHoldStop,
-                        seekPreview = seekPreview
+                        seekPreview = seekPreview,
+                        onOpenOptionsPanel = onOpenOptionsPanel
                     )
                 }
             }
@@ -847,117 +849,123 @@ private fun PlayerVodInfo(
     onSeekBackwardHoldStop: () -> Unit = {},
     onSeekForwardHoldStart: () -> Unit = {},
     onSeekForwardHoldStop: () -> Unit = {},
-    seekPreview: SeekPreviewState
+    seekPreview: SeekPreviewState,
+    onOpenOptionsPanel: () -> Unit = {}
 ) {
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val isTelevisionDevice = rememberIsTelevisionDevice()
     val compactControls = screenWidth < 700.dp
     val tabletControls = !isTelevisionDevice && screenWidth >= 700.dp && screenWidth < 1280.dp
-    val transportButtonSize = when {
-        compactControls -> 42.dp
-        tabletControls -> 46.dp
-        else -> 50.dp
-    }
-    val playButtonSize = when {
-        compactControls -> 54.dp
-        tabletControls -> 58.dp
-        else -> 62.dp
-    }
-    val playIconSize = when {
-        compactControls -> 24.dp
-        tabletControls -> 26.dp
-        else -> 30.dp
-    }
     val seekPreviewWidth = when {
         compactControls -> 148.dp
         tabletControls -> 168.dp
         else -> 188.dp
     }
-    val outerSpacing = when {
-        compactControls -> 10.dp
-        tabletControls -> 12.dp
-        else -> 14.dp
-    }
-    val transportGroupHorizontalPadding = when {
-        compactControls -> 6.dp
-        tabletControls -> 7.dp
-        else -> 8.dp
-    }
 
     val playbackLabel = stringResource(R.string.player_playback_label)
+
+    // Seek on Android TV is driven by the parent PlayerScreen KeyEvent handler
+    // (DPAD LEFT/RIGHT → seekBackward/seekForward, long-hold → progressive seek).
+    // Material3 Slider's DPAD handling is unreliable on TV (onValueChangeFinished does
+    // not fire on DPAD release), so PlayerScrubBar draws a plain non-focusable Canvas
+    // there and simply mirrors the engine's currentPosition. That removes the whole
+    // scrubbing state machine and the bugs it caused (frozen timecode at the last
+    // slider value, focus captured by the slider, play/pause feeling dead).
+    //
+    // On TOUCH devices there is no D-pad, so the bar becomes the only way to seek and
+    // must be draggable — that, and only that, is what `interactiveSeek` unlocks.
+    val interactiveSeek = LocalFormFactor.current.isTouch && duration > 0
+    val fraction = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f
+
     val actions = buildList {
-        add(PlayerActionSpec(
-            stringResource(if (isMuted) R.string.player_unmute else R.string.player_mute),
-            onToggleMute
-        ))
-        if (subtitleTrackCount > 0) {
-            add(PlayerActionSpec(stringResource(R.string.player_subs), onOpenSubtitleTracks))
-        }
-        if (videoQualityCount > 0) {
-            add(PlayerActionSpec(stringResource(R.string.player_video_quality), onOpenVideoTracks))
-        }
-        if (hasNextEpisode) {
-            add(PlayerActionSpec(stringResource(R.string.player_next_episode), onPlayNextEpisode))
-        }
-        if (audioTrackCount > 0) {
-            add(PlayerActionSpec(stringResource(R.string.player_audio), onOpenAudioTracks))
-        }
         add(
-            PlayerActionSpec(
-                stringResource(R.string.player_playback_speed_value, formatPlaybackSpeedLabel(playbackSpeed)),
-                onOpenPlaybackSpeed
+            PlayerIconActionSpec(
+                icon = if (isMuted) PlayerIcons.VolumeOff else PlayerIcons.VolumeOn,
+                label = stringResource(if (isMuted) R.string.player_unmute else R.string.player_mute),
+                selected = isMuted,
+                onClick = onToggleMute
             )
         )
-        add(PlayerActionSpec(
-            stringResource(if (isCastConnected) R.string.player_stop_casting else R.string.player_cast),
-            if (isCastConnected) onStopCasting else onCast
-        ))
-        add(PlayerActionSpec(stringResource(R.string.player_aspect_ratio_label, aspectRatioLabel), onToggleAspectRatio))
-        // Explicit way into Picture-in-Picture. Auto-enter already handles the
-        // home gesture, but without a button the feature is undiscoverable —
-        // nothing on screen suggests the video can keep playing in a corner.
-        if (onEnterPip != null) {
-            add(PlayerActionSpec(stringResource(R.string.player_pip), onEnterPip))
+        if (subtitleTrackCount > 0) {
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.Subtitles,
+                    label = stringResource(R.string.player_subs),
+                    onClick = onOpenSubtitleTracks
+                )
+            )
         }
+        if (audioTrackCount > 0) {
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.AudioTrack,
+                    label = stringResource(R.string.player_audio),
+                    onClick = onOpenAudioTracks
+                )
+            )
+        }
+        if (videoQualityCount > 0) {
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.Quality,
+                    label = stringResource(R.string.player_video_quality),
+                    onClick = onOpenVideoTracks
+                )
+            )
+        }
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.Speed,
+                label = formatPlaybackSpeedLabel(playbackSpeed),
+                contentDescription = stringResource(
+                    R.string.player_playback_speed_value,
+                    formatPlaybackSpeedLabel(playbackSpeed)
+                ),
+                selected = playbackSpeed != 1f,
+                onClick = onOpenPlaybackSpeed
+            )
+        )
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.AspectRatio,
+                label = aspectRatioLabel,
+                contentDescription = stringResource(R.string.player_aspect_ratio_label, aspectRatioLabel),
+                onClick = onToggleAspectRatio
+            )
+        )
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.Cast,
+                label = stringResource(if (isCastConnected) R.string.player_stop_casting else R.string.player_cast),
+                selected = isCastConnected,
+                onClick = if (isCastConnected) onStopCasting else onCast
+            )
+        )
+        // Explicit way into Picture-in-Picture. Auto-enter already handles the home
+        // gesture, but without a button the feature is undiscoverable — nothing on
+        // screen suggests the video can keep playing in a corner. Null on TV.
+        if (onEnterPip != null) {
+            add(
+                PlayerIconActionSpec(
+                    icon = PlayerIcons.Pip,
+                    label = stringResource(R.string.player_pip_short),
+                    contentDescription = stringResource(R.string.player_pip),
+                    onClick = onEnterPip
+                )
+            )
+        }
+        add(
+            PlayerIconActionSpec(
+                icon = PlayerIcons.Options,
+                label = stringResource(R.string.player_more_controls),
+                onClick = onOpenOptionsPanel
+            )
+        )
     }
-    // Slider is purely visual on Android TV: seek is driven by the parent
-    // PlayerScreen KeyEvent handler (DPAD LEFT/RIGHT → seekBackward/seekForward,
-    // long-hold → progressive seek). Material3 Slider's DPAD handling is
-    // unreliable on TV (onValueChangeFinished does not fire on DPAD release),
-    // so we make the slider non-focusable below and mirror the engine's
-    // currentPosition directly. This eliminates the entire isScrubbing state
-    // machine and the bugs it caused (frozen timecode at last sliderValue,
-    // focus captured by slider, play/pause feeling dead).
-    //
-    // On TOUCH devices there is no D-pad to drive it, so the slider becomes the
-    // only way to seek and must be draggable. The scrubbing state machine is
-    // therefore reintroduced — but ONLY on that path: `interactiveSeek` is false
-    // on TV, which keeps `enabled = false` and the exact behaviour described
-    // above. `.focusable(false)` stays unconditional so a Bluetooth keyboard or
-    // remote plugged into a phone can never capture the slider either.
-    val interactiveSeek = LocalFormFactor.current.isTouch && duration > 0
-    var isScrubbing by remember { mutableStateOf(false) }
-    var scrubFraction by remember { mutableFloatStateOf(0f) }
-
-    val engineFraction = if (duration > 0) {
-        currentPosition.toFloat() / duration.toFloat()
-    } else {
-        0f
-    }
-    // While the finger is down we show the dragged position, not the engine's —
-    // otherwise the thumb fights the playhead and jumps back under the finger.
-    val sliderValue = if (isScrubbing) scrubFraction else engineFraction
-    val displayedPosition = if (isScrubbing) (scrubFraction * duration).toLong() else currentPosition
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(
-            when {
-                compactControls -> 10.dp
-                tabletControls -> 12.dp
-                else -> 14.dp
-            }
-        )
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         PlayerMetaPill(
             text = if (contentType == "MOVIE") {
@@ -973,187 +981,93 @@ private fun PlayerVodInfo(
         Text(
             text = title,
             style = MaterialTheme.typography.bodyMedium,
-            color = Color.White.copy(alpha = 0.82f),
-            maxLines = 1
+            color = AppColors.TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
+    }
+
+    AnimatedVisibility(visible = seekPreview.visible) {
+        Column {
+            Spacer(modifier = Modifier.height(12.dp))
+            PlayerSeekPreviewCard(
+                preview = seekPreview,
+                previewHeight = when {
+                    compactControls -> 96.dp
+                    tabletControls -> 106.dp
+                    else -> 118.dp
+                },
+                modifier = Modifier.width(seekPreviewWidth)
+            )
+        }
     }
 
     Spacer(modifier = Modifier.height(14.dp))
 
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        colors = SurfaceDefaults.colors(containerColor = Color.White.copy(alpha = 0.06f))
+    PlayerScrubBar(
+        fraction = fraction,
+        startLabel = formatDuration(currentPosition),
+        endLabel = formatDuration(duration),
+        interactiveSeek = interactiveSeek,
+        onSeekFraction = { value -> onSeekToPosition((value * duration).toLong()) },
+        modifier = Modifier.semantics { contentDescription = playbackLabel }
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    // Transport. `down = quickActionsFocusRequester` on every button so the action row
+    // below is always one press away, whichever transport button holds focus.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(
+            PlayerChromeTokens.RowGap,
+            Alignment.CenterHorizontally
+        ),
+        verticalAlignment = Alignment.Top
     ) {
-        Row(
+        PlayerIconButton(
+            icon = PlayerIcons.Rewind,
+            label = stringResource(R.string.player_rewind),
+            onClick = onSeekBackward,
+            onHoldStart = onSeekBackwardHoldStart,
+            onHoldStop = onSeekBackwardHoldStop,
+            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+        )
+        PlayerIconButton(
+            icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
+            label = stringResource(if (isPlaying) R.string.player_pause else R.string.player_play),
+            contentDescription = playbackLabel,
+            accent = true,
+            size = PlayerChromeTokens.primaryButton(),
+            onClick = onTogglePlayPause,
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(outerSpacing),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                colors = SurfaceDefaults.colors(containerColor = Color.Black.copy(alpha = 0.24f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = transportGroupHorizontalPadding, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(
-                        when {
-                            compactControls -> 8.dp
-                            tabletControls -> 9.dp
-                            else -> 10.dp
-                        }
-                    ),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlayerTransportButton(
-                        label = "\u23EA",
-                        contentDescription = stringResource(R.string.player_rewind),
-                        onClick = onSeekBackward,
-                        onHoldStart = onSeekBackwardHoldStart,
-                        onHoldStop = onSeekBackwardHoldStop,
-                        buttonSize = transportButtonSize,
-                        modifier = Modifier.focusProperties {
-                            down = quickActionsFocusRequester
-                        }
-                    )
-                    TvClickableSurface(
-                        onClick = onTogglePlayPause,
-                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(50)),
-                        colors = ClickableSurfaceDefaults.colors(
-                            containerColor = Primary.copy(alpha = 0.84f),
-                            focusedContainerColor = Primary
-                        ),
-                        modifier = Modifier
-                            .size(playButtonSize)
-                            .focusRequester(playButtonFocusRequester)
-                            .focusProperties {
-                                down = quickActionsFocusRequester
-                            }
-                            .semantics { contentDescription = playbackLabel }
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                            if (isPlaying) {
-                                Text(
-                                    text = "II",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    color = Color.White
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = stringResource(R.string.player_play),
-                                    tint = Color.White,
-                                    modifier = Modifier.size(playIconSize)
-                                )
-                            }
-                        }
-                    }
-                    PlayerTransportButton(
-                        label = "\u23E9",
-                        contentDescription = stringResource(R.string.player_forward),
-                        onClick = onSeekForward,
-                        onHoldStart = onSeekForwardHoldStart,
-                        onHoldStop = onSeekForwardHoldStop,
-                        buttonSize = transportButtonSize,
-                        modifier = Modifier.focusProperties {
-                            down = quickActionsFocusRequester
-                        }
-                    )
-                }
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                AnimatedVisibility(visible = seekPreview.visible) {
-                    PlayerSeekPreviewCard(
-                        preview = seekPreview,
-                        previewHeight = when {
-                            compactControls -> 96.dp
-                            tabletControls -> 106.dp
-                            else -> 118.dp
-                        },
-                        modifier = Modifier.width(seekPreviewWidth)
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = playbackLabel,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color.White.copy(alpha = 0.78f)
-                    )
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.58f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = formatDuration(displayedPosition),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White
-                    )
-                    Slider(
-                        value = sliderValue,
-                        onValueChange = if (interactiveSeek) {
-                            { fraction ->
-                                isScrubbing = true
-                                scrubFraction = fraction
-                            }
-                        } else {
-                            { /* no-op: seek driven by parent KeyEvent */ }
-                        },
-                        onValueChangeFinished = if (interactiveSeek) {
-                            {
-                                onSeekToPosition((scrubFraction * duration).toLong())
-                                isScrubbing = false
-                            }
-                        } else {
-                            null
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 16.dp)
-                            // Unconditional: the slider must never take D-pad or
-                            // keyboard focus, on any form factor.
-                            .focusable(false)
-                            .semantics { contentDescription = playbackLabel },
-                        enabled = interactiveSeek,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Primary,
-                            activeTrackColor = Primary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.2f),
-                            disabledActiveTrackColor = Primary,
-                            disabledInactiveTrackColor = Color.White.copy(alpha = 0.2f),
-                            disabledThumbColor = Primary
-                        )
-                    )
-                    Text(
-                        text = formatDuration(duration),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White
-                    )
-                }
-            }
+                .focusRequester(playButtonFocusRequester)
+                .focusProperties { down = quickActionsFocusRequester }
+        )
+        PlayerIconButton(
+            icon = PlayerIcons.Forward,
+            label = stringResource(R.string.player_forward),
+            onClick = onSeekForward,
+            onHoldStart = onSeekForwardHoldStart,
+            onHoldStop = onSeekForwardHoldStop,
+            modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+        )
+        if (hasNextEpisode) {
+            PlayerIconButton(
+                icon = PlayerIcons.SkipNext,
+                label = stringResource(R.string.player_next_episode),
+                onClick = onPlayNextEpisode,
+                modifier = Modifier.focusProperties { down = quickActionsFocusRequester }
+            )
         }
     }
 
-    PlayerQuickActionRows(
-        primaryActions = actions,
-        secondaryActions = emptyList(),
+    Spacer(modifier = Modifier.height(8.dp))
+
+    PlayerIconActionRow(
+        actions = actions,
         firstActionFocusRequester = quickActionsFocusRequester,
-        primaryActionsUpFocusRequester = playButtonFocusRequester
+        upFocusRequester = playButtonFocusRequester
     )
 }
 
@@ -1345,23 +1259,51 @@ private fun PlayerTransportButton(
     }
 }
 
+/**
+ * Single centred row of icon buttons.
+ *
+ * Replaces the old `FlowRow` of text pills: with up to ten labelled buttons that row
+ * wrapped onto two lines and ate a third of the screen. Icons keep it to one line, and
+ * the caption only appears under whichever button holds focus.
+ */
 @Composable
-private fun PlayerMetaPill(
-    text: String,
-    accent: Boolean = false
+private fun PlayerIconActionRow(
+    actions: List<PlayerIconActionSpec>,
+    firstActionFocusRequester: FocusRequester,
+    upFocusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier
 ) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        colors = SurfaceDefaults.colors(
-            containerColor = if (accent) Primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.10f)
-        )
+    if (actions.isEmpty()) return
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(
+            PlayerChromeTokens.RowGap,
+            Alignment.CenterHorizontally
+        ),
+        verticalAlignment = Alignment.Top
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.White,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-        )
+        actions.forEachIndexed { index, action ->
+            PlayerIconButton(
+                icon = action.icon,
+                label = action.label,
+                contentDescription = action.contentDescription,
+                selected = action.selected,
+                onClick = action.onClick,
+                modifier = Modifier
+                    .then(
+                        if (index == 0) {
+                            Modifier.focusRequester(firstActionFocusRequester)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .focusProperties {
+                        if (index == 0 && upFocusRequester != null) {
+                            up = upFocusRequester
+                        }
+                    }
+            )
+        }
     }
 }
 
