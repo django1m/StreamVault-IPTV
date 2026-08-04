@@ -78,6 +78,9 @@ import java.util.Locale
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.design.glassSurface
+import com.streamvault.app.ui.design.GlassLevel
+import com.streamvault.app.ui.components.cinematic.dialogScrim
 
 @Composable
 fun PlayerNoticeBanner(
@@ -257,14 +260,14 @@ fun PlayerTrackSelectionDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.8f))
+                .background(dialogScrim())
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center
         ) {
             Column(
                 modifier = Modifier
                     .widthIn(min = 300.dp, max = 400.dp)
-                    .background(SurfaceElevated, RoundedCornerShape(12.dp))
+                    .glassSurface(level = GlassLevel.High, shape = RoundedCornerShape(20.dp))
                     .padding(24.dp)
                     .onPreviewKeyEvent { event ->
                         if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
@@ -354,14 +357,14 @@ fun PlayerSpeedSelectionDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.8f))
+                .background(dialogScrim())
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center
         ) {
             Column(
                 modifier = Modifier
                     .widthIn(min = 300.dp, max = 400.dp)
-                    .background(SurfaceElevated, RoundedCornerShape(12.dp))
+                    .glassSurface(level = GlassLevel.High, shape = RoundedCornerShape(20.dp))
                     .padding(24.dp)
                     .onPreviewKeyEvent { event ->
                         if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
@@ -455,7 +458,7 @@ fun PlayerEpisodeSelectionDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.68f))
+                .background(dialogScrim())
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center
         ) {
@@ -878,13 +881,13 @@ fun PlayerResumePrompt(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.85f)),
+            .background(dialogScrim()),
         contentAlignment = Alignment.Center
     ) {
         Column(
             modifier = Modifier
                 .widthIn(max = 500.dp)
-                .background(SurfaceElevated, RoundedCornerShape(12.dp))
+                .glassSurface(level = GlassLevel.High, shape = RoundedCornerShape(20.dp))
                 .focusGroup()
                 .onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false

@@ -89,37 +89,35 @@ import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
 import com.streamvault.app.ui.design.AppMotion
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerGlassBar
+import androidx.tv.material3.Icon
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.Icons
+import com.streamvault.app.ui.screens.player.overlay.components.PlayerIcons
+import androidx.compose.material.icons.filled.PlayArrow
 
 @Composable
 private fun PlayerOverlayPanel(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Surface(
+    // One glass container for all five live overlays. Kept as a ColumnScope content
+    // slot so the five call sites are untouched — this is deliberately the only place
+    // their chrome is described.
+    //
+    // The 0.38-alpha Canvas it used to sit on was legible over the app's own dark
+    // backdrops but not over a bright video frame, which is where these overlays
+    // actually live. PlayerGlassBar lays an opaque-ish base under the glass gradient
+    // for exactly that reason; there is no blur to lean on (allowBlur == false on the
+    // target box).
+    PlayerGlassBar(
         modifier = modifier,
         shape = RoundedCornerShape(26.dp),
-        border = Border(
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                AppColors.Focus.copy(alpha = 0.05f)
-            )
-        ),
-        colors = androidx.tv.material3.SurfaceDefaults.colors(
-            containerColor = AppColors.Canvas.copy(alpha = 0.38f)
-        )
+        contentPadding = 14.dp
     ) {
         Column(
-            modifier = Modifier
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            AppColors.BrandMuted.copy(alpha = 0.06f),
-                            AppColors.SurfaceElevated.copy(alpha = 0.34f),
-                            AppColors.Surface.copy(alpha = 0.28f)
-                        )
-                    )
-                )
-                .padding(14.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             content = content
         )
@@ -366,7 +364,7 @@ fun ChannelInfoOverlay(
             ) {
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_playback),
+                        icon = if (isPlaying) PlayerIcons.Pause else Icons.Default.PlayArrow,
                         label = if (isPlaying) stringResource(R.string.player_pause) else stringResource(R.string.player_play),
                         onClick = {
                             onOverlayInteracted()
@@ -383,7 +381,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_mute),
+                        icon = if (isMuted) PlayerIcons.VolumeOff else PlayerIcons.VolumeOn,
                         label = if (isMuted) stringResource(R.string.player_unmute) else stringResource(R.string.player_mute),
                         onClick = {
                             onOverlayInteracted()
@@ -395,7 +393,7 @@ fun ChannelInfoOverlay(
                 if (subtitleTrackCount > 0) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_subs),
+                            icon = PlayerIcons.Subtitles,
                             label = stringResource(R.string.player_subs),
                             onClick = {
                                 onOverlayInteracted()
@@ -408,7 +406,7 @@ fun ChannelInfoOverlay(
                 if (videoQualityCount > 0) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_action_quality),
+                            icon = PlayerIcons.Quality,
                             label = stringResource(R.string.player_quality_short),
                             onClick = {
                                 onOverlayInteracted()
@@ -421,7 +419,7 @@ fun ChannelInfoOverlay(
                 if (audioTrackCount > 0) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_audio),
+                            icon = PlayerIcons.AudioTrack,
                             label = stringResource(R.string.player_audio),
                             onClick = {
                                 onOverlayInteracted()
@@ -433,7 +431,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_guide),
+                        icon = PlayerIcons.Guide,
                         label = stringResource(R.string.player_epg_short),
                         onClick = {
                             onOverlayInteracted()
@@ -448,7 +446,7 @@ fun ChannelInfoOverlay(
                 if (allowMultiview) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_action_split),
+                            icon = PlayerIcons.SplitScreen,
                             label = stringResource(R.string.player_multiview_short),
                             onClick = {
                                 onOverlayInteracted()
@@ -461,7 +459,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_diagnostics),
+                        icon = PlayerIcons.Diagnostics,
                         label = stringResource(R.string.player_stats),
                         onClick = {
                             onOverlayInteracted()
@@ -473,7 +471,7 @@ fun ChannelInfoOverlay(
                 if (!lastVisitedCategoryName.isNullOrBlank()) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_action_group),
+                            icon = PlayerIcons.ChannelList,
                             label = lastVisitedCategoryName,
                             onClick = {
                                 onOverlayInteracted()
@@ -485,11 +483,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = if (currentRecordingStatus == RecordingStatus.RECORDING) {
-                            stringResource(R.string.player_stop_recording)
-                        } else {
-                            stringResource(R.string.player_record)
-                        },
+                        icon = if (currentRecordingStatus == RecordingStatus.RECORDING) PlayerIcons.RecordStop else PlayerIcons.Record,
                         label = if (currentRecordingStatus == RecordingStatus.RECORDING) {
                             stringResource(R.string.player_stop_recording)
                         } else {
@@ -509,7 +503,7 @@ fun ChannelInfoOverlay(
                 if (currentChannel?.catchUpSupported == true) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_catchup_badge),
+                            icon = PlayerIcons.Archive,
                             label = stringResource(R.string.player_archive),
                             onClick = {
                                 onOverlayInteracted()
@@ -523,7 +517,7 @@ fun ChannelInfoOverlay(
                 if (currentChannel?.catchUpSupported == true && currentProgram?.hasArchive == true) {
                     item {
                         QuickActionButton(
-                            icon = stringResource(R.string.player_action_restart_short),
+                            icon = PlayerIcons.Restart,
                             label = stringResource(R.string.player_restart),
                             onClick = {
                                 onOverlayInteracted()
@@ -536,7 +530,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_cast),
+                        icon = PlayerIcons.Cast,
                         label = if (isCastConnected) stringResource(R.string.player_stop_casting) else stringResource(R.string.player_cast),
                         onClick = {
                             onOverlayInteracted()
@@ -547,7 +541,7 @@ fun ChannelInfoOverlay(
                 }
                 item {
                     QuickActionButton(
-                        icon = stringResource(R.string.player_action_view),
+                        icon = PlayerIcons.Guide,
                         label = currentAspectRatio,
                         onClick = {
                             onOverlayInteracted()
@@ -563,7 +557,7 @@ fun ChannelInfoOverlay(
 
 @Composable
 private fun QuickActionButton(
-    icon: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     modifier: Modifier = Modifier,
     colors: androidx.tv.material3.ClickableSurfaceColors = ClickableSurfaceDefaults.colors(
@@ -592,20 +586,23 @@ private fun QuickActionButton(
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
+            // Hoisted: AnimatedContent's transitionSpec lambda is not @Composable, so the
+            // reduced-motion-aware helpers have to be resolved outside it.
+            val iconFade = AppMotion.overlayFade()
+            val iconScale = AppMotion.scaleSpring()
             AnimatedContent(
                 targetState = icon,
                 transitionSpec = {
-                    (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
+                    (fadeIn(iconFade) + scaleIn(iconScale))
+                        .togetherWith(fadeOut(iconFade) + scaleOut(iconScale))
                 },
                 label = "iconToggle"
             ) { targetIcon ->
-                Text(
-                    text = targetIcon.uppercase(Locale.getDefault()),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = AppColors.BrandStrong,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                Icon(
+                    imageVector = targetIcon,
+                    contentDescription = null,
+                    tint = AppColors.BrandStrong,
+                    modifier = Modifier.size(18.dp)
                 )
             }
             Text(
@@ -929,11 +926,11 @@ fun ChannelListOverlay(
                         ),
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    Text(
-                        text = "\u25b2",
-                        color = Color.White.copy(alpha = 0.55f),
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(top = 8.dp)
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowUp,
+                        contentDescription = null,
+                        tint = AppColors.TextSecondary,
+                        modifier = Modifier.padding(top = 4.dp).size(24.dp)
                     )
                 }
             }
@@ -957,11 +954,11 @@ fun ChannelListOverlay(
                         ),
                     contentAlignment = Alignment.BottomCenter
                 ) {
-                    Text(
-                        text = "\u25bc",
-                        color = Color.White.copy(alpha = 0.55f),
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = AppColors.TextSecondary,
+                        modifier = Modifier.padding(bottom = 4.dp).size(24.dp)
                     )
                 }
             }
@@ -1080,7 +1077,7 @@ fun EpgOverlay(
                             Spacer(Modifier.height(8.dp))
                             if (onOpenArchiveBrowser != null) {
                                 QuickActionButton(
-                                    icon = stringResource(R.string.player_catchup_badge),
+                                    icon = PlayerIcons.Archive,
                                     label = stringResource(R.string.epg_catchup_available, currentChannel.catchUpDays),
                                     onClick = {
                                         onOverlayInteracted()
