@@ -82,6 +82,13 @@ object PlayerChromeTokens {
     val RowGap: Dp = 10.dp
     val GroupGap: Dp = 20.dp
 
+    /**
+     * Opacity of the dark base under the glass gradient. Tuned against the worst case —
+     * chrome over a fully white frame — where anything below ~0.6 leaves white text on
+     * pale grey. Above ~0.8 it stops reading as glass and becomes a slab.
+     */
+    const val BarBaseOpacity: Float = 0.72f
+
     @Composable
     @ReadOnlyComposable
     fun iconButton(): Dp = when (LocalFormFactor.current) {
@@ -129,19 +136,30 @@ fun Modifier.playerChromeScrim(fromTop: Boolean): Modifier = this.background(
     )
 )
 
-/** The glass panel every piece of player chrome sits in. */
+/**
+ * The glass panel every piece of player chrome sits in.
+ *
+ * Unlike [GlassSurface] elsewhere in the app, this one lays an opaque-ish base under
+ * the glass gradient. `GlassLevel.High` alone is a 30 %-alpha tint, which is fine over
+ * the app's own dark backdrops but disappears over a bright video frame — and with
+ * `allowBlur == false` on the target box there is no frosting to fall back on. The base
+ * guarantees contrast on any content; the gradient and hairline border on top are what
+ * still make it read as glass rather than as a slab.
+ */
 @Composable
 fun PlayerGlassBar(
     modifier: Modifier = Modifier,
     level: GlassLevel = GlassLevel.High,
     shape: Shape = LocalAppShapes.current.xLarge,
     contentPadding: Dp = PlayerChromeTokens.barPadding(),
+    baseOpacity: Float = PlayerChromeTokens.BarBaseOpacity,
     content: @Composable BoxScope.() -> Unit
 ) {
-    GlassSurface(
-        level = level,
-        shape = shape,
+    Box(
         modifier = modifier
+            .clip(shape)
+            .background(AppColors.Canvas.copy(alpha = baseOpacity))
+            .glassSurface(level = level, shape = shape)
     ) {
         Box(modifier = Modifier.padding(contentPadding), content = content)
     }

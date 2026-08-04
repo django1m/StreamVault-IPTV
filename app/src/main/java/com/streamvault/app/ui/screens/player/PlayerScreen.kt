@@ -423,10 +423,19 @@ fun PlayerScreen(
         showCategoryListOverlay,
         showEpgOverlay,
         showControls,
-        numericChannelInput
+        numericChannelInput,
+        showOptionsPanel,
+        showMiniGuide
     ) {
         {
             when {
+                // The options panel and the mini-guide were missing from this cascade.
+                // A BackHandler further down was meant to catch them, but the root
+                // onKeyEvent consumes KEYCODE_BACK first and returns true, so it never
+                // ran: BACK from either one fell through to onBack() and left the
+                // player altogether instead of closing the panel.
+                showOptionsPanel -> showOptionsPanel = false
+                showMiniGuide -> showMiniGuide = false
                 viewModel.hasPendingNumericChannelInput() -> viewModel.clearNumericChannelInput()
                 playerNotice != null -> viewModel.dismissPlayerNotice()
                 showProgramHistory -> showProgramHistory = false
@@ -504,8 +513,10 @@ fun PlayerScreen(
             .background(Color.Black)
             .focusRequester(focusRequester)
             .focusProperties {
-                // Only allow focus on the main background when no overlays are active
-                canFocus = !anyOverlayVisible && !showControls
+                // Only allow focus on the main background when no overlays are active.
+                // The options panel counts: while it is up its chips must keep focus,
+                // otherwise the root steals it back and the panel is undrivable.
+                canFocus = !anyOverlayVisible && !showControls && !showOptionsPanel
             }
             .focusable()
             // Touch vocabulary of the player. On TV `touchGesturesEnabled` is
@@ -572,6 +583,15 @@ fun PlayerScreen(
                     return@onPreviewKeyEvent false
                 }
                 if (showTrackSelection != null || showSpeedSelection || showProgramHistory || showSplitDialog || showEpisodePicker) {
+                    return@onPreviewKeyEvent false
+                }
+                // Chrome visible → the arrows belong to the focus system, not to zapping.
+                // This handler runs BEFORE the focused button sees the key, so without
+                // this guard UP/DOWN zapped the channel and the live controls bar was
+                // effectively unreachable: only the button holding the initial focus
+                // could ever be activated. CHANNEL_UP/DOWN below stay unconditional, so
+                // remotes with dedicated channel keys keep zapping either way.
+                if (showControls) {
                     return@onPreviewKeyEvent false
                 }
 
@@ -705,7 +725,10 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
-                            if (showControls && contentType != "LIVE") return@onKeyEvent false
+                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
+                            // (LIVE used to be excluded here, which is why the live
+                            // bar could never be navigated.)
+                            if (showControls) return@onKeyEvent false
                             if (showChannelListOverlay && contentType == "LIVE") {
                                 // Second left press while channel list is open → open category list
                                 viewModel.openCategoryListOverlay()
@@ -739,7 +762,10 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
-                            if (showControls && contentType != "LIVE") return@onKeyEvent false
+                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
+                            // (LIVE used to be excluded here, which is why the live
+                            // bar could never be navigated.)
+                            if (showControls) return@onKeyEvent false
                             if (contentType == "LIVE" && !showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
                                 if (isRtl) viewModel.openChannelListOverlay() else viewModel.openEpgOverlay()
                                 true
@@ -766,7 +792,10 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay) return@onKeyEvent false
-                            if (showControls && contentType != "LIVE") return@onKeyEvent false
+                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
+                            // (LIVE used to be excluded here, which is why the live
+                            // bar could never be navigated.)
+                            if (showControls) return@onKeyEvent false
 
                             if (contentType == "LIVE") {
                                 viewModel.playNext()
@@ -782,7 +811,10 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay) return@onKeyEvent false
-                            if (showControls && contentType != "LIVE") return@onKeyEvent false
+                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
+                            // (LIVE used to be excluded here, which is why the live
+                            // bar could never be navigated.)
+                            if (showControls) return@onKeyEvent false
 
                             if (contentType == "LIVE") {
                                 viewModel.playPrevious()
@@ -1113,7 +1145,14 @@ fun PlayerScreen(
                 onUserInteraction = viewModel::refreshControlsAutoHide,
                 // Same panel the hold-OK gesture and MENU open. The controls bar keeps
                 // only what a viewer reaches for mid-playback; the rest lives here.
-                onOpenOptionsPanel = { showOptionsPanel = true }
+                onOpenOptionsPanel = { showOptionsPanel = true },
+                // Lambdas, not bound references: these are all extension functions on
+                // PlayerViewModel (PlayerZapActions / PlayerOverlayActions).
+                onZapPrevious = { viewModel.playPrevious() },
+                onZapNext = { viewModel.playNext() },
+                onOpenChannelList = { viewModel.openChannelListOverlay() },
+                onOpenEpg = { viewModel.openEpgOverlay() },
+                onOpenChannelInfo = { viewModel.openChannelInfoOverlay() }
             )
 
             PlayerNumericInputOverlay(
@@ -1392,6 +1431,83 @@ fun PlayerScreen(
                     viewModel.selectVideoQuality(id)
                     showOptionsPanel = false
                 },
+                // Everything the controls bar no longer carries. These are the rare
+                // actions — the bar keeps what a viewer reaches for mid-playback, and
+                // the rest stays exactly one press away instead of doubling its height.
+                actionOptions = buildList {
+                    if (contentType == "LIVE") {
+                        add(
+                            com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                id = ACTION_CAST,
+                                label = stringResource(
+                                    if (castConnectionState == CastConnectionState.CONNECTED) {
+                                        R.string.player_stop_casting
+                                    } else {
+                                        R.string.player_cast
+                                    }
+                                ),
+                                selected = castConnectionState == CastConnectionState.CONNECTED
+                            )
+                        )
+                        if (currentProgram?.hasArchive == true) {
+                            add(
+                                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                    id = ACTION_ARCHIVE,
+                                    label = stringResource(R.string.player_archive)
+                                )
+                            )
+                        }
+                        if (currentChannelRecording?.status != com.streamvault.domain.model.RecordingStatus.RECORDING) {
+                            add(
+                                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                    id = ACTION_SCHEDULE,
+                                    label = stringResource(R.string.player_schedule_recording)
+                                )
+                            )
+                            add(
+                                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                    id = ACTION_SCHEDULE_DAILY,
+                                    label = stringResource(R.string.player_schedule_daily_recording)
+                                )
+                            )
+                            add(
+                                com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                    id = ACTION_SCHEDULE_WEEKLY,
+                                    label = stringResource(R.string.player_schedule_weekly_recording)
+                                )
+                            )
+                        }
+                        add(
+                            com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                                id = ACTION_SPLIT,
+                                label = stringResource(R.string.player_action_split)
+                            )
+                        )
+                    }
+                    add(
+                        com.streamvault.app.ui.screens.player.overlay.components.PlayerOption(
+                            id = ACTION_DIAGNOSTICS,
+                            label = stringResource(R.string.player_action_diagnostics),
+                            selected = showDiagnostics
+                        )
+                    )
+                },
+                onActionSelected = { id ->
+                    showOptionsPanel = false
+                    when (id) {
+                        ACTION_CAST -> if (castConnectionState == CastConnectionState.CONNECTED) {
+                            viewModel.stopCasting()
+                        } else {
+                            viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() }
+                        }
+                        ACTION_ARCHIVE -> showProgramHistory = true
+                        ACTION_SCHEDULE -> viewModel.scheduleRecording()
+                        ACTION_SCHEDULE_DAILY -> viewModel.scheduleDailyRecording()
+                        ACTION_SCHEDULE_WEEKLY -> viewModel.scheduleWeeklyRecording()
+                        ACTION_SPLIT -> showSplitDialog = true
+                        ACTION_DIAGNOSTICS -> viewModel.toggleDiagnostics()
+                    }
+                },
                 onDismiss = { showOptionsPanel = false },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1504,7 +1620,12 @@ private fun PlayerControlsOverlayHost(
     onEnterPip: (() -> Unit)?,
     seekPreview: SeekPreviewState,
     onUserInteraction: () -> Unit,
-    onOpenOptionsPanel: () -> Unit = {}
+    onOpenOptionsPanel: () -> Unit = {},
+    onZapPrevious: () -> Unit = {},
+    onZapNext: () -> Unit = {},
+    onOpenChannelList: () -> Unit = {},
+    onOpenEpg: () -> Unit = {},
+    onOpenChannelInfo: () -> Unit = {}
 ) {
     val currentPosition by playerEngine.currentPosition.collectAsStateWithLifecycle()
     val duration by playerEngine.duration.collectAsStateWithLifecycle()
@@ -1561,9 +1682,25 @@ private fun PlayerControlsOverlayHost(
         onEnterPip = onEnterPip,
         seekPreview = seekPreview,
         onUserInteraction = onUserInteraction,
-        onOpenOptionsPanel = onOpenOptionsPanel
+        onOpenOptionsPanel = onOpenOptionsPanel,
+        onZapPrevious = onZapPrevious,
+        onZapNext = onZapNext,
+        onOpenChannelList = onOpenChannelList,
+        onOpenEpg = onOpenEpg,
+        onOpenChannelInfo = onOpenChannelInfo
     )
 }
+
+// Ids for the options panel "Actions" rail. Plain constants rather than an enum: the
+// panel's PlayerOption model is a flat (id, label, selected) triple shared with the
+// track/speed/quality rails, whose ids are track ids.
+private const val ACTION_CAST = "action:cast"
+private const val ACTION_ARCHIVE = "action:archive"
+private const val ACTION_SCHEDULE = "action:schedule"
+private const val ACTION_SCHEDULE_DAILY = "action:schedule_daily"
+private const val ACTION_SCHEDULE_WEEKLY = "action:schedule_weekly"
+private const val ACTION_SPLIT = "action:split"
+private const val ACTION_DIAGNOSTICS = "action:diagnostics"
 
 private tailrec fun android.content.Context.findMainActivity(): MainActivity? = when (this) {
     is MainActivity -> this

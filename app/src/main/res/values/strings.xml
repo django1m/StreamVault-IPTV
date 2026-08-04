@@ -913,6 +913,10 @@
     <string name="player_action_guide">Guide</string>
     <string name="player_action_split">Split</string>
     <string name="player_action_diagnostics">Diagnostics</string>
+    <string name="player_action_channels">Channels</string>
+    <string name="player_action_info">Info</string>
+    <string name="player_action_previous_channel">Previous channel</string>
+    <string name="player_action_next_channel">Next channel</string>
     <string name="player_diagnostics_title">Playback Diagnostics</string>
     <string name="player_diagnostics_provider">Provider</string>
     <string name="player_diagnostics_source">Source</string>

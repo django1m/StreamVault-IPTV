@@ -855,6 +855,10 @@
     <string name="player_action_guide">Guide</string>
     <string name="player_action_split">Diviser</string>
     <string name="player_action_diagnostics">Diagnostic</string>
+    <string name="player_action_channels">Chaînes</string>
+    <string name="player_action_info">Infos</string>
+    <string name="player_action_previous_channel">Chaîne précédente</string>
+    <string name="player_action_next_channel">Chaîne suivante</string>
     <string name="player_diagnostics_title">Diagnostics de lecture</string>
     <string name="player_diagnostics_provider">Fournisseur</string>
     <string name="player_diagnostics_source">Source</string>

@@ -76,6 +76,63 @@ class PlayerOverlayGoldenTest {
         composeRule.onNodeWithTag("golden").assertAgainstGolden("player_controls_overlay_vod")
     }
 
+    /**
+     * The LIVE branch of the controls bar had no golden at all, which is part of why it
+     * could drift unnoticed — it renders a different chrome (zapping transport, EPG
+     * progress, recording) from the VOD one above.
+     */
+    @Test
+    fun playerControlsOverlay_live_matchesGolden() {
+        composeRule.setContent {
+            StreamVaultTheme {
+                val playButtonFocusRequester = remember { FocusRequester() }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("golden")
+                ) {
+                    PlayerControlsOverlay(
+                        visible = true,
+                        title = TestFixtures.liveTitle,
+                        contentType = "LIVE",
+                        isPlaying = true,
+                        currentProgram = TestFixtures.currentProgram,
+                        currentChannelName = TestFixtures.liveTitle,
+                        displayChannelNumber = TestFixtures.displayChannelNumber,
+                        currentPosition = 0L,
+                        duration = 0L,
+                        aspectRatioLabel = TestFixtures.aspectRatioLabel,
+                        subtitleTrackCount = 2,
+                        audioTrackCount = 2,
+                        videoQualityCount = 2,
+                        currentRecordingStatus = null,
+                        isMuted = false,
+                        mediaTitle = null,
+                        playButtonFocusRequester = playButtonFocusRequester,
+                        onClose = {},
+                        onTogglePlayPause = {},
+                        onSeekBackward = {},
+                        onSeekForward = {},
+                        onRestartProgram = {},
+                        onOpenArchive = {},
+                        onStartRecording = {},
+                        onStopRecording = {},
+                        onScheduleRecording = {},
+                        onToggleAspectRatio = {},
+                        onOpenSubtitleTracks = {},
+                        onOpenAudioTracks = {},
+                        onOpenVideoTracks = {},
+                        onOpenSplitScreen = {},
+                        onToggleMute = {},
+                        clockLabelOverride = TestFixtures.fixedClock
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("golden").assertAgainstGolden("player_controls_overlay_live")
+    }
+
     @Test
     fun playerNoticeBanner_matchesGolden() {
         composeRule.setContent {

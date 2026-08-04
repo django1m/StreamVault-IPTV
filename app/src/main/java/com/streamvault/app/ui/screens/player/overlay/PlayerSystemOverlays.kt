@@ -802,13 +802,8 @@ private fun PlayerEpisodeListItem(
     }
 }
 
-private fun formatPlaybackSpeedLabel(speed: Float): String {
-    return if (speed % 1f == 0f) {
-        "${speed.toInt()}x"
-    } else {
-        "${("%.2f".format(Locale.US, speed)).trimEnd('0').trimEnd('.')}x"
-    }
-}
+// formatPlaybackSpeedLabel lives in PlayerControlsChrome.kt (same package). It used to
+// be duplicated here verbatim; the copy is gone now that the original is `internal`.
 
 @Composable
 private fun TrackSelectionItem(
