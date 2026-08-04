@@ -3,6 +3,7 @@ package com.streamvault.app.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.di.AuxiliaryPlayerEngine
+import com.streamvault.app.playback.ChannelPreviewController
 import com.streamvault.app.playback.PlayerEngineHandoffRegistry
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.screens.multiview.MultiViewManager
@@ -78,7 +79,8 @@ class HomeViewModel @Inject constructor(
     private val multiViewManager: MultiViewManager,
     @AuxiliaryPlayerEngine
     private val playerEngineProvider: InjectProvider<PlayerEngine>,
-    private val playerEngineHandoffRegistry: PlayerEngineHandoffRegistry
+    private val playerEngineHandoffRegistry: PlayerEngineHandoffRegistry,
+    private val previewController: ChannelPreviewController
 ) : ViewModel() {
     private companion object {
         const val MIN_CHANNEL_SEARCH_QUERY_LENGTH = 2
@@ -130,15 +132,24 @@ class HomeViewModel @Inject constructor(
     private var loadChannelsJob: Job? = null
     private var categoriesJob: Job? = null
     private var recentChannelsJob: Job? = null
-    private var previewPlaybackJob: Job? = null
-    private var previewErrorJob: Job? = null
-    private var previewPlayerEngine: PlayerEngine? = null
-    private var previewStreamInfo: StreamInfo? = null
-    private var previewChannelProviderId: Long = -1L
-    private var previewSessionVersion: Long = 0L
     private var combinedCategoriesById: Map<Long, CombinedCategory> = emptyMap()
 
     init {
+        // The preview state now lives in ChannelPreviewController; mirroring it back into
+        // HomeUiState keeps every field HomeScreen and LivePreviewPane read unchanged.
+        previewController.attach(viewModelScope)
+        viewModelScope.launch {
+            previewController.state.collect { preview ->
+                _uiState.update {
+                    it.copy(
+                        previewChannelId = preview.channelId,
+                        previewPlayerEngine = preview.engine,
+                        isPreviewLoading = preview.isLoading,
+                        previewErrorMessage = preview.errorMessage
+                    )
+                }
+            }
+        }
         loadAllProviders()
         viewModelScope.launch {
             multiViewManager.slots.collect { slots ->
@@ -900,98 +911,14 @@ class HomeViewModel @Inject constructor(
     }
 
     fun previewChannel(channel: Channel) {
+        // The PRO-mode gate stays here: it is a Home policy (the compact and comfortable
+        // list modes have no preview pane), not something the controller should know.
         if (_uiState.value.liveTvChannelMode != LiveTvChannelMode.PRO) return
-        if (_uiState.value.previewChannelId == channel.id && _uiState.value.previewPlayerEngine != null) return
-
-        val previewVersion = ++previewSessionVersion
-        val engine = previewPlayerEngine ?: playerEngineProvider.get().also { previewPlayerEngine = it }
-        previewPlaybackJob?.cancel()
-        previewErrorJob?.cancel()
-
-        _uiState.update {
-            it.copy(
-                previewChannelId = channel.id,
-                previewPlayerEngine = engine,
-                isPreviewLoading = true,
-                previewErrorMessage = null
-            )
-        }
-
-        previewPlaybackJob = viewModelScope.launch {
-            engine.playbackState.collectLatest { playbackState ->
-                if (!isActivePreviewSession(previewVersion, channel.id)) return@collectLatest
-                _uiState.update { state ->
-                    state.copy(
-                        isPreviewLoading = playbackState == PlaybackState.IDLE || playbackState == PlaybackState.BUFFERING,
-                        previewErrorMessage = when {
-                            playbackState == PlaybackState.ERROR && state.previewErrorMessage.isNullOrBlank() ->
-                                appContext.getString(R.string.live_preview_failed)
-                            playbackState != PlaybackState.ERROR -> null
-                            else -> state.previewErrorMessage
-                        }
-                    )
-                }
-            }
-        }
-
-        previewErrorJob = viewModelScope.launch {
-            engine.error.collectLatest { error ->
-                if (!isActivePreviewSession(previewVersion, channel.id)) return@collectLatest
-                if (error != null) {
-                    _uiState.update {
-                        it.copy(
-                            isPreviewLoading = false,
-                            previewErrorMessage = error.message.ifBlank { appContext.getString(R.string.live_preview_failed) }
-                        )
-                    }
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            when (val result = channelRepository.getStreamInfo(channel)) {
-                is Result.Success -> {
-                    if (!isActivePreviewSession(previewVersion, channel.id)) return@launch
-                    previewStreamInfo = result.data
-                    previewChannelProviderId = channel.providerId
-                    engine.stop()
-                    engine.prepare(result.data)
-                    engine.setVolume(1f)
-                    engine.play()
-                }
-                is Result.Error -> {
-                    if (!isActivePreviewSession(previewVersion, channel.id)) return@launch
-                    _uiState.update {
-                        it.copy(
-                            isPreviewLoading = false,
-                            previewErrorMessage = result.message
-                        )
-                    }
-                }
-                Result.Loading -> Unit
-            }
-        }
+        previewController.preview(channel)
     }
 
     fun clearPreview() {
-        previewSessionVersion++
-        previewPlaybackJob?.cancel()
-        previewErrorJob?.cancel()
-        previewPlaybackJob = null
-        previewErrorJob = null
-        previewPlayerEngine?.stop()
-        previewPlayerEngine?.release()
-        previewPlayerEngine = null
-        previewStreamInfo = null
-        previewChannelProviderId = -1L
-        _uiState.update {
-            it.copy(
-                previewChannelId = null,
-                previewPlayerEngine = null,
-                isPreviewLoading = false,
-                previewErrorMessage = null
-            )
-        }
+        previewController.clear()
     }
 
     /**
@@ -1006,49 +933,8 @@ class HomeViewModel @Inject constructor(
      * upstream stream info has not been resolved yet — in those cases there is
      * nothing useful to hand over.
      */
-    fun handoffPreviewForFullscreen(channel: Channel): Boolean {
-        val engine = previewPlayerEngine
-        val streamInfo = previewStreamInfo
-        if (engine == null ||
-            streamInfo == null ||
-            _uiState.value.previewChannelId != channel.id ||
-            // Never hand off an ERRORed engine: fullscreen would adopt it with
-            // skipEnginePrepare, its replayed error is dropped as pre-session
-            // by handlePlaybackError's guard, and no automatic recovery ever
-            // runs. Returning false forces a regular full prepare — a fresh
-            // real attempt at the stream instead of a frozen error state.
-            engine.playbackState.value == com.streamvault.player.PlaybackState.ERROR
-        ) {
-            clearPreview()
-            return false
-        }
-        previewSessionVersion++
-        previewPlaybackJob?.cancel()
-        previewErrorJob?.cancel()
-        previewPlaybackJob = null
-        previewErrorJob = null
-        playerEngineHandoffRegistry.park(
-            engine = engine,
-            channelId = channel.id,
-            providerId = channel.providerId.takeIf { it > 0L } ?: previewChannelProviderId,
-            streamInfo = streamInfo
-        )
-        previewPlayerEngine = null
-        previewStreamInfo = null
-        previewChannelProviderId = -1L
-        _uiState.update {
-            it.copy(
-                previewChannelId = null,
-                previewPlayerEngine = null,
-                isPreviewLoading = false,
-                previewErrorMessage = null
-            )
-        }
-        return true
-    }
-
-    private fun isActivePreviewSession(version: Long, channelId: Long): Boolean =
-        version == previewSessionVersion && _uiState.value.previewChannelId == channelId
+    fun handoffPreviewForFullscreen(channel: Channel): Boolean =
+        previewController.handoffForFullscreen(channel)
 
     private fun fetchRoomEpgForChannels(channels: List<Channel>) {
         epgJob?.cancel()

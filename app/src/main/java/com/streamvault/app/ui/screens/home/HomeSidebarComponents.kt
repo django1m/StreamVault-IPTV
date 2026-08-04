@@ -68,6 +68,7 @@ import com.streamvault.player.PlayerSurfaceResizeMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.streamvault.app.ui.components.LivePreviewSurface
 
 @Composable
 internal fun CompactSplitLauncherButton(
@@ -147,22 +148,8 @@ internal fun LivePreviewPane(
                 contentAlignment = Alignment.Center
             ) {
                 if (channel != null && playerEngine != null && errorMessage == null) {
-                    AndroidView(
-                        factory = { context ->
-                            playerEngine.createRenderView(
-                                context = context,
-                                resizeMode = PlayerSurfaceResizeMode.FIT
-                            )
-                        },
-                        update = { renderView ->
-                            playerEngine.bindRenderView(
-                                renderView = renderView,
-                                resizeMode = PlayerSurfaceResizeMode.FIT
-                            )
-                        },
-                        onRelease = { renderView ->
-                            playerEngine.releaseRenderView(renderView)
-                        },
+                    LivePreviewSurface(
+                        playerEngine = playerEngine,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {

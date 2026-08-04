@@ -26,6 +26,8 @@ import org.junit.Test
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.whenever
+import com.streamvault.app.playback.ChannelPreviewController
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SearchViewModelTest {
@@ -34,6 +36,7 @@ class SearchViewModelTest {
     private val searchContent: SearchContent = mock()
     private val preferencesRepository: PreferencesRepository = mock()
     private val parentalControlManager: ParentalControlManager = mock()
+    private val previewController: ChannelPreviewController = mock()
 
     private lateinit var viewModel: SearchViewModel
 
@@ -45,12 +48,15 @@ class SearchViewModelTest {
         whenever(preferencesRepository.recentSearchQueries).thenReturn(flowOf(emptyList()))
         whenever(parentalControlManager.unlockedCategoriesForProvider(any())).thenReturn(flowOf(emptySet()))
         whenever(searchContent.invoke(any(), any(), any(), any())).thenReturn(flowOf(SearchContentResult()))
+        whenever(previewController.state)
+            .thenReturn(MutableStateFlow(ChannelPreviewController.State()))
 
         viewModel = SearchViewModel(
             providerRepository,
             searchContent,
             preferencesRepository,
-            parentalControlManager
+            parentalControlManager,
+            previewController
         )
     }
 
@@ -113,7 +119,8 @@ class SearchViewModelTest {
             providerRepository,
             searchContent,
             preferencesRepository,
-            parentalControlManager
+            parentalControlManager,
+            previewController
         )
 
         val collectorJob = backgroundScope.launch { viewModel.uiState.collect { } }
@@ -154,7 +161,8 @@ class SearchViewModelTest {
             providerRepository,
             searchContent,
             preferencesRepository,
-            parentalControlManager
+            parentalControlManager,
+            previewController
         )
 
         val collectorJob = backgroundScope.launch { viewModel.uiState.collect { } }

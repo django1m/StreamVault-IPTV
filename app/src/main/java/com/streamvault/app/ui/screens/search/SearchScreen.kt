@@ -57,6 +57,27 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.activity.compose.BackHandler
+import com.streamvault.app.ui.design.AppMotion
+import com.streamvault.app.ui.design.GlassLevel
+import com.streamvault.app.ui.components.cinematic.GlassSurface
+import com.streamvault.app.ui.components.LivePreviewSurface
+import com.streamvault.app.playback.ChannelPreviewController
+import com.streamvault.player.PlayerEngine
+import com.streamvault.app.ui.design.AppColors
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.AnimatedVisibility
 
 /** Nombre d'éléments affichés dans l'aperçu d'un rail (onglet « Tout ») avant de proposer « Voir tout ». */
 private const val RAIL_PREVIEW_COUNT = 18
@@ -67,11 +88,34 @@ class SearchViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
     private val searchContent: SearchContent,
     private val preferencesRepository: com.streamvault.data.preferences.PreferencesRepository,
-    private val parentalControlManager: ParentalControlManager
+    private val parentalControlManager: ParentalControlManager,
+    private val previewController: ChannelPreviewController
 ) : ViewModel() {
     private companion object {
         const val MAX_RESULTS_PER_SECTION = 300
         const val MAX_RECENT_QUERIES = 6
+    }
+
+    init {
+        previewController.attach(viewModelScope)
+    }
+
+    /**
+     * First OK on a channel previews it, second OK opens it fullscreen. Unlike Home there
+     * is no mode gate: in search, previewing is simply what selecting a channel does.
+     */
+    val preview: StateFlow<ChannelPreviewController.State> = previewController.state
+
+    fun previewChannel(channel: Channel) = previewController.preview(channel)
+
+    fun clearPreview() = previewController.clear()
+
+    fun handoffPreviewForFullscreen(channel: Channel): Boolean =
+        previewController.handoffForFullscreen(channel)
+
+    override fun onCleared() {
+        previewController.clear()
+        super.onCleared()
     }
 
     private val _query = MutableStateFlow("")
@@ -255,6 +299,7 @@ fun SearchScreen(
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val recentQueries by viewModel.recentQueries.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val preview by viewModel.preview.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val searchFocusRequester = remember { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -277,6 +322,42 @@ fun SearchScreen(
             return false
         }
         return categoryId == null || categoryId !in uiState.unlockedCategoryIds
+    }
+
+    // First OK previews the channel, second OK opens it fullscreen. The hand-off and the
+    // navigation MUST stay in the same synchronous block: PlayerEngineHandoffRegistry
+    // drops the parked engine after 3 s, and anything asynchronous in between risks
+    // missing that window and re-opening a second upstream connection — which the
+    // provider rate-limits per IP.
+    val onChannelSelected: (Channel, Boolean) -> Unit = { channel, channelLocked ->
+        when {
+            channelLocked -> {
+                pendingChannel = channel
+                showPinDialog = true
+            }
+
+            preview.channelId == channel.id -> {
+                viewModel.handoffPreviewForFullscreen(channel)
+                onChannelClick(channel)
+            }
+
+            else -> viewModel.previewChannel(channel)
+        }
+    }
+
+    // Releasing the engine when the screen goes away is what keeps a second upstream
+    // connection from ever overlapping the first — the box holds a single provider line.
+    // Covers search -> player and search -> anywhere else alike.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP, ProcessLifecycleOwner.get()) {
+        viewModel.clearPreview()
+    }
+    DisposableEffect(Unit) {
+        onDispose { viewModel.clearPreview() }
+    }
+
+    // First BACK leaves the preview, second BACK leaves the screen.
+    BackHandler(enabled = preview.channelId != null) {
+        viewModel.clearPreview()
     }
 
     LaunchedEffect(Unit) {
@@ -313,7 +394,7 @@ fun SearchScreen(
                         pendingSeries?.categoryId?.let(viewModel::unlockCategory)
                         showPinDialog = false
                         pinError = null
-                        pendingChannel?.let { onChannelClick(it) }
+                        pendingChannel?.let { onChannelSelected(it, false) }
                         pendingMovie?.let { onMovieClick(it) }
                         pendingSeries?.let { onSeriesClick(it) }
                         pendingChannel = null
@@ -404,6 +485,23 @@ fun SearchScreen(
                         )
                     }
 
+                    // Preview pane. Only present once a channel has been picked, so the
+                    // results keep the full height until then.
+                    item(key = "search-preview") {
+                        AnimatedVisibility(
+                            visible = preview.channelId != null,
+                            enter = fadeIn(AppMotion.overlayFade()) + expandVertically(),
+                            exit = fadeOut(AppMotion.overlayFade()) + shrinkVertically()
+                        ) {
+                            SearchPreviewPane(
+                                channel = uiState.channels.firstOrNull { it.id == preview.channelId },
+                                playerEngine = preview.engine,
+                                isLoading = preview.isLoading,
+                                errorMessage = preview.errorMessage
+                            )
+                        }
+                    }
+
                     if (selectedTab == SearchTab.ALL) {
                         if (uiState.channels.isNotEmpty()) {
                             item {
@@ -425,14 +523,7 @@ fun SearchScreen(
                                     ChannelCard(
                                         channel = channel,
                                         isLocked = channelLocked,
-                                        onClick = {
-                                            if (channelLocked) {
-                                                pendingChannel = channel
-                                                showPinDialog = true
-                                            } else {
-                                                onChannelClick(channel)
-                                            }
-                                        }
+                                        onClick = { onChannelSelected(channel, channelLocked) }
                                     )
                                 }
                             }
@@ -529,14 +620,7 @@ fun SearchScreen(
                                             isUserProtected = channel.isUserProtected
                                         )
                                     },
-                                    onChannelClick = { channel, locked ->
-                                        if (locked) {
-                                            pendingChannel = channel
-                                            showPinDialog = true
-                                        } else {
-                                            onChannelClick(channel)
-                                        }
-                                    }
+                                    onChannelClick = onChannelSelected
                                 )
                             }
 
@@ -607,10 +691,10 @@ private fun SearchHeroPanel(
     focusRequester: FocusRequester,
     selectedStateLabel: String
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
+    GlassSurface(
+        level = GlassLevel.Medium,
         shape = RoundedCornerShape(24.dp),
-        colors = SurfaceDefaults.colors(containerColor = SurfaceElevated.copy(alpha = 0.92f))
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier
@@ -781,10 +865,10 @@ private fun SearchStatusCard(
     body: String,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
+    GlassSurface(
+        level = GlassLevel.Low,
         shape = RoundedCornerShape(18.dp),
-        colors = SurfaceDefaults.colors(containerColor = Surface.copy(alpha = 0.78f))
+        modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
@@ -944,3 +1028,79 @@ private fun SearchMessageState(
     )
 }
 
+/**
+ * Inline video preview for the search results.
+ *
+ * Deliberately narrow (a third of the width): the point is to confirm "yes, this is the
+ * channel I meant" without pushing the results off screen. Playback only ever starts on
+ * an explicit OK — previewing on focus would open one upstream connection per channel
+ * the cursor passes over, and the box holds a single provider line.
+ */
+@Composable
+private fun SearchPreviewPane(
+    channel: Channel?,
+    playerEngine: PlayerEngine?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    modifier: Modifier = Modifier
+) {
+    GlassSurface(
+        level = GlassLevel.High,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(320.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                if (playerEngine != null && errorMessage == null) {
+                    LivePreviewSurface(
+                        playerEngine = playerEngine,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (isLoading && errorMessage == null) {
+                    CircularProgressIndicator(
+                        color = AppColors.Brand,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = channel?.name.orEmpty(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = AppColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                channel?.currentProgram?.title?.takeIf { it.isNotBlank() }?.let { programTitle ->
+                    Text(
+                        text = programTitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = AppColors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = errorMessage ?: stringResource(R.string.live_preview_open_hint),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (errorMessage != null) AppColors.Live else AppColors.Brand
+                )
+            }
+        }
+    }
+}

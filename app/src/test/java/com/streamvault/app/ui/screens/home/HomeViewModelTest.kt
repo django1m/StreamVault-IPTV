@@ -33,6 +33,9 @@ import org.mockito.kotlin.*
 import com.google.common.truth.Truth.assertThat
 import javax.inject.Provider as InjectProvider
 import kotlinx.coroutines.runBlocking
+import org.mockito.kotlin.whenever
+import kotlinx.coroutines.flow.MutableStateFlow
+import com.streamvault.app.playback.ChannelPreviewController
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HomeViewModelTest {
@@ -51,6 +54,7 @@ class HomeViewModelTest {
     private val syncManager: SyncManager = mock()
     private val tvInputChannelSyncManager: TvInputChannelSyncManager = mock()
     private val multiViewManager = MultiViewManager()
+    private val previewController: ChannelPreviewController = mock()
     private val playerEngine: PlayerEngine = mock()
     private val playerEngineProvider: InjectProvider<PlayerEngine> = mock()
     private val application: Application = mock()
@@ -62,6 +66,10 @@ class HomeViewModelTest {
 
     @Before
     fun setup() {
+        // Le VM collecte previewController.state dans son init : un mock non stubbé
+        // renverrait null et ferait planter la collecte.
+        whenever(previewController.state)
+            .thenReturn(MutableStateFlow(ChannelPreviewController.State()))
         Dispatchers.setMain(testDispatcher)
         whenever(application.getString(any())).thenReturn("test-message")
 
@@ -123,7 +131,8 @@ class HomeViewModelTest {
             tvInputChannelSyncManager = tvInputChannelSyncManager,
             multiViewManager = multiViewManager,
             playerEngineProvider = playerEngineProvider,
-            playerEngineHandoffRegistry = com.streamvault.app.playback.PlayerEngineHandoffRegistry()
+            playerEngineHandoffRegistry = com.streamvault.app.playback.PlayerEngineHandoffRegistry(),
+            previewController = previewController
         ).also(createdViewModels::add)
 
     private fun clearViewModel(viewModel: HomeViewModel) {

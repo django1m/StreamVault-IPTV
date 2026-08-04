@@ -58,6 +58,9 @@ import com.streamvault.app.ui.theme.SurfaceElevated
 import com.streamvault.app.ui.theme.SurfaceHighlight
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.streamvault.app.ui.design.glassSurface
+import com.streamvault.app.ui.design.GlassLevel
+import com.streamvault.app.ui.design.AppColors
 
 /**
  * A TV-optimized search input field.
@@ -157,8 +160,23 @@ fun SearchInput(
             .height(40.dp)
             .focusRequester(focusRequester)
             .bringIntoViewRequester(bringIntoViewRequester)
-            .background(backgroundColor, RoundedCornerShape(8.dp))
-            .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
+            // Glass rather than an opaque fill so the field sits on the screen's ambient
+            // backdrop instead of punching a flat rectangle through it. The focused state
+            // keeps its own solid fill and thicker border — a search field has to read as
+            // focused at 3 metres, and a translucent one does not.
+            .then(
+                if (isFocused) {
+                    Modifier
+                        .background(backgroundColor, RoundedCornerShape(8.dp))
+                        .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
+                } else {
+                    Modifier.glassSurface(
+                        level = GlassLevel.Medium,
+                        shape = RoundedCornerShape(8.dp),
+                        borderColor = AppColors.GlassBorder
+                    )
+                }
+            )
             .semantics(mergeDescendants = true) {
                 contentDescription = placeholder
                 stateDescription = value.ifBlank { placeholder }
