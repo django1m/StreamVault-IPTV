@@ -30,7 +30,8 @@ data class AmbientPalette(
     companion object {
         val Default = AmbientPalette(
             accent = AppColors.Brand,
-            surface = AppColors.CanvasElevated,
+            // Teal so the ambient wash is actually a gradient and not a flat navy.
+            surface = AppColors.CanvasTeal,
             shadow = AppColors.Canvas,
             vibrant = AppColors.BrandStrong,
             muted = AppColors.SurfaceAccent

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.streamvault.app.ui.design.FocusSpec
 import com.streamvault.app.ui.design.LocalFormFactor
 import com.streamvault.app.ui.design.isTouch
 import androidx.tv.material3.Border
@@ -57,7 +58,15 @@ fun TvClickableSurface(
     shape: ClickableSurfaceShape = ClickableSurfaceDefaults.shape(),
     colors: ClickableSurfaceColors = ClickableSurfaceDefaults.colors(),
     border: ClickableSurfaceBorder = ClickableSurfaceDefaults.border(),
-    scale: ClickableSurfaceScale = ClickableSurfaceDefaults.scale(),
+    // TV Material's own default is focusedScale = 1.1f, so a call site that simply omits
+    // `scale` silently opts into growing on focus. 75 of the 134 call sites outside the
+    // player did exactly that. Nothing in this language grows: the slab and the outline
+    // carry focus, and enlargement costs a layout pass plus zIndex juggling to avoid
+    // being clipped by neighbours.
+    scale: ClickableSurfaceScale = ClickableSurfaceDefaults.scale(
+        focusedScale = 1f,
+        pressedScale = FocusSpec.PressedScale
+    ),
     glow: ClickableSurfaceGlow = ClickableSurfaceDefaults.glow(),
     interactionSource: MutableInteractionSource? = null,
     onLongClick: (() -> Unit)? = null,
@@ -89,7 +98,7 @@ fun TvButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    scale: ButtonScale = ButtonDefaults.scale(),
+    scale: ButtonScale = ButtonDefaults.scale(focusedScale = 1f, pressedScale = FocusSpec.PressedScale),
     glow: ButtonGlow = ButtonDefaults.glow(),
     interactionSource: MutableInteractionSource? = null,
     shape: ButtonShape = ButtonDefaults.shape(),

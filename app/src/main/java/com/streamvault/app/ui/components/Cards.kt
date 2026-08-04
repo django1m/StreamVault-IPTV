@@ -81,6 +81,13 @@ import com.streamvault.domain.model.Series
 import com.streamvault.app.ui.design.FocusSpec
 import com.streamvault.app.ui.interaction.mouseClickable
 import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
+import com.streamvault.app.ui.design.OsdFocus
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.draw.drawWithContent
 
 private object ChannelProgressTicker {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -113,15 +120,16 @@ fun FocusableCard(
     var isFocused by remember { mutableStateOf(false) }
     val sounds = rememberTvInteractionSounds()
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val cardShape = LocalAppShapes.current.small
+    val cardCornerPx = with(LocalDensity.current) { 12.dp.toPx() }
 
+    // Only DRAG lifts the card. Focus does not: the outline carries it, and growing a
+    // poster pushes its neighbours around in a grid. Drag is a manipulation, not a focus —
+    // it stays deliberately louder than either focus treatment.
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) {
-            if (isReorderMode && !isDragging) 1f else FocusSpec.FocusedScale
-        } else {
-            if (isDragging) FocusSpec.FocusedScale else 1f
-        },
+        targetValue = if (isDragging) 1.06f else 1f,
         animationSpec = tween(durationMillis = 160),
-        label = "cardScale"
+        label = "cardDragLift"
     )
 
     Surface(
@@ -156,30 +164,33 @@ fun FocusableCard(
                 }
                 isFocused = it.isFocused
             },
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
-        scale = ClickableSurfaceDefaults.scale(
-            focusedScale = 1f,
-            pressedScale = FocusSpec.PressedScale
-        ),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = Surface,
-            focusedContainerColor = SurfaceHighlight
-        ),
-        border = ClickableSurfaceDefaults.border(
-            border = Border(
-                border = BorderStroke(0.dp, Color.Transparent),
-                shape = RoundedCornerShape(12.dp)
-            ),
-            focusedBorder = Border(
-                border = BorderStroke(
-                    width = if (isDragging) 4.dp else FocusSpec.CardBorderWidth,
-                    color = if (isDragging) AccentAmber else FocusBorder
-                ),
-                shape = RoundedCornerShape(12.dp)
-            )
-        )
+        shape = ClickableSurfaceDefaults.shape(cardShape),
+        scale = OsdFocus.noScale(),
+        // Transparent in both states — the card is whatever artwork it holds, sitting on
+        // the ambient gradient. The outline below is drawn over the content rather than by
+        // the surface, because on a full-bleed bright poster a surface border can end up
+        // beneath the image and simply not be seen.
+        colors = OsdFocus.tileColors(),
+        border = OsdFocus.noBorder()
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    drawContent()
+                    if (isFocused || isDragging) {
+                        val stroke = (if (isDragging) FocusSpec.DragOutlineWidth else FocusSpec.OutlineWidth).toPx()
+                        val r = cardCornerPx
+                        drawRoundRect(
+                            color = if (isDragging) AccentAmber else FocusBorder,
+                            topLeft = Offset(stroke / 2f, stroke / 2f),
+                            size = Size(size.width - stroke, size.height - stroke),
+                            cornerRadius = CornerRadius(r, r),
+                            style = Stroke(width = stroke)
+                        )
+                    }
+                }
+        ) {
             content(isFocused)
         }
     }

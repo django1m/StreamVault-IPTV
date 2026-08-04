@@ -78,6 +78,9 @@ import com.streamvault.app.ui.design.isTouch
 import com.streamvault.app.ui.design.glassSurface
 import com.streamvault.app.ui.interaction.mouseClickable
 import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
+import com.streamvault.app.ui.design.OsdFocus
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.tv.material3.LocalContentColor
 
 enum class AppNavigationChrome {
     Rail,
@@ -132,11 +135,14 @@ fun AppScreenScaffold(
         modifier = modifier
             .fillMaxSize()
             .background(
+                // Deep teal → navy rather than three shades of the same navy: the old
+                // ramp was so tight it read as a flat fill, which is what made every
+                // surface on top of it need its own card to be visible at all.
                 Brush.linearGradient(
                     colors = listOf(
+                        AppColors.CanvasTeal,
                         AppColors.Canvas,
-                        AppColors.CanvasElevated,
-                        AppColors.Surface
+                        AppColors.CanvasElevated
                     )
                 )
             )
@@ -297,8 +303,11 @@ private fun TopNavigationBar(
                     focusRequesters[activeItem?.route] ?: FocusRequester.Default
                 }
             }
-            .glassSurface(level = GlassLevel.Medium, shape = RoundedCornerShape(18.dp)),
-        shape = RoundedCornerShape(18.dp),
+            // No glass panel. A floating bordered card at the top of the screen is a
+            // dialog; the nav bar sits on the ambient gradient like everything else, and
+            // the focused tab's slab is what the eye tracks.
+            ,
+        shape = RectangleShape,
         colors = SurfaceDefaults.colors(containerColor = Color.Transparent)
     ) {
         Row(
@@ -353,11 +362,14 @@ private fun TopNavigationButton(
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val sounds = rememberTvInteractionSounds()
-    val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.06f else 1f,
-        animationSpec = AppMotion.ScaleSpring,
-        label = "topNavScale"
-    )
+    // One colour per tab, not two. The icon used to be Brand while the label was white on
+    // the very same selected tab — two accents on one element is the tell of an app
+    // toolbar rather than an appliance OSD.
+    val content = when {
+        isFocused -> AppColors.FocusOnFill
+        selected -> AppColors.ActiveText
+        else -> AppColors.TextSecondary
+    }
 
     Surface(
         onClick = {
@@ -373,11 +385,6 @@ private fun TopNavigationButton(
                     onClick()
                 }
             )
-            .zIndex(if (isFocused) 1f else 0f)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
             .onFocusChanged {
                 if (it.isFocused && !isFocused) {
                     sounds.playNavigate()
@@ -385,19 +392,9 @@ private fun TopNavigationButton(
                 isFocused = it.isFocused
             },
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(14.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            // Top-nav tabs stay fully transparent. Selection = gradient
-            // underline. Focus = white border only (no fill, no halo).
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
-            pressedContainerColor = Color.Transparent
-        ),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
-                shape = RoundedCornerShape(14.dp)
-            )
-        )
+        colors = OsdFocus.slabColors(active = selected, restingContent = AppColors.TextSecondary),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale()
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -411,25 +408,16 @@ private fun TopNavigationButton(
                 Icon(
                     imageVector = icon,
                     contentDescription = label,
-                    tint = if (selected) AppColors.Brand else AppColors.TextSecondary,
+                    tint = content,
                     modifier = Modifier.size(14.dp)
                 )
                 Text(
                     text = label,
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) AppColors.TextPrimary else AppColors.TextSecondary
+                    color = content
                 )
             }
-            if (selected) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 22.dp, height = 2.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            Brush.horizontalGradient(listOf(AppColors.BrandStrong, AppColors.Brand))
-                        )
-                )
-            }
+
         }
     }
 }
@@ -443,25 +431,23 @@ fun AppHeroHeader(
     actions: (@Composable RowScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(28.dp),
-        colors = SurfaceDefaults.colors(containerColor = AppColors.SurfaceElevated)
-    ) {
+    // No card. The hero is a band of text on the ambient gradient, not a raised panel —
+    // a rounded, clipped, elevated container here is exactly the "card inside a card" the
+    // language rules out. The horizontal wash stays: it gives the block a left-to-right
+    // reading direction without drawing a boundary.
+    Box(modifier = modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(28.dp))
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            AppColors.Canvas,
-                            AppColors.SurfaceAccent,
-                            AppColors.SurfaceEmphasis
+                            AppColors.CanvasTeal.copy(alpha = 0.55f),
+                            Color.Transparent
                         )
                     )
                 )
-                .padding(32.dp)
+                .padding(horizontal = 4.dp, vertical = 20.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 AppScreenHeader(
@@ -643,16 +629,9 @@ fun LoadMoreCard(
                 onClick = onClick
             ),
         shape = ClickableSurfaceDefaults.shape(shapes.medium),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = AppColors.SurfaceElevated,
-            focusedContainerColor = AppColors.SurfaceEmphasis
-        ),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
-                shape = shapes.medium
-            )
-        )
+        colors = OsdFocus.slabColors(),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale()
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
@@ -662,13 +641,15 @@ fun LoadMoreCard(
             Icon(
                 imageVector = Icons.Default.Info,
                 contentDescription = label,
-                tint = AppColors.Brand,
+                // No explicit colour: LocalContentColor flips to dark on the slab. Hard-coding
+                // Brand here would leave a blue glyph on white.
+                tint = LocalContentColor.current,
                 modifier = Modifier.size(18.dp)
             )
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
-                color = AppColors.TextPrimary
+                color = LocalContentColor.current
             )
         }
     }
