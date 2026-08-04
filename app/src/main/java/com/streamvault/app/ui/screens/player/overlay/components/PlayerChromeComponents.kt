@@ -141,15 +141,27 @@ object PlayerChromeTokens {
  * so `allowBlur == false` — there is no real backdrop blur to lean on, and a bright
  * video frame would otherwise swallow white text. Never swap this for `Modifier.blur`.
  */
-fun Modifier.playerChromeScrim(fromTop: Boolean): Modifier = this.background(
-    Brush.verticalGradient(
-        if (fromTop) {
-            listOf(AppColors.ScrimTop, Color.Transparent)
-        } else {
-            listOf(Color.Transparent, AppColors.ScrimBottom)
-        }
-    )
-)
+fun Modifier.playerChromeScrim(fromTop: Boolean): Modifier {
+    // Weighted stops, not an even fade. With no card behind the content, this gradient is
+    // the *only* thing keeping white text off a white frame, and a linear ramp leaves the
+    // channel line — which sits near the top of the bar — on almost nothing. The ramp
+    // reaches most of its density in the first 45 %, then holds; the far edge still melts
+    // into the picture, which is the whole point of not using a card.
+    val stops = if (fromTop) {
+        arrayOf(
+            0f to AppColors.Canvas.copy(alpha = 0.92f),
+            0.55f to AppColors.Canvas.copy(alpha = 0.42f),
+            1f to Color.Transparent
+        )
+    } else {
+        arrayOf(
+            0f to Color.Transparent,
+            0.45f to AppColors.Canvas.copy(alpha = 0.66f),
+            1f to AppColors.Canvas.copy(alpha = 0.95f)
+        )
+    }
+    return this.background(Brush.verticalGradient(colorStops = stops))
+}
 
 /**
  * The glass panel every piece of player chrome sits in.
@@ -204,6 +216,7 @@ fun PlayerIconButton(
     modifier: Modifier = Modifier,
     contentDescription: String = label,
     selected: Boolean = false,
+    /** Play/pause: sized up a notch. It no longer carries a colour — the focus fill does. */
     accent: Boolean = false,
     enabled: Boolean = true,
     size: Dp = PlayerChromeTokens.iconButton(),
@@ -237,15 +250,18 @@ fun PlayerIconButton(
         label = "playerIconLabelOffset"
     )
 
+    // Bare glyph at rest, solid light fill when focused. A row of filled chips reads as
+    // a toolbar in an app; a row of bare glyphs with one lit up reads as an appliance
+    // OSD, and it is far quieter over moving picture. `selected` keeps a faint fill so
+    // an active toggle (muted, recording) is still legible without focus.
     val container = when {
-        accent -> AppColors.Brand.copy(alpha = 0.88f)
-        selected -> AppColors.BrandMuted
-        else -> AppColors.GlassLight
+        selected -> AppColors.GlassMedium
+        else -> Color.Transparent
     }
-    val focusedContainer = AppColors.Brand
+    val focusedContainer = AppColors.Focus
     val iconTint = when {
-        isFocused || accent -> AppColors.Canvas
-        else -> restingTint ?: AppColors.TextPrimary
+        isFocused -> AppColors.Canvas
+        else -> restingTint ?: AppColors.TextPrimary.copy(alpha = 0.82f)
     }
 
     val latestOnHoldStart by rememberUpdatedState(onHoldStart)
@@ -275,7 +291,6 @@ fun PlayerIconButton(
                     scaleX = scale
                     scaleY = scale
                 }
-                .focusGlow(isFocused)
                 .size(size)
                 .then(
                     if (supportsHold) {
@@ -386,7 +401,7 @@ fun PlayerScrubBar(
     interactiveSeek: Boolean = false,
     onSeekFraction: (Float) -> Unit = {},
     accentColor: Color = AppColors.Brand,
-    trackHeight: Dp = 5.dp
+    trackHeight: Dp = 3.dp
 ) {
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
@@ -460,7 +475,7 @@ fun PlayerScrubBar(
                     )
                     drawCircle(
                         color = AppColors.Focus,
-                        radius = trackPx * 1.15f,
+                        radius = trackPx * 1.6f,
                         center = Offset(filled, centerY)
                     )
                 }

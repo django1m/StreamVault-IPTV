@@ -257,6 +257,9 @@ internal fun PlayerLiveInfo(
         ChannelLogoBadge(
             channelName = currentChannelName.orEmpty(),
             logoUrl = channelLogoUrl,
+            // Transparent: the logo sits on the scrim like the text does. A filled tile
+            // around it was one more rectangle competing with the picture.
+            backgroundColor = Color.Transparent,
             modifier = Modifier.size(PlayerChromeTokens.channelBadge())
         )
         Column(

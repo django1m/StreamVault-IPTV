@@ -334,7 +334,7 @@ private fun PlayerTopBar(
             }
 
             Row(
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 val currentTime = remember(clockLabelOverride) {
@@ -355,15 +355,19 @@ private fun PlayerTopBar(
                 Text(
                     text = currentTime.value,
                     style = MaterialTheme.typography.titleMedium,
-                    color = AppColors.TextSecondary,
-                    modifier = Modifier.padding(top = 12.dp)
+                    color = AppColors.TextSecondary
                 )
 
-                PlayerIconButton(
-                    icon = Icons.Default.Close,
-                    label = stringResource(R.string.player_close),
-                    onClick = onClose
-                )
+                // The close button only exists where there is no BACK key. On a remote it
+                // is a focusable target that duplicates a button the viewer already has
+                // under their thumb, and it drags the eye to the corner of the picture.
+                if (LocalFormFactor.current.isTouch) {
+                    PlayerIconButton(
+                        icon = Icons.Default.Close,
+                        label = stringResource(R.string.player_close),
+                        onClick = onClose
+                    )
+                }
             }
         }
     }
@@ -432,23 +436,16 @@ private fun PlayerBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .playerChromeScrim(fromTop = false)
-            .padding(horizontal = 32.dp, vertical = 16.dp)
+            .padding(start = 48.dp, end = 48.dp, top = 110.dp, bottom = 22.dp)
     ) {
-        PlayerGlassBar(
-            modifier = if (isVod) {
-                Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.Center)
-            } else {
-                Modifier.fillMaxWidth()
-            },
-            shape = RoundedCornerShape(if (isVod) 26.dp else 28.dp),
-            contentPadding = 0.dp
-        ) {
+        // No card. The bar is the scrim plus its content — a floating panel with a border
+        // is a dialog, and this is an OSD you glance past. The three-stop scrim above
+        // carries the legibility a card used to.
+        Box(modifier = Modifier.fillMaxWidth().align(Alignment.Center)) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 22.dp, vertical = 14.dp)
+                    .padding(horizontal = 8.dp)
             ) {
                 if (contentType == "LIVE") {
                     PlayerLiveInfo(
