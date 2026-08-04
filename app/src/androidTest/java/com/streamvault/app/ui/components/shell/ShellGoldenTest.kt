@@ -17,6 +17,7 @@ import com.streamvault.domain.model.Channel
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.streamvault.app.ui.components.shell.AppNavigationChrome
 
 @RunWith(AndroidJUnit4::class)
 class ShellGoldenTest {
@@ -86,7 +87,11 @@ class ShellGoldenTest {
                         currentRoute = Routes.EPG,
                         onNavigate = {},
                         title = "Guide",
-                        subtitle = "RTL shell validation for premium TV surfaces."
+                        subtitle = "RTL shell validation for premium TV surfaces.",
+                        // Was the default (Rail), which no screen uses — all nine pass
+                        // TopBar explicitly. This golden was therefore validating dead
+                        // chrome while the real one had no coverage at all.
+                        navigationChrome = AppNavigationChrome.TopBar
                     ) {
                         Box(
                             modifier = Modifier
