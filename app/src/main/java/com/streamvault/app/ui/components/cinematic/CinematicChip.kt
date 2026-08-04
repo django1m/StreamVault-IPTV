@@ -29,6 +29,8 @@ import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppHeroStyles
 import com.streamvault.app.ui.design.glassSurface
 import com.streamvault.app.ui.interaction.TvClickableSurface
+import androidx.tv.material3.LocalContentColor
+import com.streamvault.app.ui.design.OsdFocus
 
 enum class CinematicChipStyle { Solid, Glass, Outlined }
 
@@ -72,11 +74,6 @@ fun CinematicChip(
     TvClickableSurface(
         onClick = onClick,
         modifier = modifier
-            .focusGlow(
-                isFocused = focused && !selected,
-                color = AppColors.GlowBrand
-            )
-            .graphicsLayer { scaleX = scale; scaleY = scale }
             .let { base ->
                 when (style) {
                     CinematicChipStyle.Solid -> base
@@ -89,21 +86,15 @@ fun CinematicChip(
                 }
             },
         shape = ClickableSurfaceDefaults.shape(shape = shape),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = when {
-                selected -> AppColors.Brand
-                style == CinematicChipStyle.Solid -> AppColors.SurfaceEmphasis
-                else -> Color.Transparent
-            },
-            focusedContainerColor = when {
-                selected -> AppColors.BrandStrong
-                else -> AppColors.SurfaceEmphasis
-            },
-            contentColor = textColor,
-            focusedContentColor = textColor
+        // Point 7 of the language: a chip is a translucent pill at rest and a solid light
+        // slab when focused. `selected` no longer fills — it tints the label, so a selected
+        // chip and a focused one can never be mistaken for each other.
+        colors = OsdFocus.slabColors(
+            active = selected,
+            restingContent = AppColors.TextSecondary
         ),
-        border = ClickableSurfaceDefaults.border(),
-        scale = ClickableSurfaceDefaults.scale(scale = 1f, focusedScale = 1f),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale(),
         interactionSource = interactionSource
     ) {
         Row(
@@ -115,7 +106,7 @@ fun CinematicChip(
             Text(
                 text = label,
                 style = hero.heroMeta,
-                color = textColor
+                color = LocalContentColor.current
             )
             if (trailing != null) trailing()
         }

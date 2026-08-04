@@ -62,7 +62,6 @@ fun SpringButton(
     TvButton(
         onClick = onClick,
         modifier = modifier
-            .focusGlow(isFocused = focused, color = haloColor)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale

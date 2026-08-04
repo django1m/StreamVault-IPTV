@@ -70,7 +70,6 @@ import com.streamvault.app.navigation.Routes
 import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.AppMotion
 import com.streamvault.app.ui.design.FocusSpec
-import com.streamvault.app.ui.components.cinematic.focusGlow
 import com.streamvault.app.ui.design.GlassLevel
 import com.streamvault.app.ui.design.LocalAppShapes
 import com.streamvault.app.ui.design.LocalAppSpacing
@@ -810,7 +809,6 @@ private fun RailButton(
                 onClick = onClick
             )
             .fillMaxWidth()
-            .focusGlow(isFocused = isFocused, color = AppColors.GlowBrand)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale

@@ -15,6 +15,26 @@ object AppColors {
     val BrandStrong = Color(0xFF8BBCFF)
     val Focus = Color(0xFFF4F8FF)
 
+    // ── Langage OSD ───────────────────────────────────────────────────────────
+    // Focus above *is* the slab: rows and menu items fill with it and flip their
+    // content to FocusOnFill. Without that inverse token every conversion to a
+    // slab silently produces white on white, and nothing in the type system says so.
+    val FocusOnFill = Canvas
+    val FocusOnFillDim = Canvas.copy(alpha = 0.62f)
+
+    /**
+     * The ACTIVE item — the channel currently playing, the selected setting. It is a
+     * text colour, never a background: a filled row already means "focused here", and
+     * using a fill for both makes the two states indistinguishable at 3 metres.
+     */
+    val ActiveText = Brand
+
+    /** Resting glyph: bright enough to read, dim enough that the focused one wins. */
+    val IconRest = Color(0xD1F5F7FB)
+
+    /** Ambient base. Deep teal rather than another navy so the gradient actually reads. */
+    val CanvasTeal = Color(0xFF06181C)
+
     val TextPrimary = Color(0xFFF5F7FB)
     val TextSecondary = Color(0xFFBBC6D8)
     val TextTertiary = Color(0xFF7F8DA5)
