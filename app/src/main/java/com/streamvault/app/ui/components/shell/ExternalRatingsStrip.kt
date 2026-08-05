@@ -49,37 +49,40 @@ fun ExternalRatingsStrip(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Brand colours off. Four saturated chips in a row on a detail page is the
+            // loudest thing on screen for information that is secondary; the wordmark
+            // carries the identity on its own. Flip BRAND_TOKENS to get them back.
             RatingBadgeCard(
                 token = "IMDb",
                 title = stringResource(R.string.vod_rating_imdb),
                 value = ratings.imdb,
                 isLoading = isLoading,
-                tokenBackground = Color(0xFFF5C449),
-                tokenContent = Color(0xFF111111)
+                tokenBackground = if (BRAND_TOKENS) Color(0xFFF5C449) else Color.Transparent,
+                tokenContent = if (BRAND_TOKENS) Color(0xFF111111) else AppColors.TextSecondary
             )
             RatingBadgeCard(
                 token = "RT",
                 title = stringResource(R.string.vod_rating_rotten_tomatoes),
                 value = ratings.rottenTomatoes,
                 isLoading = isLoading,
-                tokenBackground = Color(0xFFE24E41),
-                tokenContent = Color.White
+                tokenBackground = if (BRAND_TOKENS) Color(0xFFE24E41) else Color.Transparent,
+                tokenContent = if (BRAND_TOKENS) Color.White else AppColors.TextSecondary
             )
             RatingBadgeCard(
                 token = "MC",
                 title = stringResource(R.string.vod_rating_metacritic),
                 value = ratings.metacritic,
                 isLoading = isLoading,
-                tokenBackground = Color(0xFFD6E04B),
-                tokenContent = Color(0xFF111111)
+                tokenBackground = if (BRAND_TOKENS) Color(0xFFD6E04B) else Color.Transparent,
+                tokenContent = if (BRAND_TOKENS) Color(0xFF111111) else AppColors.TextSecondary
             )
             RatingBadgeCard(
                 token = "TMDb",
                 title = stringResource(R.string.vod_rating_tmdb),
                 value = ratings.tmdb,
                 isLoading = isLoading,
-                tokenBackground = Color(0xFF17C7A2),
-                tokenContent = Color(0xFF072720)
+                tokenBackground = if (BRAND_TOKENS) Color(0xFF17C7A2) else Color.Transparent,
+                tokenContent = if (BRAND_TOKENS) Color(0xFF072720) else AppColors.TextSecondary
             )
         }
     }
@@ -145,3 +148,10 @@ private fun RatingBadgeCard(
         )
     }
 }
+
+/**
+ * Set to true to restore the platforms' own brand colours on the rating chips.
+ * Kept as a one-line switch rather than deleted: it is the sort of decision a product
+ * owner reverses.
+ */
+private const val BRAND_TOKENS = false

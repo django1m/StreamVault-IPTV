@@ -56,6 +56,7 @@ import com.streamvault.domain.model.Movie
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.design.osdScrim
 
 @Composable
 fun MovieDetailScreen(
@@ -143,25 +144,20 @@ private fun MovieDetailContent(
         }
         val posterWidth = if (compactLayout) 148.dp else 240.dp
 
+        // Full-bleed artwork: the backdrop IS the screen background, not a banner sitting
+        // on top of one. The weighted scrim (design/OsdScrim.kt) is the same ramp the
+        // player uses, so text sits on a floor whatever the image does.
         AsyncImage(
             model = rememberCrossfadeImageModel(movie.backdropUrl ?: movie.posterUrl),
             contentDescription = movie.name,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .align(Alignment.TopCenter),
+            modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
 
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, AppColors.HeroTop, AppColors.HeroBottom)
-                    )
-                )
+                .fillMaxSize()
+                .osdScrim(fromTop = false)
         )
 
         LazyColumn(
@@ -267,16 +263,19 @@ private fun MovieDetailHeroText(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusPill(label = stringResource(R.string.nav_movies), containerColor = AppColors.BrandMuted)
+            StatusPill(label = stringResource(R.string.nav_movies), containerColor = Color.Transparent, contentColor = AppColors.TextSecondary)
             movie.rating.takeIf { it > 0f }?.let {
+                // The only badge that keeps a fill on a detail page — a rating is the one
+                // number the eye looks for. Green rather than amber-on-black: it reads as
+                // a quality mark, not as a warning.
                 StatusPill(
                     label = formatVodRatingLabel(it),
-                    containerColor = AppColors.Warning,
-                    contentColor = Color.Black
+                    containerColor = AppColors.Success,
+                    contentColor = AppColors.FocusOnFill
                 )
             }
             movie.year?.takeIf { it.isNotBlank() }?.let {
-                StatusPill(label = it, containerColor = AppColors.SurfaceEmphasis)
+                StatusPill(label = it, containerColor = Color.Transparent, contentColor = AppColors.TextSecondary)
             }
         }
 
@@ -308,8 +307,12 @@ private fun MovieDetailHeroText(
                 onClick = onPlay,
                 modifier = Modifier.focusRequester(playButtonFocusRequester),
                 colors = ButtonDefaults.colors(
-                    containerColor = AppColors.Brand,
-                    contentColor = Color.White
+                    // Transparent at rest with a hairline; the slab arrives on focus. A
+                    // saturated fill at rest competes with the artwork and with focus itself.
+                    containerColor = Color.Transparent,
+                    contentColor = AppColors.TextPrimary,
+                    focusedContainerColor = AppColors.Focus,
+                    focusedContentColor = AppColors.FocusOnFill
                 )
             ) {
                 Text(

@@ -43,6 +43,8 @@ import androidx.compose.ui.res.stringResource
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import androidx.compose.ui.graphics.Color
+import com.streamvault.app.ui.design.OsdFocus
 
 data class VodClassicCategoryOption(
     val key: String,
@@ -192,17 +194,12 @@ private fun VodClassicCategoryRow(
             modifier = Modifier.weight(1f),
             shape = ClickableSurfaceDefaults.shape(shape),
             colors = ClickableSurfaceDefaults.colors(
-                containerColor = if (category.isSelected) AppColors.Brand.copy(alpha = 0.18f) else AppColors.SurfaceElevated.copy(alpha = 0.6f),
-                focusedContainerColor = AppColors.SurfaceEmphasis,
-                contentColor = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
-                focusedContentColor = AppColors.TextPrimary
+                containerColor = Color.Transparent,
+                focusedContainerColor = AppColors.Focus,
+                contentColor = if (category.isSelected) AppColors.ActiveText else AppColors.TextPrimary,
+                focusedContentColor = AppColors.FocusOnFill
             ),
-            border = ClickableSurfaceDefaults.border(
-                focusedBorder = Border(
-                    border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
-                    shape = shape
-                )
-            ),
+            border = OsdFocus.noBorder(),
             scale = ClickableSurfaceDefaults.scale(focusedScale = FocusSpec.FocusedScale)
         ) {
             Row(
@@ -315,18 +312,13 @@ private fun VodClassicHeaderActionButton(
         modifier = modifier,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(18.dp)),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = AppColors.SurfaceElevated,
-            focusedContainerColor = AppColors.SurfaceEmphasis,
-            contentColor = AppColors.TextPrimary,
-            focusedContentColor = AppColors.TextPrimary
+            containerColor = Color.Transparent,
+            focusedContainerColor = AppColors.Focus,
+            focusedContentColor = AppColors.FocusOnFill,
+            contentColor = AppColors.TextPrimary
         ),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(FocusSpec.BorderWidth, AppColors.Focus),
-                shape = RoundedCornerShape(18.dp)
-            )
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale()
     ) {
         Text(
             text = action.label,

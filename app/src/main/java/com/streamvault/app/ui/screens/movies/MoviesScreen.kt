@@ -47,9 +47,7 @@ import com.streamvault.app.ui.components.ContinueWatchingRow
 import com.streamvault.app.ui.components.MovieCard
 import com.streamvault.app.ui.components.SelectionChip
 import com.streamvault.app.ui.components.SelectionChipRow
-import com.streamvault.app.ui.components.SavedCategoryContextCard
 import com.streamvault.app.ui.components.SavedCategoryShortcut
-import com.streamvault.app.ui.components.SavedCategoryShortcutsRow
 import com.streamvault.app.ui.theme.*
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.LibraryFilterType
@@ -93,6 +91,7 @@ import com.streamvault.app.ui.screens.vod.HandleVodUserMessage
 import com.streamvault.app.ui.screens.vod.ProtectedVodPinDialog
 import com.streamvault.app.ui.screens.vod.VodBrowseDefaults
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppColors
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -196,7 +195,7 @@ fun MoviesScreen(
                     CircularProgressIndicator(color = Color.White)
                     Text(
                         text = stringResource(R.string.movies_loading),
-                        color = Color.White.copy(alpha = 0.7f)
+                        color = AppColors.TextSecondary
                     )
                 }
             }
@@ -688,7 +687,7 @@ private fun MoviesVodContent(
                             .padding(vertical = 24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(32.dp))
+                        CircularProgressIndicator(color = AppColors.TextPrimary, modifier = Modifier.size(32.dp))
                     }
                 }
             }
@@ -842,7 +841,7 @@ private fun MoviesVodContent(
                         CircularProgressIndicator(color = Color.White)
                         Text(
                             text = stringResource(R.string.movies_loading),
-                            color = Color.White.copy(alpha = 0.7f)
+                            color = AppColors.TextSecondary
                         )
                     }
                 }
@@ -884,7 +883,7 @@ private fun MoviesVodContent(
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(
-                            color = Color.White.copy(alpha = 0.75f),
+                            color = AppColors.TextSecondary,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -1217,7 +1216,7 @@ private fun MoviesVodClassicContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 CircularProgressIndicator(
-                                    color = Color.White.copy(alpha = 0.75f),
+                                    color = AppColors.TextSecondary,
                                     modifier = Modifier.size(26.dp)
                                 )
                             }

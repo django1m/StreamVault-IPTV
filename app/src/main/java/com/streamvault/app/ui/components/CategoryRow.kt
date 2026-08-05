@@ -27,6 +27,7 @@ import com.streamvault.app.ui.theme.Primary
 import com.streamvault.app.ui.theme.SurfaceElevated
 import com.streamvault.app.ui.theme.SurfaceHighlight
 import com.streamvault.app.ui.interaction.mouseClickable
+import com.streamvault.app.ui.design.OsdFocus
 
 // ── Netflix-style horizontal category row ─────────────────────────
 
@@ -65,19 +66,10 @@ fun <T : Any> CategoryRow(
                             focusRequester = seeAllFocusRequester,
                             onClick = onSeeAll
                         ),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = SurfaceElevated,
-                        focusedContainerColor = SurfaceHighlight,
-                        contentColor = Primary,
-                        focusedContentColor = OnSurface
-                    ),
+                    colors = OsdFocus.slabColors(restingContent = Primary),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
-                    border = ClickableSurfaceDefaults.border(
-                        focusedBorder = Border(
-                            border = BorderStroke(2.dp, FocusBorder),
-                            shape = RoundedCornerShape(999.dp)
-                        )
-                    )
+                    border = OsdFocus.noBorder(),
+                    scale = OsdFocus.noScale()
                 ) {
                     Text(
                         text = stringResource(R.string.category_see_all),

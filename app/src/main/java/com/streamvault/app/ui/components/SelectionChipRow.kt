@@ -34,6 +34,9 @@ import com.streamvault.app.ui.theme.SurfaceElevated
 import com.streamvault.app.ui.theme.SurfaceHighlight
 import com.streamvault.app.ui.interaction.mouseClickable
 import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
+import androidx.compose.ui.graphics.Color
+import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.OsdFocus
 
 data class SelectionChip(
     val key: String,
@@ -120,18 +123,15 @@ fun ChipRowSection(
                             wasFocused = it.isFocused
                         },
                     colors = ClickableSurfaceDefaults.colors(
-                        containerColor = if (isSelected) Primary.copy(alpha = 0.18f) else SurfaceElevated,
-                        focusedContainerColor = if (isSelected && focusedContainerBoostWhenSelected) Primary.copy(alpha = 0.28f) else SurfaceHighlight,
-                        contentColor = if (isSelected) Primary else OnSurface,
-                        focusedContentColor = OnSurface
+                        // Selected tints the label; focus fills. Two fills for two states
+                        // read the same from three metres.
+                        containerColor = Color.Transparent,
+                        focusedContainerColor = AppColors.Focus,
+                        contentColor = if (isSelected) AppColors.ActiveText else AppColors.TextSecondary,
+                        focusedContentColor = AppColors.FocusOnFill
                     ),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
-                    border = ClickableSurfaceDefaults.border(
-                        focusedBorder = Border(
-                            border = BorderStroke(2.dp, FocusBorder),
-                            shape = RoundedCornerShape(999.dp)
-                        )
-                    ),
+                    border = OsdFocus.noBorder(),
                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                 ) {
                     Column(

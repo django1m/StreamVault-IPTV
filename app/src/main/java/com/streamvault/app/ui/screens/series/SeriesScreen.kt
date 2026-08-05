@@ -45,9 +45,7 @@ import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.navigation.Routes
 import com.streamvault.app.ui.components.CategoryRow
 import com.streamvault.app.ui.components.ContinueWatchingRow
-import com.streamvault.app.ui.components.SavedCategoryContextCard
 import com.streamvault.app.ui.components.SavedCategoryShortcut
-import com.streamvault.app.ui.components.SavedCategoryShortcutsRow
 import com.streamvault.app.ui.components.SelectionChip
 import com.streamvault.app.ui.components.SelectionChipRow
 import com.streamvault.app.ui.components.SeriesCard
@@ -92,6 +90,7 @@ import com.streamvault.app.ui.screens.vod.HandleVodUserMessage
 import com.streamvault.app.ui.screens.vod.ProtectedVodPinDialog
 import com.streamvault.app.ui.screens.vod.VodBrowseDefaults
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppColors
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -195,7 +194,7 @@ fun SeriesScreen(
                     CircularProgressIndicator(color = Color.White)
                     Text(
                         text = stringResource(R.string.series_loading),
-                        color = Color.White.copy(alpha = 0.7f)
+                        color = AppColors.TextSecondary
                     )
                 }
             }
@@ -672,7 +671,7 @@ private fun SeriesVodContent(
                             .padding(vertical = 24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(32.dp))
+                        CircularProgressIndicator(color = AppColors.TextPrimary, modifier = Modifier.size(32.dp))
                     }
                 }
             }
@@ -826,7 +825,7 @@ private fun SeriesVodContent(
                         CircularProgressIndicator(color = Color.White)
                         Text(
                             text = stringResource(R.string.series_loading),
-                            color = Color.White.copy(alpha = 0.7f)
+                            color = AppColors.TextSecondary
                         )
                     }
                 }
@@ -868,7 +867,7 @@ private fun SeriesVodContent(
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(
-                            color = Color.White.copy(alpha = 0.75f),
+                            color = AppColors.TextSecondary,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -1201,7 +1200,7 @@ private fun SeriesVodClassicContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 CircularProgressIndicator(
-                                    color = Color.White.copy(alpha = 0.75f),
+                                    color = AppColors.TextSecondary,
                                     modifier = Modifier.size(26.dp)
                                 )
                             }

@@ -61,6 +61,7 @@ import com.streamvault.domain.model.Series
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.design.osdScrim
 
 @Composable
 fun SeriesDetailScreen(
@@ -140,29 +141,19 @@ private fun SeriesDetailContent(
         }
         val posterWidth = if (compactLayout) 132.dp else 220.dp
 
+        // Full-bleed artwork: the backdrop IS the screen background, not a banner sitting
+        // on top of one. Same weighted scrim as the player, so text always has a floor.
         AsyncImage(
             model = rememberCrossfadeImageModel(series.backdropUrl ?: series.posterUrl),
             contentDescription = series.name,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .align(Alignment.TopCenter),
+            modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
 
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            AppColors.HeroTop,
-                            AppColors.HeroBottom
-                        )
-                    )
-                )
+                .fillMaxSize()
+                .osdScrim(fromTop = false)
         )
 
         LazyColumn(
@@ -208,7 +199,7 @@ private fun SeriesDetailContent(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                StatusPill(label = stringResource(R.string.nav_series), containerColor = AppColors.BrandMuted)
+                                StatusPill(label = stringResource(R.string.nav_series), containerColor = Color.Transparent, contentColor = AppColors.TextSecondary)
                                 series.rating.takeIf { it > 0f }?.let {
                                     StatusPill(
                                         label = formatVodRatingLabel(it),
@@ -275,7 +266,7 @@ private fun SeriesDetailContent(
                             verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                StatusPill(label = stringResource(R.string.nav_series), containerColor = AppColors.BrandMuted)
+                                StatusPill(label = stringResource(R.string.nav_series), containerColor = Color.Transparent, contentColor = AppColors.TextSecondary)
                                 series.rating.takeIf { it > 0f }?.let {
                                     StatusPill(
                                         label = formatVodRatingLabel(it),
