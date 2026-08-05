@@ -72,14 +72,15 @@ fun StreamVaultTheme(content: @Composable () -> Unit) {
         // colors), so providing the brand scheme there would visibly restyle the
         // shipping TV product — arguably a fix, but not something this work
         // should decide. Flip the condition to `true` to unify TV as well.
-        if (formFactor.isTouch) {
-            M3MaterialTheme(
-                colorScheme = Material3DarkColorScheme,
-                typography = m3Typography,
-                content = tvThemedContent
-            )
-        } else {
-            tvThemedContent()
-        }
+        // Provided on TV too, not just on touch. Compose Material 3 components that the
+        // TV library has no equivalent for — the 12 Switch, the 3 AlertDialog, every
+        // progress indicator — otherwise fall back to M3's default purple on a box.
+        // Material3DarkColorScheme below is already built from AppColors; it was simply
+        // never handed to the TV branch.
+        M3MaterialTheme(
+            colorScheme = Material3DarkColorScheme,
+            typography = m3Typography,
+            content = tvThemedContent
+        )
     }
 }
