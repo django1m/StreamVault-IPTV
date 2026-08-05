@@ -68,6 +68,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
+import com.streamvault.app.ui.design.OsdFocus
+import com.streamvault.app.ui.design.AppColors
+import androidx.tv.material3.LocalContentColor
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
 
 @Composable
 internal fun GuideMessageState(
@@ -661,23 +667,28 @@ fun ProgramItem(
             .width(itemWidth)
             .fillMaxHeight()
             .clip(RoundedCornerShape(8.dp))
+            // A left hairline per cell, laid in the SAME edit that removes the fill.
+            // The SurfaceElevated background was what drew the boundary between adjacent
+            // programmes; take it away on its own and the grid becomes a soup of text.
+            // This is how MOL3 separates programmes, and it costs one drawRect.
+            .drawBehind {
+                drawRect(
+                    color = AppColors.Divider,
+                    topLeft = Offset.Zero,
+                    size = Size(1.dp.toPx(), size.height)
+                )
+            }
             .onFocusChanged {
                 if (it.isFocused && !isFocused) {
                     onFocused()
                 }
                 isFocused = it.isFocused
             },
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (isCurrent) Primary.copy(alpha = 0.2f) else SurfaceElevated,
-            focusedContainerColor = SurfaceHighlight
-        ),
+        colors = OsdFocus.slabColors(active = isCurrent, restingContent = OnSurface),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(2.dp, FocusBorder),
-                shape = RoundedCornerShape(8.dp)
-            )
-        )
+        border = OsdFocus.noBorder(),
+        // Dense grid: a spring per cell multiplies the per-frame cost (AppMotion.kt:34-36).
+        scale = OsdFocus.noScale()
     ) {
         Column(
             modifier = Modifier
@@ -688,7 +699,7 @@ fun ProgramItem(
             Text(
                 text = program.title,
                 style = titleStyle,
-                color = if (isFocused) TextPrimary else if (isCurrent) Primary else OnSurface,
+                color = LocalContentColor.current,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -696,7 +707,7 @@ fun ProgramItem(
                 Text(
                     text = "$startStr - $endStr",
                     style = timeStyle,
-                    color = if (isFocused) TextSecondary else OnSurfaceDim,
+                    color = if (isFocused) AppColors.FocusOnFillDim else OnSurfaceDim,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

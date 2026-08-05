@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.Alignment
 import com.streamvault.domain.model.Category
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppColors
 
 @Composable
 fun CategoryOptionsDialog(
@@ -181,7 +182,7 @@ fun CategoryOptionsDialog(
                     onClick = safeDismiss,
                     modifier = Modifier.mouseClickable(onClick = safeDismiss),
                     colors = ButtonDefaults.colors(
-                        containerColor = Color.White.copy(alpha = 0.08f),
+                        containerColor = Color.Transparent,
                         contentColor = OnSurface
                     )
                 ) {

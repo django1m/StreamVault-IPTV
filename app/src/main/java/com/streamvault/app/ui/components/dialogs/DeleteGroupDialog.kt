@@ -36,6 +36,7 @@ import com.streamvault.app.ui.theme.OnSurface
 import com.streamvault.app.ui.theme.OnSurfaceDim
 import com.streamvault.app.ui.theme.SurfaceElevated
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppColors
 
 @Composable
 fun DeleteGroupDialog(
@@ -93,7 +94,7 @@ fun DeleteGroupDialog(
                         onClick = safeDismiss,
                         modifier = Modifier.mouseClickable(onClick = safeDismiss),
                         colors = ButtonDefaults.colors(
-                            containerColor = Color.White.copy(alpha = 0.08f),
+                            containerColor = Color.Transparent,
                             contentColor = OnSurface
                         )
                     ) {

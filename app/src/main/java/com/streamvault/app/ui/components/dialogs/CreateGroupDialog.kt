@@ -44,6 +44,7 @@ import com.streamvault.app.ui.theme.OnSurface
 import com.streamvault.app.ui.theme.OnSurfaceDim
 import com.streamvault.app.ui.theme.Primary
 import com.streamvault.app.ui.theme.SurfaceElevated
+import com.streamvault.app.ui.design.AppColors
 
 @Composable
 fun CreateGroupDialog(
@@ -150,7 +151,7 @@ fun CreateGroupDialog(
                         onClick = cancelHandler,
                         modifier = Modifier.mouseClickable(onClick = cancelHandler),
                         colors = ButtonDefaults.colors(
-                            containerColor = Color.White.copy(alpha = 0.08f),
+                            containerColor = Color.Transparent,
                             contentColor = OnSurface
                         )
                     ) {

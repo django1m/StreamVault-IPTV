@@ -265,7 +265,9 @@ fun FullEpgScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
+                // No opaque paint here: AppScreenScaffold has just installed the ambient
+            // backdrop and this was covering it, which is why the guide looked flatter
+            // than every other screen.
         ) {
             when {
                 uiState.isInitialLoading && uiState.channels.isEmpty() -> {

@@ -32,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import com.streamvault.app.R
 import com.streamvault.app.ui.design.FocusSpec
 import androidx.tv.material3.Border
+import com.streamvault.app.ui.design.AppColors
 
 /**
  * PIN entry dialog with a D-pad-navigable numeric keypad — no hidden text field.
@@ -149,9 +150,9 @@ fun PinDialog(
                                                     .then(if (isFirst) Modifier.focusRequester(firstKeyFocusRequester) else Modifier)
                                                     .mouseClickable(onClick = { handleKeyPress(key) }),
                                                 colors = ButtonDefaults.colors(
-                                                    containerColor = Color.White.copy(alpha = 0.08f),
+                                                    containerColor = Color.Transparent,
                                                     contentColor = Color.White,
-                                                    focusedContainerColor = Primary.copy(alpha = 0.35f),
+                                                    focusedContainerColor = AppColors.Focus,
                                                     focusedContentColor = Color.White
                                                 )
                                             ) {
@@ -174,7 +175,7 @@ fun PinDialog(
                         colors = ButtonDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White.copy(alpha = 0.7f),
-                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            focusedContainerColor = AppColors.Focus,
                             focusedContentColor = Color.White
                         ),
                         border = ButtonDefaults.border(

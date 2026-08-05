@@ -109,6 +109,7 @@ import com.streamvault.app.ui.interaction.mouseClickable
 import java.text.DateFormat
 import com.streamvault.app.ui.design.FocusSpec
 import kotlinx.coroutines.delay
+import com.streamvault.app.ui.design.AppColors
 
 
 @Composable
@@ -330,15 +331,13 @@ fun SettingsScreen(
                         modifier = Modifier
                             .then(if (isPhoneSettings) Modifier.fillMaxWidth() else Modifier.width(236.dp))
                             .fillMaxHeight()
-                            .background(Color.Black.copy(alpha = 0.25f)),
+                            ,
                         contentPadding = PaddingValues(top = 76.dp, bottom = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_providers),
-                                "P",
-                                Primary,
                                 selectedCategory == 0,
                                 modifier = if (selectedCategory == 0) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 0; settingsDrilledIn = true }
@@ -346,8 +345,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_playback),
-                                ">",
-                                Color(0xFF9E8FFF),
                                 selectedCategory == 1,
                                 modifier = if (selectedCategory == 1) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 1; settingsDrilledIn = true }
@@ -355,8 +352,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_browsing),
-                                "#",
-                                Color(0xFF26A69A),
                                 selectedCategory == 2,
                                 modifier = if (selectedCategory == 2) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 2; settingsDrilledIn = true }
@@ -364,8 +359,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_privacy),
-                                "L",
-                                Color(0xFFFFB74D),
                                 selectedCategory == 3,
                                 modifier = if (selectedCategory == 3) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 3; settingsDrilledIn = true }
@@ -373,8 +366,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_recording_title),
-                                "R",
-                                Color(0xFFEF5350),
                                 selectedCategory == 4,
                                 modifier = if (selectedCategory == 4) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 4; settingsDrilledIn = true }
@@ -382,8 +373,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_backup_restore),
-                                "B",
-                                Color(0xFF42A5F5),
                                 selectedCategory == 5,
                                 modifier = if (selectedCategory == 5) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 5; settingsDrilledIn = true }
@@ -391,8 +380,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 "EPG Sources",
-                                "E",
-                                Color(0xFF66BB6A),
                                 selectedCategory == 6,
                                 modifier = if (selectedCategory == 6) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 6; settingsDrilledIn = true }
@@ -400,8 +387,6 @@ fun SettingsScreen(
                         item {
                             SettingsNavItem(
                                 stringResource(R.string.settings_about),
-                                "i",
-                                Color(0xFF78909C),
                                 selectedCategory == 7,
                                 modifier = if (selectedCategory == 7) Modifier.focusRequester(settingsNavFocusRequester) else Modifier
                             ) { selectedCategory = 7; settingsDrilledIn = true }
@@ -415,7 +400,7 @@ fun SettingsScreen(
                         Modifier
                             .width(1.dp)
                             .fillMaxHeight()
-                            .background(Color.White.copy(alpha = 0.07f))
+                            .background(AppColors.Divider)
                     )
 
                     // ג”€ג”€ Right content pane ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
@@ -489,7 +474,7 @@ fun SettingsScreen(
                                         Switch(checked = uiState.preventStandbyDuringPlayback, onCheckedChange = { viewModel.setPreventStandbyDuringPlayback(it) })
                                     }
                                 }
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 TvClickableSurface(
                                     onClick = { viewModel.setPlayerMediaSessionEnabled(!uiState.playerMediaSessionEnabled) },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
@@ -517,7 +502,7 @@ fun SettingsScreen(
                                     value = decoderModeLabel,
                                     onClick = { showDecoderModeDialog = true }
                                 )
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 ClickableSettingsRow(
                                     label = stringResource(R.string.settings_default_playback_speed),
                                     value = playbackSpeedLabel,
@@ -577,7 +562,7 @@ fun SettingsScreen(
                                     value = subtitleBackgroundLabel,
                                     onClick = { showSubtitleBackgroundDialog = true }
                                 )
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 ClickableSettingsRow(
                                     label = stringResource(R.string.settings_wifi_quality_cap),
                                     value = wifiQualityLabel,
@@ -658,7 +643,7 @@ fun SettingsScreen(
                                     value = stringResource(uiState.vodViewMode.labelResId()),
                                     onClick = { showVodViewModeDialog = true }
                                 )
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 ClickableSettingsRow(
                                     label = stringResource(R.string.settings_category_sort_live),
                                     value = formatCategorySortModeLabel(uiState.categorySortModes[ContentType.LIVE] ?: CategorySortMode.DEFAULT, context),
@@ -674,7 +659,7 @@ fun SettingsScreen(
                                     value = formatCategorySortModeLabel(uiState.categorySortModes[ContentType.SERIES] ?: CategorySortMode.DEFAULT, context),
                                     onClick = { categorySortDialogType = ContentType.SERIES.name }
                                 )
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 TvClickableSurface(
                                     onClick = { showLanguageDialog = true },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
@@ -724,7 +709,7 @@ fun SettingsScreen(
                                 )
                             }
                             item {
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+                                HorizontalDivider(color = AppColors.Divider, modifier = Modifier.padding(vertical = 4.dp))
                                 TvClickableSurface(
                                     onClick = { viewModel.toggleIncognitoMode() },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),

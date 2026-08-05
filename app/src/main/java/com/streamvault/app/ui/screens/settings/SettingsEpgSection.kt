@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.theme.OnSurfaceDim
 import com.streamvault.app.ui.theme.Primary
+import com.streamvault.app.ui.design.AppColors
 
 internal fun LazyListScope.epgSourcesSection(
     uiState: SettingsUiState,
@@ -45,7 +46,7 @@ internal fun LazyListScope.epgSourcesSection(
         Text(
             text = "EPG Sources",
             style = MaterialTheme.typography.titleMedium,
-            color = Color(0xFF66BB6A),
+            color = AppColors.Success,
             modifier = Modifier.padding(bottom = 8.dp)
         )
         Text(
@@ -83,7 +84,7 @@ internal fun LazyListScope.epgSourcesSection(
                             Text(source.name, style = MaterialTheme.typography.titleSmall, color = Color.White)
                             Text(displayableEpgUrl(source.url), style = MaterialTheme.typography.bodySmall, color = OnSurfaceDim, maxLines = 1)
                             if (source.lastError != null) {
-                                Text("Error: ${source.lastError}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFEF5350))
+                                Text("Error: ${source.lastError}", style = MaterialTheme.typography.bodySmall, color = AppColors.Live)
                             }
                             if (source.lastSuccessAt != null) {
                                 val ago = (System.currentTimeMillis() - source.lastSuccessAt) / 60000
@@ -95,8 +96,8 @@ internal fun LazyListScope.epgSourcesSection(
                                 onClick = { viewModel.toggleEpgSourceEnabled(source.id, !source.enabled) },
                                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
-                                    containerColor = if (source.enabled) Color(0xFF66BB6A).copy(alpha = 0.2f) else Color.White.copy(alpha = 0.08f),
-                                    focusedContainerColor = if (source.enabled) Color(0xFF66BB6A).copy(alpha = 0.4f) else Color.White.copy(alpha = 0.15f)
+                                    containerColor = if (source.enabled) AppColors.Success.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.08f),
+                                    focusedContainerColor = if (source.enabled) AppColors.Success.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.15f)
                                 ),
                                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                             ) {
@@ -104,7 +105,7 @@ internal fun LazyListScope.epgSourcesSection(
                                     if (source.enabled) "ON" else "OFF",
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (source.enabled) Color(0xFF66BB6A) else OnSurfaceDim
+                                    color = if (source.enabled) AppColors.Success else OnSurfaceDim
                                 )
                             }
                             TvClickableSurface(
@@ -122,12 +123,12 @@ internal fun LazyListScope.epgSourcesSection(
                                 onClick = { viewModel.deleteEpgSource(source.id) },
                                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
-                                    containerColor = Color(0xFFEF5350).copy(alpha = 0.12f),
-                                    focusedContainerColor = Color(0xFFEF5350).copy(alpha = 0.25f)
+                                    containerColor = AppColors.Live.copy(alpha = 0.12f),
+                                    focusedContainerColor = AppColors.Live.copy(alpha = 0.25f)
                                 ),
                                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                             ) {
-                                Text("Delete", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFFEF5350))
+                                Text("Delete", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = AppColors.Live)
                             }
                         }
                     }
@@ -141,7 +142,7 @@ internal fun LazyListScope.epgSourcesSection(
             Text(
                 text = "Provider Assignments",
                 style = MaterialTheme.typography.titleMedium,
-                color = Color(0xFF66BB6A),
+                color = AppColors.Success,
                 modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
             )
             Text(
@@ -222,12 +223,12 @@ internal fun LazyListScope.epgSourcesSection(
                                     onClick = { viewModel.unassignEpgSourceFromProvider(provider.id, assignment.epgSourceId) },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(6.dp)),
                                     colors = ClickableSurfaceDefaults.colors(
-                                        containerColor = Color(0xFFEF5350).copy(alpha = 0.12f),
-                                        focusedContainerColor = Color(0xFFEF5350).copy(alpha = 0.25f)
+                                        containerColor = AppColors.Live.copy(alpha = 0.12f),
+                                        focusedContainerColor = AppColors.Live.copy(alpha = 0.25f)
                                     ),
                                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                                 ) {
-                                    Text("Remove", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFFEF5350))
+                                    Text("Remove", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = AppColors.Live)
                                 }
                             }
                         }
@@ -240,12 +241,12 @@ internal fun LazyListScope.epgSourcesSection(
                                     onClick = { viewModel.assignEpgSourceToProvider(provider.id, source.id) },
                                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                                     colors = ClickableSurfaceDefaults.colors(
-                                        containerColor = Color(0xFF66BB6A).copy(alpha = 0.12f),
-                                        focusedContainerColor = Color(0xFF66BB6A).copy(alpha = 0.25f)
+                                        containerColor = AppColors.Success.copy(alpha = 0.12f),
+                                        focusedContainerColor = AppColors.Success.copy(alpha = 0.25f)
                                     ),
                                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                                 ) {
-                                    Text("+ ${source.name}", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF66BB6A))
+                                    Text("+ ${source.name}", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = AppColors.Success)
                                 }
                             }
                         }
@@ -315,12 +316,12 @@ private fun AddEpgSourceCard(viewModel: SettingsViewModel) {
                 },
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color(0xFF66BB6A).copy(alpha = 0.2f),
-                    focusedContainerColor = Color(0xFF66BB6A).copy(alpha = 0.4f)
+                    containerColor = AppColors.Success.copy(alpha = 0.2f),
+                    focusedContainerColor = AppColors.Success.copy(alpha = 0.4f)
                 ),
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
             ) {
-                Text("Add Source", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
+                Text("Add Source", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = AppColors.Success, fontWeight = FontWeight.Medium)
             }
         }
     }

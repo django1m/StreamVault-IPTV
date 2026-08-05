@@ -60,6 +60,9 @@ import com.streamvault.domain.model.RecordingSourceType
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Locale
+import androidx.tv.material3.LocalContentColor
+import com.streamvault.app.ui.design.OsdFocus
+import com.streamvault.app.ui.design.AppColors
 
 internal enum class ParentalAction {
     ChangeLevel, ChangePin, SetNewPin
@@ -718,7 +721,9 @@ internal fun SettingsRow(label: String, value: String) {
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
-            focusedContainerColor = Primary.copy(alpha = 0.15f)
+            focusedContainerColor = AppColors.Focus,
+            contentColor = OnBackground,
+            focusedContentColor = AppColors.FocusOnFill
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         modifier = Modifier
@@ -750,7 +755,9 @@ internal fun ClickableSettingsRow(label: String, value: String, onClick: () -> U
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
-            focusedContainerColor = Primary.copy(alpha = 0.15f)
+            focusedContainerColor = AppColors.Focus,
+            contentColor = OnBackground,
+            focusedContentColor = AppColors.FocusOnFill
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         modifier = Modifier
@@ -782,7 +789,9 @@ internal fun SwitchSettingsRow(label: String, value: String, checked: Boolean, o
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
-            focusedContainerColor = Primary.copy(alpha = 0.15f)
+            focusedContainerColor = AppColors.Focus,
+            contentColor = OnBackground,
+            focusedContentColor = AppColors.FocusOnFill
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         modifier = Modifier
@@ -957,21 +966,20 @@ internal fun formatLiveTvQuickFiltersValue(filters: List<String>, context: andro
 @Composable
 internal fun SettingsNavItem(
     label: String,
-    badgeChar: String,
-    accentColor: Color,
     isSelected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
+    // `badgeChar` and `accentColor` are gone. Dropping them from the signature is what
+    // makes the compiler point at all eight call sites, where a contiguous block of
+    // hard-coded section colours lived — none of which existed in AppColors.
     val focusRequester = remember { FocusRequester() }
     TvClickableSurface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(0.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (isSelected) Primary.copy(alpha = 0.11f) else Color.Transparent,
-            focusedContainerColor = Primary.copy(alpha = 0.22f)
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        colors = OsdFocus.slabColors(active = isSelected, restingContent = OnBackground),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale(),
         modifier = modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
@@ -980,37 +988,17 @@ internal fun SettingsNavItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                Modifier
-                    .width(3.dp)
-                    .height(22.dp)
-                    .background(
-                        color = if (isSelected) Primary else Color.Transparent,
-                        shape = RoundedCornerShape(2.dp)
-                    )
-            )
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .background(accentColor.copy(alpha = 0.18f), RoundedCornerShape(7.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = badgeChar,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = accentColor,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            // No 3 dp marker and no 28 dp coloured plate: the slab is the focus and the
+            // label colour is the selection. A glyph in a filled tile is exactly the
+            // "pill" the language rules out.
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (isSelected) Primary else OnBackground,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                color = LocalContentColor.current,
+                fontWeight = FontWeight.Normal
             )
         }
     }
