@@ -70,6 +70,9 @@ import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.Series
+import com.streamvault.app.ui.design.osdSecondaryColor
+import com.streamvault.app.ui.design.osdContentColor
+import com.streamvault.app.ui.design.OsdFocus
 
 private object LiveChannelRowTicker {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -91,7 +94,11 @@ fun LiveChannelRowCard(
     channel: Channel,
     sourceBadgeLabel: String? = null,
     modifier: Modifier = Modifier,
-    rowHeight: Dp = 68.dp
+    rowHeight: Dp = 68.dp,
+    /** Threaded from the focusable parent so the content can invert on the slab. */
+    isFocused: Boolean = false,
+    /** The channel currently on screen. Tints the NAME, never the background. */
+    isPlaying: Boolean = false
 ) {
     val isUltraCompact = rowHeight <= 60.dp
     val isDense = rowHeight <= 56.dp
@@ -103,10 +110,16 @@ fun LiveChannelRowCard(
     val badgeSpacing = if (isUltraCompact) 3.dp else 4.dp
     val nowMs by LiveChannelRowTicker.nowMs.collectAsStateWithLifecycle()
 
+    // No fill and no clip: the focusable parent owns the slab. This Box used to paint its
+    // own SurfaceElevated card *inside* the parent's card — the "card in a card" the
+    // language rules out, and the reason a channel list read as a stack of tiles rather
+    // than as a list.
+    val content = osdContentColor(focused = isFocused, active = isPlaying)
+    val secondary = if (isFocused) AppColors.FocusOnFillDim else AppColors.TextSecondary
+    val tertiary = osdSecondaryColor(isFocused)
+
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(AppColors.SurfaceElevated)
             .fillMaxWidth()
             .height(rowHeight)
     ) {
@@ -126,10 +139,18 @@ fun LiveChannelRowCard(
                 ChannelLogoBadge(
                     channelName = channel.name,
                     logoUrl = channel.logoUrl,
-                    backgroundColor = AppColors.SurfaceEmphasis,
+                    // Transparent when there IS a logo — the artwork sits on the row like
+                    // the text does. The fallback letter keeps a plate, otherwise it
+                    // floats in nothing (see ChannelLogoBadge).
+                    backgroundColor = Color.Transparent,
+                    fallbackBackgroundColor = if (isFocused) {
+                        AppColors.FocusOnFill.copy(alpha = 0.10f)
+                    } else {
+                        AppColors.SurfaceEmphasis
+                    },
                     contentPadding = PaddingValues(logoPadding),
                     textStyle = MaterialTheme.typography.titleLarge,
-                    textColor = AppColors.TextSecondary,
+                    textColor = tertiary,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -142,40 +163,64 @@ fun LiveChannelRowCard(
                         horizontalArrangement = Arrangement.spacedBy(badgeSpacing),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Four filled coloured pills on one row was the loudest thing in
+                        // the app. LIVE keeps its red — it is the one badge that has to be
+                        // seen from across the room. The rest become quiet text: a favourite
+                        // is a star, a source and a catch-up flag are words.
                         StatusPill(label = stringResource(R.string.card_live_badge), containerColor = AppColors.Live)
-                        sourceBadgeLabel?.takeIf { it.isNotBlank() }?.let { label ->
-                            StatusPill(
-                                label = label,
-                                containerColor = AppColors.SurfaceEmphasis,
-                                contentColor = AppColors.TextPrimary
+                        if (channel.isFavorite) {
+                            Icon(
+                                imageVector = Icons.Filled.Star,
+                                contentDescription = stringResource(R.string.badge_saved),
+                                tint = tertiary,
+                                modifier = Modifier.size(12.dp)
                             )
                         }
-                        if (channel.isFavorite) {
-                            StatusPill(label = stringResource(R.string.badge_saved), containerColor = AppColors.Warning, contentColor = Color.Black)
+                        sourceBadgeLabel?.takeIf { it.isNotBlank() }?.let { label ->
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = tertiary,
+                                maxLines = 1
+                            )
                         }
                         if (channel.catchUpSupported) {
-                            StatusPill(label = stringResource(R.string.badge_catch_up), containerColor = AppColors.Brand)
+                            Text(
+                                text = stringResource(R.string.badge_catch_up),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = tertiary,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
-                Text(
-                    text = buildString {
-                        val numberLabel = channel.number.takeIf { it > 0 }?.toString()?.padStart(2, '0') ?: "--"
-                        append(numberLabel)
-                        append("  ")
-                        append(channel.name)
-                    },
-                    style = if (isDense) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleSmall,
-                    color = AppColors.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // The number was concatenated into the title string, which rendered it in
+                // the same bold white as the name and destroyed the scan pattern — the eye
+                // needs it quiet and in its own column to use it at all.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = channel.number.takeIf { it > 0 }?.toString()?.padStart(2, '0') ?: "--",
+                        style = if (isDense) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleSmall,
+                        color = tertiary,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = channel.name,
+                        style = if (isDense) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleSmall,
+                        color = content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 val program = channel.currentProgram
                 if (program != null) {
                     Text(
                         text = program.title,
                         style = if (isDense) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,
-                        color = AppColors.TextSecondary,
+                        color = secondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -188,15 +233,19 @@ fun LiveChannelRowCard(
                                 .fillMaxWidth()
                                 .height(2.dp)
                                 .clip(RoundedCornerShape(999.dp)),
-                            color = AppColors.Info,
-                            trackColor = AppColors.SurfaceEmphasis
+                            color = if (isFocused) AppColors.FocusOnFill else AppColors.ActiveText,
+                            trackColor = if (isFocused) {
+                                AppColors.FocusOnFill.copy(alpha = 0.28f)
+                            } else {
+                                AppColors.Divider
+                            }
                         )
                     }
                 } else {
                     Text(
                         text = stringResource(R.string.label_no_schedule),
                         style = if (isDense) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,
-                        color = AppColors.TextTertiary
+                        color = tertiary
                     )
                 }
             }
@@ -214,7 +263,9 @@ fun LiveChannelRowSurface(
     isLocked: Boolean = false,
     isReorderMode: Boolean = false,
     isDragging: Boolean = false,
-    rowHeight: Dp = 68.dp
+    rowHeight: Dp = 68.dp,
+    /** The channel currently on screen — tints the name, never the background. */
+    isPlaying: Boolean = false
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val sounds = rememberTvInteractionSounds()
@@ -280,20 +331,21 @@ fun LiveChannelRowSurface(
                 }
                 isFocused = it.isFocused
             },
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = AppColors.SurfaceElevated,
-            focusedContainerColor = AppColors.SurfaceEmphasis
-        ),
+        scale = OsdFocus.noScale(),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+        colors = OsdFocus.slabColors(),
+        // Only drag keeps an outline. Focus is the slab; adding a border on top of a
+        // filled row is two signals for one state.
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(
-                    width = if (isDragging) 4.dp else FocusSpec.BorderWidth,
-                    color = if (isDragging) AppColors.Warning else AppColors.Focus
-                ),
-                shape = RoundedCornerShape(16.dp)
-            )
+            border = if (isDragging) {
+                Border(
+                    border = BorderStroke(FocusSpec.DragOutlineWidth, AppColors.Warning),
+                    shape = RoundedCornerShape(12.dp)
+                )
+            } else {
+                Border.None
+            },
+            focusedBorder = Border.None
         )
     ) {
         Box {
@@ -301,7 +353,9 @@ fun LiveChannelRowSurface(
                 channel = channel,
                 sourceBadgeLabel = sourceBadgeLabel,
                 modifier = Modifier.fillMaxWidth(),
-                rowHeight = rowHeight
+                rowHeight = rowHeight,
+                isFocused = isFocused,
+                isPlaying = isPlaying
             )
             if (isLocked) {
                 Box(

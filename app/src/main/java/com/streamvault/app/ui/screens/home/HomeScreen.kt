@@ -93,6 +93,12 @@ import java.util.Locale
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
+import com.streamvault.app.ui.design.AppColors
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import com.streamvault.app.ui.design.OsdFocus
+import androidx.tv.material3.LocalContentColor
 
 private enum class FocusRestoreTarget {
     CATEGORY,
@@ -155,6 +161,7 @@ fun HomeScreen(
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val isTelevisionDevice = rememberIsTelevisionDevice()
     val formFactor = LocalFormFactor.current
+    val dividerColor = AppColors.Divider
     val sidebarWidth = if (formFactor == FormFactor.Phone) {
         // On a phone this column is collapsed by default and toggled from the
         // channel list header, so it can afford to be comfortably readable while
@@ -344,7 +351,15 @@ fun HomeScreen(
                         modifier = Modifier
                             .width(sidebarWidth)
                             .fillMaxHeight()
-                            .background(SurfaceElevated)
+                            // Matches the loaded state above: skeleton and content must not
+                            // look like two different screens.
+                            .drawBehind {
+                                drawRect(
+                                    color = dividerColor,
+                                    topLeft = Offset(size.width - 1.dp.toPx(), 0f),
+                                    size = Size(1.dp.toPx(), size.height)
+                                )
+                            }
                             .padding(horizontal = 16.dp, vertical = 24.dp)
                     ) {
                         HomeLoadingPane(
@@ -625,7 +640,17 @@ fun HomeScreen(
                             modifier = Modifier
                                 .width(sidebarWidth)
                                 .fillMaxHeight()
-                                .background(SurfaceElevated.copy(alpha = 0.88f), RoundedCornerShape(20.dp))
+                                // A hairline instead of a filled rounded panel. The column
+                                // is a region of the screen, not an object floating on it —
+                                // and the filled panel was what forced every row inside to
+                                // carry its own card to stay visible.
+                                .drawBehind {
+                                    drawRect(
+                                        color = dividerColor,
+                                        topLeft = Offset(size.width - 1.dp.toPx(), 0f),
+                                        size = Size(1.dp.toPx(), size.height)
+                                    )
+                                }
                                 .padding(top = 10.dp)
                                 .focusGroup()
                         ) {
@@ -701,17 +726,9 @@ fun HomeScreen(
                                             .fillMaxWidth()
                                             .padding(bottom = 10.dp),
                                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
-                                        colors = ClickableSurfaceDefaults.colors(
-                                            containerColor = SurfaceElevated,
-                                            focusedContainerColor = SurfaceHighlight.copy(alpha = 0.9f)
-                                        ),
-                                        border = ClickableSurfaceDefaults.border(
-                                            focusedBorder = Border(
-                                                border = BorderStroke(2.dp, Primary.copy(alpha = 0.85f)),
-                                                shape = RoundedCornerShape(12.dp)
-                                            )
-                                        ),
-                                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                                        colors = OsdFocus.slabColors(),
+                                        border = OsdFocus.noBorder(),
+                                        scale = OsdFocus.noScale()
                                     ) {
                                         Column(
                                             modifier = Modifier
@@ -724,10 +741,14 @@ fun HomeScreen(
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
+                                                // No explicit colours: on the focused slab
+                                                // LocalContentColor is already dark, and a
+                                                // hard-coded Primary here would leave blue
+                                                // text on white.
                                                 Text(
                                                     text = stringResource(R.string.home_quick_filters_button),
                                                     style = MaterialTheme.typography.labelLarge,
-                                                    color = OnSurface
+                                                    color = LocalContentColor.current
                                                 )
                                                 Text(
                                                     text = if (showQuickFiltersDrawer) {
@@ -736,13 +757,13 @@ fun HomeScreen(
                                                         stringResource(R.string.home_quick_filters_show)
                                                     },
                                                     style = MaterialTheme.typography.labelMedium,
-                                                    color = Primary
+                                                    color = LocalContentColor.current.copy(alpha = 0.72f)
                                                 )
                                             }
                                             Text(
                                                 text = filterSubtitle,
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = OnSurfaceDim
+                                                color = LocalContentColor.current.copy(alpha = 0.62f)
                                             )
                                         }
                                     }
@@ -1175,6 +1196,11 @@ fun HomeScreen(
                                         isReorderMode = uiState.isChannelReorderMode,
                                         isDragging = isDraggingThis,
                                         rowHeight = channelRowHeight,
+                                        // Point 4 of the language, which the app had
+                                        // nowhere until now: the channel on screen is
+                                        // marked by tinting its NAME, not by a background
+                                        // that would be indistinguishable from focus.
+                                        isPlaying = uiState.previewChannelId == channel.id,
                                         onClick = {
                                             if (isReorderMode) {
                                                 draggingChannel = if (isDraggingThis) null else channel

@@ -69,6 +69,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.streamvault.app.ui.components.LivePreviewSurface
+import com.streamvault.app.ui.design.osdSecondaryColor
+import com.streamvault.app.ui.design.OsdFocus
+import androidx.tv.material3.LocalContentColor
 
 @Composable
 internal fun CompactSplitLauncherButton(
@@ -123,11 +126,8 @@ internal fun LivePreviewPane(
     errorMessage: String?,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        colors = SurfaceDefaults.colors(containerColor = SurfaceElevated.copy(alpha = 0.72f))
-    ) {
+    // No card: the preview is a video rectangle plus text on the ambient gradient.
+    Box(modifier = modifier) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -291,19 +291,13 @@ internal fun CategoryItem(
                     }
                 } else false
             },
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        scale = OsdFocus.noScale(),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (isSelected) Primary.copy(alpha = 0.15f) else Color.Transparent,
-            focusedContainerColor = SurfaceHighlight.copy(alpha = 0.82f),
-            contentColor = if (isSelected) Primary else OnSurface
-        ),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                border = BorderStroke(2.dp, Primary.copy(alpha = 0.85f)),
-                shape = RoundedCornerShape(10.dp)
-            )
-        )
+        // Selected no longer fills. A tinted background for "selected" and another for
+        // "focused" made the two states read the same from the sofa; now selected is a
+        // text colour and focused is the slab, and they cannot be confused.
+        colors = OsdFocus.slabColors(active = isSelected, restingContent = OnSurface),
+        border = OsdFocus.noBorder()
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -312,7 +306,7 @@ internal fun CategoryItem(
         ) {
             if (isPinned) {
                 PinnedCategoryGlyph(
-                    tint = if (isFocused) OnBackground else if (isSelected) Primary else OnSurfaceDim,
+                    tint = LocalContentColor.current,
                     modifier = Modifier.padding(end = 8.dp)
                 )
             }
@@ -321,14 +315,14 @@ internal fun CategoryItem(
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = if (isFocused) OnBackground else if (isSelected) Primary else OnSurface,
+                color = LocalContentColor.current,
                 modifier = Modifier.weight(1f)
             )
 
             Text(
                 text = category.count.toString(),
                 style = MaterialTheme.typography.labelMedium,
-                color = if (isFocused) OnBackground else OnSurfaceDim,
+                color = osdSecondaryColor(isFocused),
                 modifier = Modifier.padding(start = 10.dp)
             )
 
@@ -336,7 +330,7 @@ internal fun CategoryItem(
                 Text(
                     text = stringResource(R.string.home_locked_short),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isFocused) OnBackground else OnSurfaceDim,
+                    color = osdSecondaryColor(isFocused),
                     modifier = Modifier.padding(start = 8.dp)
                 )
             }

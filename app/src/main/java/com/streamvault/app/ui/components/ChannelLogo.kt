@@ -33,6 +33,12 @@ fun ChannelLogoBadge(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(12.dp),
     backgroundColor: Color = AppColors.SurfaceEmphasis,
+    /**
+     * Plate drawn only when the fallback letter shows. Splitting it from [backgroundColor]
+     * is what lets a row go container-less without leaving the letter floating in nothing:
+     * pass `Color.Transparent` above and keep a plate here.
+     */
+    fallbackBackgroundColor: Color = backgroundColor,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     textStyle: TextStyle = MaterialTheme.typography.titleMedium,
     textColor: Color = AppColors.TextSecondary,
@@ -49,10 +55,11 @@ fun ChannelLogoBadge(
     )
     var showFallback by remember(model) { mutableStateOf(true) }
 
+    val showingFallback = showFallback || model == null
     Box(
         modifier = modifier
             .clip(shape)
-            .background(backgroundColor),
+            .background(if (showingFallback) fallbackBackgroundColor else backgroundColor),
         contentAlignment = Alignment.Center
     ) {
         if (!showFallback && model != null) {
