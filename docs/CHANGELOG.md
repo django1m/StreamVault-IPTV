@@ -2,6 +2,10 @@
 
 All notable product changes are recorded in this document.
 
+## 1.3.37 (538) - 13/09/2026
+
+Stable release of the 1.3.37 cycle, same code as 1.3.37-beta13: the OSD redesign of the player and menus shipped in the TV betas 525 → 537, and every fix and change listed under the 1.3.37 betas below. First stable since 1.3.36 (524).
+
 ## 1.3.37-beta13 (537) - 13/09/2026
 
 ### Fixed
