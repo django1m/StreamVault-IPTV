@@ -202,6 +202,7 @@ fun PlayerScreen(
     val seekPreview by viewModel.seekPreview.collectAsStateWithLifecycle()
     val preventStandbyDuringPlayback by viewModel.preventStandbyDuringPlayback.collectAsStateWithLifecycle()
     val currentPositionMs by viewModel.playerEngine.currentPosition.collectAsStateWithLifecycle()
+    val isTimeshift by viewModel.isTimeshiftPlayback.collectAsStateWithLifecycle()
 
     var showTrackSelection by remember { mutableStateOf<TrackType?>(null) }
     var showSpeedSelection by remember { mutableStateOf(false) }
@@ -281,6 +282,21 @@ fun PlayerScreen(
     // Consolidated focus management for all overlays
     val liveOverlayVisible = contentType == "LIVE" && (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay)
     val anyOverlayVisible = liveOverlayVisible || showTrackSelection != null || showSpeedSelection || showProgramHistory || showSplitDialog || showEpisodePicker || showDiagnostics
+
+    // ─── Seek au D-pad ────────────────────────────────────────────────────
+    // Rejouable = tout sauf le direct pur. Un catch-up porte contentType "LIVE"
+    // mais se cherche comme un VOD : position, durée et seek ont un sens.
+    val canSeekContent = contentType != "LIVE" || isTimeshift
+    // La barre est visible mais le focus reste sur la vidéo tant que l’utilisateur
+    // n’a pas demandé à y descendre (OK / haut / bas) : gauche et droite cherchent
+    // dans le média au lieu de déplacer le curseur entre les boutons. Avant, le
+    // premier appui appelait revealControls(), le focus filait sur Play et le
+    // deuxième appui ne cherchait plus — c’est le bug corrigé ici.
+    var chromeFocused by remember { mutableStateOf(false) }
+    // Sur du direct pur il n’y a rien à chercher : la barre prend le focus dès
+    // qu’elle s’ouvre, exactement comme avant. Garde-fou contre une barre
+    // innavigable si chromeFocused restait faux.
+    val chromeHasFocus = chromeFocused || !canSeekContent
 
     LaunchedEffect(contentType, showCategoryListOverlay, showChannelListOverlay, showEpgOverlay, showChannelInfoOverlay) {
         if (contentType == "LIVE" && (showCategoryListOverlay || showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay)) {
@@ -373,17 +389,26 @@ fun PlayerScreen(
         )
     }
 
-    LaunchedEffect(showControls) {
-        if (showControls) {
+    LaunchedEffect(showControls, chromeHasFocus) {
+        if (showControls && chromeHasFocus) {
             delay(100)
             // Play/pause on both content types now: the transport and the settings live
             // in one strip, and its centre of gravity is the play button — landing on
             // "previous channel" instead was an artefact of the old two-row layout.
             playButtonFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player transport")
         } else {
-            viewModel.cancelControlsAutoHide()
+            // Barre visible en mode seek : le focus reste sur la racine (les flèches
+            // doivent atteindre son handler), mais l’auto-masquage doit continuer de
+            // courir — d’où le garde sur cancelControlsAutoHide.
+            if (!showControls) viewModel.cancelControlsAutoHide()
             focusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player root")
         }
+    }
+
+    // Fermer la barre (auto-masquage, BACK, zap, ouverture d’un overlay…) rend
+    // toujours la main à la vidéo : le prochain appui sur une flèche cherche.
+    LaunchedEffect(showControls) {
+        if (!showControls) chromeFocused = false
     }
 
     LaunchedEffect(showControls, showTrackSelection, showSpeedSelection, showProgramHistory, showSplitDialog, showEpisodePicker) {
@@ -516,7 +541,11 @@ fun PlayerScreen(
                 // Only allow focus on the main background when no overlays are active.
                 // The options panel counts: while it is up its chips must keep focus,
                 // otherwise the root steals it back and the panel is undrivable.
-                canFocus = !anyOverlayVisible && !showControls && !showOptionsPanel
+                // La barre de contrôle, elle, ne compte que si le focus y est descendu :
+                // en mode seek elle est à l’écran mais c’est la racine qui doit garder
+                // le focus, sinon gauche/droite redeviennent de la navigation.
+                canFocus = !anyOverlayVisible && !showOptionsPanel &&
+                    (!showControls || !chromeHasFocus)
             }
             .focusable()
             // Touch vocabulary of the player. On TV `touchGesturesEnabled` is
@@ -576,7 +605,10 @@ fun PlayerScreen(
                 // Any remote key press = activity → reset the inactivity guard
                 // (no-op unless the opt-in guard is enabled on a live stream).
                 viewModel.notePlaybackInteraction()
-                if (contentType != "LIVE") {
+                // Le zapping ne concerne que le direct pur. Un catch-up porte
+                // contentType "LIVE" mais rejoue un programme : y zapper sur haut/bas
+                // tuerait la lecture en cours.
+                if (canSeekContent) {
                     return@onPreviewKeyEvent false
                 }
                 if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay) {
@@ -710,6 +742,14 @@ fun PlayerScreen(
                             if (contentType == "LIVE" && viewModel.hasPendingNumericChannelInput()) {
                                 viewModel.commitNumericChannelInput()
                                 true
+                            } else if (showControls && !chromeHasFocus) {
+                                // Barre à l’écran en mode seek : OK y fait descendre le
+                                // focus. C’est la porte d’entrée vers les réglages (son,
+                                // sous-titres, vitesse…), que les flèches ne desservent
+                                // plus tant qu’on cherche.
+                                chromeFocused = true
+                                viewModel.refreshControlsAutoHide()
+                                true
                             } else if (showControls) {
                                 // Let the focused control handle OK. Must come before the
                                 // LIVE branch, otherwise OK would toggle the bar shut
@@ -721,6 +761,8 @@ fun PlayerScreen(
                                 // entry point at all. The banner is still what a zap
                                 // raises (PlayerZapActions), so the quick "what am I on"
                                 // glance is unchanged.
+                                // Ouverture explicite → on veut les boutons, pas le seek.
+                                chromeFocused = true
                                 viewModel.toggleControls()
                                 true
                             }
@@ -729,19 +771,28 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
-                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
-                            // (LIVE used to be excluded here, which is why the live
-                            // bar could never be navigated.)
-                            if (showControls) return@onKeyEvent false
+                            // Focus descendu dans la barre → les flèches y pilotent le
+                            // curseur, sur LIVE comme ailleurs. (LIVE used to be excluded
+                            // here, which is why the live bar could never be navigated.)
+                            // Sur du direct pur chromeHasFocus est vrai dès que la barre
+                            // est là : comportement LIVE strictement inchangé.
+                            if (showControls && chromeHasFocus) return@onKeyEvent false
                             if (showChannelListOverlay && contentType == "LIVE") {
                                 // Second left press while channel list is open → open category list
                                 viewModel.openCategoryListOverlay()
                                 true
-                            } else if (contentType == "LIVE" && !showChannelListOverlay && !showCategoryListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
+                            } else if (!canSeekContent && !showChannelListOverlay && !showCategoryListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
                                 if (isRtl) viewModel.openEpgOverlay() else viewModel.openChannelListOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showCategoryListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
+                                // Barre fermée OU visible en mode seek : on cherche dans
+                                // le média. La barre monte pour donner le timecode, mais
+                                // le focus ne bouge pas — l’appui suivant cherche encore.
                                 viewModel.revealControls()
+                                // Indispensable : LaunchedEffect(showControls) ne relance
+                                // le minuteur qu’au changement d’état, donc sans ça la
+                                // barre s’évanouirait au bout de 5 s en plein seek.
+                                viewModel.refreshControlsAutoHide()
                                 val direction = if (isRtl) SeekDirection.FORWARD else SeekDirection.BACKWARD
                                 when (event.nativeKeyEvent.repeatCount) {
                                     0 -> {
@@ -766,15 +817,14 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
-                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
-                            // (LIVE used to be excluded here, which is why the live
-                            // bar could never be navigated.)
-                            if (showControls) return@onKeyEvent false
-                            if (contentType == "LIVE" && !showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
+                            // Voir le commentaire symétrique sur DPAD_LEFT.
+                            if (showControls && chromeHasFocus) return@onKeyEvent false
+                            if (!canSeekContent && !showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
                                 if (isRtl) viewModel.openChannelListOverlay() else viewModel.openEpgOverlay()
                                 true
                             } else if (!showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
                                 viewModel.revealControls()
+                                viewModel.refreshControlsAutoHide()
                                 val direction = if (isRtl) SeekDirection.BACKWARD else SeekDirection.FORWARD
                                 when (event.nativeKeyEvent.repeatCount) {
                                     0 -> {
@@ -796,17 +846,21 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay) return@onKeyEvent false
-                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
-                            // (LIVE used to be excluded here, which is why the live
-                            // bar could never be navigated.)
-                            if (showControls) return@onKeyEvent false
+                            // Voir le commentaire sur DPAD_LEFT : on ne rend la touche au
+                            // focus system que si le focus est déjà dans la barre.
+                            if (showControls && chromeHasFocus) return@onKeyEvent false
 
-                            if (contentType == "LIVE") {
-                                viewModel.playNext()
-                            } else if (canOpenEpisodePicker) {
+                            if (canOpenEpisodePicker) {
                                 showEpisodePicker = true
+                            } else if (!canSeekContent) {
+                                viewModel.playNext()
                             } else {
-                                viewModel.toggleControls()
+                                // Contenu rejouable : haut fait descendre le focus dans la
+                                // barre (en l’ouvrant au besoin) — c’est l’autre porte
+                                // d’entrée vers les boutons, avec OK.
+                                viewModel.revealControls()
+                                viewModel.refreshControlsAutoHide()
+                                chromeFocused = true
                             }
                             true
                         }
@@ -815,15 +869,15 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay) return@onKeyEvent false
-                            // Chrome visible → arrows drive focus inside the bar, on LIVE too.
-                            // (LIVE used to be excluded here, which is why the live
-                            // bar could never be navigated.)
-                            if (showControls) return@onKeyEvent false
+                            // Voir le commentaire sur DPAD_LEFT.
+                            if (showControls && chromeHasFocus) return@onKeyEvent false
 
-                            if (contentType == "LIVE") {
+                            if (!canSeekContent) {
                                 viewModel.playPrevious()
                             } else {
-                                viewModel.toggleControls()
+                                viewModel.revealControls()
+                                viewModel.refreshControlsAutoHide()
+                                chromeFocused = true
                             }
                             true
                         }
@@ -1101,6 +1155,7 @@ fun PlayerScreen(
                 visible = showControls,
                 title = playbackTitle.ifBlank { title },
                 contentType = contentType,
+                isTimeshift = isTimeshift,
                 isPlaying = isPlaying,
                 currentProgram = currentProgram,
                 currentChannelName = currentChannel?.name,
@@ -1588,6 +1643,8 @@ private fun PlayerControlsOverlayHost(
     visible: Boolean,
     title: String,
     contentType: String,
+    /** Replay / catch-up : "LIVE" mais rejouable — voir PlayerControlsOverlay. */
+    isTimeshift: Boolean,
     isPlaying: Boolean,
     currentProgram: Program?,
     currentChannelName: String?,
@@ -1649,6 +1706,7 @@ private fun PlayerControlsOverlayHost(
         visible = visible,
         title = title,
         contentType = contentType,
+        isTimeshift = isTimeshift,
         isPlaying = isPlaying,
         currentProgram = currentProgram,
         currentChannelName = currentChannelName,

@@ -42,7 +42,7 @@ import com.streamvault.data.local.entity.*
         RecordingRunEntity::class,
         RecordingStorageEntity::class
     ],
-    version = 31,
+    version = 35,
     exportSchema = true   // ← was false; schema JSON now tracked in version control
 )
 @TypeConverters(RoomEnumConverters::class)
@@ -1326,6 +1326,93 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+            }
+        }
+
+        /**
+         * Migration 31 → 32 : les index FTS passent du tokenizer `simple` à `unicode61`.
+         *
+         * `simple` ne replie que la casse ASCII et ignore les accents : « L'Été » était indexé sous
+         * le terme `Été`, que ni « été » ni « ete » ne retrouvaient — sur un catalogue francophone
+         * c'est une grande partie des titres qui étaient introuvables. `unicode61` normalise casse
+         * et diacritiques des deux côtés (index et requête).
+         *
+         * Les trois tables FTS sont des index externes (`content=`), donc les recréer ne touche pas
+         * aux données : `rebuild` réindexe depuis la table source. Les triggers de synchro portent
+         * sur les tables sources (`channels`, `movies`, `series`) et restent valides après le DROP
+         * (Room les recrée de toute façon à chaque ouverture).
+         *
+         * ⚠️ Le texte des CREATE doit rester identique à celui que Room génère (`tokenize=` avant
+         * `content=`, backticks compris) : après la migration Room relit `sqlite_master.sql` et
+         * compare les options telles quelles. Une simple quote à la place d'un backtick suffit à
+         * faire échouer la validation au démarrage. Référence : `data/schemas/…/32.json`.
+         */
+        /**
+         * Ajoute les validateurs HTTP (`ETag` / `Last-Modified`) sur les sources EPG
+         * externes. Sans eux, chaque sync retéléchargeait le XMLTV entier (plusieurs
+         * Mo) puis supprimait/reparsait toutes les lignes, même quand rien n'avait
+         * changé côté serveur — du trafic pur qui pousse l'IP de sortie vers le ban.
+         * Colonnes nullables : les sources existantes repartent sans validateur et en
+         * récupèrent un au premier refresh.
+         */
+        /**
+         * Migration 34 → 35 : ordre du fournisseur pour les séries (même principe que 33 → 34 pour
+         * les films). Les séries déjà en base restent à 0 — donc triées par titre — jusqu'à la
+         * prochaine synchro du catalogue.
+         */
+        val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE series ADD COLUMN provider_order INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE series_import_stage ADD COLUMN provider_order INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * Migration 33 → 34 : ordre du fournisseur pour les films.
+         *
+         * provider_order = rang du film dans sa catégorie, dans l'ordre d'envoi du fournisseur
+         * (0 = inconnu) ; provider_added_at = date d'ajout Xtream (`added`), en epoch ms. Les films
+         * déjà en base restent à 0 — donc triés par titre, comme avant — jusqu'à la prochaine
+         * synchro du catalogue, qui les remplit.
+         */
+        val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE movies ADD COLUMN provider_order INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE movies ADD COLUMN provider_added_at INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE movie_import_stage ADD COLUMN provider_order INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE movie_import_stage ADD COLUMN provider_added_at INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE epg_sources ADD COLUMN http_etag TEXT DEFAULT NULL")
+                database.execSQL("ALTER TABLE epg_sources ADD COLUMN http_last_modified TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("DROP TABLE IF EXISTS channels_fts")
+                database.execSQL("DROP TABLE IF EXISTS movies_fts")
+                database.execSQL("DROP TABLE IF EXISTS series_fts")
+
+                database.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `channels_fts` " +
+                        "USING FTS4(`name` TEXT NOT NULL, tokenize=unicode61, content=`channels`)"
+                )
+                database.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `movies_fts` " +
+                        "USING FTS4(`name` TEXT NOT NULL, tokenize=unicode61, content=`movies`)"
+                )
+                database.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `series_fts` " +
+                        "USING FTS4(`name` TEXT NOT NULL, tokenize=unicode61, content=`series`)"
+                )
+
+                database.execSQL("INSERT INTO channels_fts(channels_fts) VALUES('rebuild')")
+                database.execSQL("INSERT INTO movies_fts(movies_fts) VALUES('rebuild')")
+                database.execSQL("INSERT INTO series_fts(series_fts) VALUES('rebuild')")
             }
         }
 

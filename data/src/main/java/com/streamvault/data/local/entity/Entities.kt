@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Fts4
+import androidx.room.FtsOptions
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.streamvault.domain.model.ContentType
@@ -158,7 +159,11 @@ data class MovieEntity(
     @ColumnInfo(name = "last_watched_at") val lastWatchedAt: Long = 0L,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
     @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
-    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = ""
+    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
+    /** Rang dans la catégorie, dans l'ordre d'envoi du fournisseur (1 = premier, 0 = inconnu). */
+    @ColumnInfo(name = "provider_order", defaultValue = "0") val providerOrder: Int = 0,
+    /** Date d'ajout chez le fournisseur (`added` Xtream), en epoch ms ; 0 = inconnue. */
+    @ColumnInfo(name = "provider_added_at", defaultValue = "0") val providerAddedAt: Long = 0L
 )
 
 data class MovieBrowseEntity(
@@ -179,7 +184,9 @@ data class MovieBrowseEntity(
     @ColumnInfo(name = "watch_progress") val watchProgress: Long = 0L,
     @ColumnInfo(name = "last_watched_at") val lastWatchedAt: Long = 0L,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
-    @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false
+    @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
+    @ColumnInfo(name = "provider_order") val providerOrder: Int = 0,
+    @ColumnInfo(name = "provider_added_at") val providerAddedAt: Long = 0L
 )
 
 @Entity(
@@ -218,7 +225,9 @@ data class SeriesEntity(
     @ColumnInfo(name = "provider_id") val providerId: Long = 0,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
     @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
-    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = ""
+    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
+    /** Rang dans la catégorie, dans l'ordre d'envoi du fournisseur (1 = premier, 0 = inconnu). */
+    @ColumnInfo(name = "provider_order", defaultValue = "0") val providerOrder: Int = 0
 )
 
 data class SeriesBrowseEntity(
@@ -234,22 +243,23 @@ data class SeriesBrowseEntity(
     @ColumnInfo(name = "last_modified") val lastModified: Long = 0L,
     @ColumnInfo(name = "provider_id") val providerId: Long = 0,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
-    @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false
+    @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
+    @ColumnInfo(name = "provider_order") val providerOrder: Int = 0
 )
 
-@Fts4(contentEntity = ChannelEntity::class)
+@Fts4(contentEntity = ChannelEntity::class, tokenizer = FtsOptions.TOKENIZER_UNICODE61)
 @Entity(tableName = "channels_fts")
 data class ChannelFtsEntity(
     val name: String
 )
 
-@Fts4(contentEntity = MovieEntity::class)
+@Fts4(contentEntity = MovieEntity::class, tokenizer = FtsOptions.TOKENIZER_UNICODE61)
 @Entity(tableName = "movies_fts")
 data class MovieFtsEntity(
     val name: String
 )
 
-@Fts4(contentEntity = SeriesEntity::class)
+@Fts4(contentEntity = SeriesEntity::class, tokenizer = FtsOptions.TOKENIZER_UNICODE61)
 @Entity(tableName = "series_fts")
 data class SeriesFtsEntity(
     val name: String
@@ -421,7 +431,9 @@ data class MovieImportStageEntity(
     @ColumnInfo(name = "tmdb_id") val tmdbId: Long? = null,
     @ColumnInfo(name = "youtube_trailer") val youtubeTrailer: String? = null,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
-    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = ""
+    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
+    @ColumnInfo(name = "provider_order", defaultValue = "0") val providerOrder: Int = 0,
+    @ColumnInfo(name = "provider_added_at", defaultValue = "0") val providerAddedAt: Long = 0L
 )
 
 @Entity(
@@ -458,7 +470,8 @@ data class SeriesImportStageEntity(
     @ColumnInfo(name = "episode_run_time") val episodeRunTime: String? = null,
     @ColumnInfo(name = "last_modified") val lastModified: Long = 0L,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
-    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = ""
+    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
+    @ColumnInfo(name = "provider_order", defaultValue = "0") val providerOrder: Int = 0
 )
 
 @Entity(
@@ -722,6 +735,13 @@ data class EpgSourceEntity(
     @ColumnInfo(name = "last_success_at") val lastSuccessAt: Long = 0,
     @ColumnInfo(name = "last_error") val lastError: String? = null,
     val priority: Int = 0,
+    // HTTP validators from the last successful download, replayed as
+    // If-None-Match / If-Modified-Since on the next refresh. A 304 lets us skip
+    // both the multi-MB XMLTV transfer AND the delete+reparse of every programme
+    // row — the single biggest saving on a guide that rarely changes. Persisted
+    // (not in-memory) so a reboot does not re-download the whole guide.
+    @ColumnInfo(name = "http_etag") val httpEtag: String? = null,
+    @ColumnInfo(name = "http_last_modified") val httpLastModified: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "updated_at") val updatedAt: Long = System.currentTimeMillis()
 )

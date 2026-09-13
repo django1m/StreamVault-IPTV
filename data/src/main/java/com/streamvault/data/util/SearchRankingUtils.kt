@@ -1,45 +1,63 @@
 package com.streamvault.data.util
 
-import java.util.Locale
+/**
+ * Reclasse les résultats FTS par pertinence perçue : SQLite les renvoie par ordre alphabétique,
+ * ce qui enterre le titre exact au milieu des autres.
+ *
+ * Les comparaisons se font sur le titre replié (minuscules, accents retirés) pour rester alignées
+ * sur le tokenizer `unicode61` de l'index : « amelie » doit être reconnu comme préfixe d'« Amélie
+ * Poulain », sinon le résultat que l'utilisateur visait se retrouve classé dernier.
+ */
+private class RankedEntry<T>(
+    val item: T,
+    val folded: String,
+    val length: Int,
+    val bucket: Int,
+    val firstMatch: Int
+)
 
 internal fun <T> List<T>.rankSearchResults(rawQuery: String, nameSelector: (T) -> String): List<T> {
-    val normalizedQuery = rawQuery.trim().lowercase(Locale.ROOT)
-    if (normalizedQuery.isBlank()) return this
+    val foldedQuery = rawQuery.trim().foldForSearch()
+    if (foldedQuery.isBlank()) return this
 
-    val queryTokens = normalizedQuery
-        .split(Regex("\\s+"))
-        .map { it.replace(Regex("[^\\p{L}\\p{N}_]"), "") }
-        .filter { it.length >= 2 }
-
+    val queryTokens = rawQuery.searchTokens().map { it.foldForSearch() }
     if (queryTokens.isEmpty()) return this
 
-    return sortedWith(
-        compareBy<T> { item ->
-            val normalizedName = nameSelector(item).trim().lowercase(Locale.ROOT)
-            relevanceBucket(normalizedName, normalizedQuery, queryTokens)
-        }.thenBy { item ->
-            val normalizedName = nameSelector(item).trim().lowercase(Locale.ROOT)
-            firstMatchPosition(normalizedName, queryTokens)
-        }.thenBy { item ->
-            nameSelector(item).length
-        }.thenBy { item ->
-            nameSelector(item).lowercase(Locale.ROOT)
-        }
-    )
+    // Décoration puis tri : les replis Unicode sont calculés une fois par élément, pas à chaque
+    // comparaison (jusqu'à 300 résultats par section sur un boîtier 2 Go).
+    return map { item ->
+        val name = nameSelector(item).trim()
+        val folded = name.foldForSearch()
+        RankedEntry(
+            item = item,
+            folded = folded,
+            length = name.length,
+            bucket = relevanceBucket(folded, foldedQuery, queryTokens),
+            firstMatch = firstMatchPosition(folded, queryTokens)
+        )
+    }.sortedWith(
+        compareBy<RankedEntry<T>> { it.bucket }
+            .thenBy { it.firstMatch }
+            .thenBy { it.length }
+            .thenBy { it.folded }
+    ).map { it.item }
 }
 
-private fun relevanceBucket(normalizedName: String, normalizedQuery: String, queryTokens: List<String>): Int {
+private fun relevanceBucket(foldedName: String, foldedQuery: String, queryTokens: List<String>): Int {
+    val matchedTokens = queryTokens.count { token -> foldedName.contains(token) }
     return when {
-        normalizedName == normalizedQuery -> 0
-        normalizedName.startsWith(normalizedQuery) -> 1
-        queryTokens.all { token -> normalizedName.startsWith(token) || normalizedName.contains(" $token") } -> 2
-        queryTokens.any { token -> normalizedName.contains(token) } -> 3
-        else -> 4
+        foldedName == foldedQuery -> 0
+        foldedName.startsWith(foldedQuery) -> 1
+        queryTokens.all { token -> foldedName.startsWith(token) || foldedName.contains(" $token") } -> 2
+        matchedTokens == queryTokens.size -> 3
+        // Repli permissif (OR) : plus il manque de mots, plus le résultat descend.
+        matchedTokens > 0 -> 3 + (queryTokens.size - matchedTokens)
+        else -> Int.MAX_VALUE
     }
 }
 
-private fun firstMatchPosition(normalizedName: String, queryTokens: List<String>): Int {
+private fun firstMatchPosition(foldedName: String, queryTokens: List<String>): Int {
     return queryTokens.minOfOrNull { token ->
-        normalizedName.indexOf(token).takeIf { it >= 0 } ?: Int.MAX_VALUE
+        foldedName.indexOf(token).takeIf { it >= 0 } ?: Int.MAX_VALUE
     } ?: Int.MAX_VALUE
 }

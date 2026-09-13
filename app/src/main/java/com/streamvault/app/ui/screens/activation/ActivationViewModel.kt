@@ -5,10 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.streamvault.app.BuildConfig
 import com.streamvault.app.vpn.VpnDisplayPhase
 import com.streamvault.app.vpn.VpnGateResult
+import com.streamvault.app.vpn.VpnPanelBlockReporter
 import com.streamvault.app.vpn.VpnReadinessGate
 import com.streamvault.app.vpn.allowsPanelCalls
 import com.streamvault.data.remote.fuziontv.ActivateRequest
 import com.streamvault.data.remote.fuziontv.FuziontvApiException
+import com.streamvault.data.remote.xtream.XtreamAuthenticationException
+import com.streamvault.data.remote.xtream.XtreamRequestException
 import com.streamvault.data.repository.FuziontvDeviceRepositoryImpl
 import com.streamvault.domain.model.ProviderEpgSyncMode
 import com.streamvault.domain.repository.ProviderRepository
@@ -63,6 +66,7 @@ class ActivationViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
     private val diagnosticReporter: com.streamvault.app.diagnostics.DiagnosticReporter,
     private val vpnGate: VpnReadinessGate,
+    private val panelBlockReporter: VpnPanelBlockReporter,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ActivationState>(ActivationState.Loading)
@@ -70,6 +74,9 @@ class ActivationViewModel @Inject constructor(
 
     private var activationJob: Job? = null
     private var autoRetryJob: Job? = null
+
+    /** Échecs transitoires consécutifs — indexe [TRANSIENT_RETRY_BACKOFF_SECONDS]. */
+    private var transientFailures = 0
 
     /** One-shot « Continuer sans VPN » — session-scoped, jamais persisté. */
     private var skipVpnGateOnce = false
@@ -194,31 +201,88 @@ class ActivationViewModel @Inject constructor(
             message = "Activation échouée — ${kind.name.lowercase()}",
             context = buildMap { detail?.let { put("détail", it.take(300)) } },
         )
-        if (kind == ActivationFailureKind.NETWORK) {
-            scheduleNetworkAutoRetry(detail)
-        } else {
+        val retrySeconds = nextAutoRetrySeconds(kind)
+        if (retrySeconds == null) {
             _state.value = ActivationState.Failed(kind, detail)
+        } else {
+            scheduleAutoRetry(kind, detail, retrySeconds)
         }
     }
 
     /**
-     * Network failures self-heal (cable plugged back in, Wi-Fi back up):
-     * count down 30 s on screen, then retry automatically. The user can still
-     * press the Réessayer button at any point.
+     * Combien de secondes avant la reprise automatique, ou null quand réessayer ne
+     * peut rien réparer (il faut un humain : abonnement expiré, appareil à
+     * réassocier) — boucler afficherait un compte à rebours menteur.
+     *
+     * NETWORK se répare vite et tout seul (câble rebranché, Wi-Fi revenu) → 30 s
+     * fixes, comportement historique. SERVER et UNKNOWN couvrent le cas qui laissait
+     * des box mortes à vie : un 403 du panel sur une IP de sortie brûlée. Le VPN
+     * demande alors une rotation d'exit en parallèle (voir [VpnPanelBlockReporter]),
+     * et ce backoff lui laisse le temps d'aboutir (~20 s) avant de rejouer le login.
+     *
+     * Le backoff s'allonge au lieu de rester à 30 s pour une raison précise : le
+     * panel limite à ~1 requête par IP, donc une boucle serrée re-brûlerait la
+     * sortie fraîche à peine obtenue. Le compteur ne retombe qu'en atteignant Ready
+     * ([becomeReady]) : un appui répété sur « Réessayer » ne doit pas servir de
+     * contournement au rythme.
      */
-    private fun scheduleNetworkAutoRetry(detail: String?) {
+    private fun nextAutoRetrySeconds(kind: ActivationFailureKind): Int? = when (kind) {
+        ActivationFailureKind.NETWORK -> NETWORK_AUTO_RETRY_SECONDS
+        ActivationFailureKind.SERVER, ActivationFailureKind.UNKNOWN -> {
+            val idx = transientFailures.coerceIn(0, TRANSIENT_RETRY_BACKOFF_SECONDS.lastIndex)
+            transientFailures++
+            TRANSIENT_RETRY_BACKOFF_SECONDS[idx]
+        }
+        ActivationFailureKind.SUBSCRIPTION_EXPIRED,
+        ActivationFailureKind.TOKEN_RESET_NEEDED -> null
+    }
+
+    /**
+     * Compte à rebours à l'écran puis relance du flux. L'utilisateur peut toujours
+     * appuyer sur « Réessayer » avant la fin — [retry] annule ce job.
+     */
+    private fun scheduleAutoRetry(kind: ActivationFailureKind, detail: String?, seconds: Int) {
         autoRetryJob?.cancel()
         autoRetryJob = viewModelScope.launch {
-            for (remaining in NETWORK_AUTO_RETRY_SECONDS downTo 1) {
-                _state.value = ActivationState.Failed(ActivationFailureKind.NETWORK, detail, remaining)
+            for (remaining in seconds downTo 1) {
+                _state.value = ActivationState.Failed(kind, detail, remaining)
                 delay(1_000)
             }
             retry()
         }
     }
 
+    /** Seul chemin vers Ready : réarme le backoff des échecs transitoires. */
+    private fun becomeReady() {
+        transientFailures = 0
+        _state.value = ActivationState.Ready
+    }
+
+    /**
+     * Un 403 du PANEL (pas du backend FuzionTV) prouve que l'IP de sortie est
+     * refusée. Les exceptions Xtream sont ré-emballées en cours de route, d'où le
+     * parcours borné de la chaîne de causes.
+     */
+    private fun isPanelForbidden(error: Throwable?): Boolean {
+        var e = error
+        var depth = 0
+        while (e != null && depth++ < CAUSE_CHAIN_MAX_DEPTH) {
+            val status = when (e) {
+                is XtreamAuthenticationException -> e.statusCode
+                is XtreamRequestException -> e.statusCode
+                else -> null
+            }
+            if (status == 403) return true
+            e = e.cause
+        }
+        return false
+    }
+
     private companion object {
         const val NETWORK_AUTO_RETRY_SECONDS = 30
+        /** Échecs transitoires (SERVER/UNKNOWN) : 1 min, 2 min, puis 5 min. */
+        val TRANSIENT_RETRY_BACKOFF_SECONDS = intArrayOf(60, 120, 300)
+        const val CAUSE_CHAIN_MAX_DEPTH = 5
     }
 
     private suspend fun refreshIfServerConfigChanged() {
@@ -229,7 +293,7 @@ class ActivationViewModel @Inject constructor(
         val providers = providerRepository.getProviders().first()
         if (creds == null) {
             if (providers.isNotEmpty()) {
-                _state.value = ActivationState.Ready
+                becomeReady()
             } else {
                 fail(ActivationFailureKind.NETWORK, "credentials unreachable")
             }
@@ -243,7 +307,7 @@ class ActivationViewModel @Inject constructor(
             active.serverUrl.trimEnd('/').equals(creds.xtream.host.trimEnd('/'), ignoreCase = true) &&
             active.username == creds.xtream.username
         if (matchesLocal) {
-            _state.value = ActivationState.Ready
+            becomeReady()
             return
         }
 
@@ -270,12 +334,19 @@ class ActivationViewModel @Inject constructor(
                 // old proxy creds from a previous setup, etc.) is removed so
                 // the user only ever sees one playlist.
                 pruneOtherProviders(keepId = result.data.id)
-                _state.value = ActivationState.Ready
+                becomeReady()
             }
-            is com.streamvault.domain.model.Result.Error -> fail(
-                result.exception?.let(::classify) ?: ActivationFailureKind.UNKNOWN,
-                result.exception?.message ?: result.message
-            )
+            is com.streamvault.domain.model.Result.Error -> {
+                // Seul endroit d'où une box PAS ENCORE activée peut signaler une IP
+                // de sortie brûlée : tous les autres signaux 403 viennent de la
+                // lecture, qui n'arrive jamais si le login échoue. Sans ça, la box
+                // boucle ici à vie sans jamais demander une rotation d'exit.
+                if (isPanelForbidden(result.exception)) panelBlockReporter.reportPanelLogin403()
+                fail(
+                    result.exception?.let(::classify) ?: ActivationFailureKind.UNKNOWN,
+                    result.exception?.message ?: result.message
+                )
+            }
             is com.streamvault.domain.model.Result.Loading -> Unit
         }
     }

@@ -8,6 +8,10 @@
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- setWakeMode(WAKE_MODE_NETWORK) : Media3 tient lui-même un PARTIAL_WAKE_LOCK
+         et un WifiLock pendant la lecture. Sans cette permission l'appel est
+         ignoré et la puce Wi-Fi peut s'endormir en pleine lecture. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

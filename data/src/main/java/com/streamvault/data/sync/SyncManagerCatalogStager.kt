@@ -15,7 +15,8 @@ internal class SyncManagerCatalogStager(
         items: List<Movie>,
         seenStreamIds: MutableSet<Long>,
         fallbackCollector: FallbackCategoryCollector,
-        sessionId: Long?
+        sessionId: Long?,
+        providerOrder: ProviderOrderCounter
     ): StagedCatalogSnapshot {
         var resolvedSessionId = sessionId
         val acceptedEntities = ArrayList<MovieEntity>(items.size)
@@ -25,7 +26,7 @@ internal class SyncManagerCatalogStager(
                 return@forEach
             }
             fallbackCollector.record(movie.categoryId, movie.categoryName, movie.isAdult)
-            acceptedEntities += movie.toEntity()
+            acceptedEntities += providerOrder.rank(movie).toEntity()
         }
         if (acceptedEntities.isNotEmpty()) {
             if (resolvedSessionId == null) {
@@ -46,7 +47,8 @@ internal class SyncManagerCatalogStager(
         items: List<Series>,
         seenSeriesIds: MutableSet<Long>,
         fallbackCollector: FallbackCategoryCollector,
-        sessionId: Long?
+        sessionId: Long?,
+        providerOrder: ProviderOrderCounter
     ): StagedCatalogSnapshot {
         var resolvedSessionId = sessionId
         val acceptedEntities = ArrayList<SeriesEntity>(items.size)
@@ -56,7 +58,7 @@ internal class SyncManagerCatalogStager(
                 return@forEach
             }
             fallbackCollector.record(item.categoryId, item.categoryName, item.isAdult)
-            acceptedEntities += item.toEntity()
+            acceptedEntities += providerOrder.rank(item).toEntity()
         }
         if (acceptedEntities.isNotEmpty()) {
             if (resolvedSessionId == null) {
@@ -77,7 +79,8 @@ internal class SyncManagerCatalogStager(
         items: Sequence<Movie>,
         seenStreamIds: MutableSet<Long>,
         fallbackCollector: FallbackCategoryCollector,
-        sessionId: Long?
+        sessionId: Long?,
+        providerOrder: ProviderOrderCounter
     ): StagedCatalogSnapshot {
         val batch = ArrayList<Movie>(fallbackStageBatchSize)
         var currentSessionId = sessionId
@@ -90,7 +93,8 @@ internal class SyncManagerCatalogStager(
                 items = batch,
                 seenStreamIds = seenStreamIds,
                 fallbackCollector = fallbackCollector,
-                sessionId = currentSessionId
+                sessionId = currentSessionId,
+                providerOrder = providerOrder
             )
             currentSessionId = staged.sessionId
             acceptedCount += staged.acceptedCount
@@ -117,7 +121,8 @@ internal class SyncManagerCatalogStager(
         items: Sequence<Series>,
         seenSeriesIds: MutableSet<Long>,
         fallbackCollector: FallbackCategoryCollector,
-        sessionId: Long?
+        sessionId: Long?,
+        providerOrder: ProviderOrderCounter
     ): StagedCatalogSnapshot {
         val batch = ArrayList<Series>(fallbackStageBatchSize)
         var currentSessionId = sessionId
@@ -130,7 +135,8 @@ internal class SyncManagerCatalogStager(
                 items = batch,
                 seenSeriesIds = seenSeriesIds,
                 fallbackCollector = fallbackCollector,
-                sessionId = currentSessionId
+                sessionId = currentSessionId,
+                providerOrder = providerOrder
             )
             currentSessionId = staged.sessionId
             acceptedCount += staged.acceptedCount

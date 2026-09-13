@@ -66,7 +66,7 @@ class EpgResolutionEngineTest {
             listOf(EpgChannelEntity(id = 1, epgSourceId = SOURCE_1, xmltvChannelId = "bbc1.uk", displayName = "BBC One", normalizedName = "bbcone"))
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -94,7 +94,7 @@ class EpgResolutionEngineTest {
             listOf(EpgChannelEntity(id = 1, epgSourceId = SOURCE_1, xmltvChannelId = "cnn.intl", displayName = "CNN International", normalizedName = EpgNameNormalizer.normalize("CNN International")))
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -115,7 +115,7 @@ class EpgResolutionEngineTest {
         whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(channel))
         whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(10)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(listOf("local.ch1"))
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -129,12 +129,31 @@ class EpgResolutionEngineTest {
     }
 
     @Test
+    fun `resolveForProvider_providerEpgMissingForChannel_staysUnresolved`() = runTest {
+        // Regression: a partially-imported EPG used to mark every tvg-id-carrying channel
+        // as provider-native, because coverage was a single "programs table is non-empty"
+        // flag. Coverage is per-channel, so a channel the import never reached stays
+        // unresolved instead of claiming a guide it cannot show.
+        val covered = makeChannel(id = 1, name = "Covered", epgChannelId = "covered.ch")
+        val missing = makeChannel(id = 2, name = "Missing", epgChannelId = "missing.ch")
+        whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(covered, missing))
+        whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
+        whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(listOf("covered.ch"))
+
+        val summary = engine.resolveForProvider(PROVIDER_ID)
+
+        assertThat(summary.providerNativeMatches).isEqualTo(1)
+        assertThat(summary.unresolvedChannels).isEqualTo(1)
+    }
+
+    @Test
     fun `resolveForProvider_unresolvedChannel_noEpg`() = runTest {
         val channel = makeChannel(id = 1, name = "Mystery Channel", epgChannelId = null)
         whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(channel))
         whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -162,7 +181,7 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_2, xmltvChannelId = "bbc1", displayName = "BBC 1", normalizedName = "bbc1")
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -193,7 +212,7 @@ class EpgResolutionEngineTest {
             confidence = 1.0f, isManualOverride = true, updatedAt = 1000L
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(listOf(manualMapping))
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         engine.resolveForProvider(PROVIDER_ID)
 
@@ -231,7 +250,7 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_1, xmltvChannelId = "bbc.one.sd", displayName = "BBC One HD", normalizedName = EpgNameNormalizer.normalize("BBC One HD"))
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -259,7 +278,7 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_1, xmltvChannelId = "ch-b", displayName = "Channel B", normalizedName = "channelb")
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID)).thenReturn(emptyList())
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 

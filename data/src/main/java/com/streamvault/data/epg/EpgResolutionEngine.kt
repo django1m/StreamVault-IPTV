@@ -93,13 +93,12 @@ class EpgResolutionEngine @Inject constructor(
             nameIndex[sourceId] = nameMap
         }
 
-        // Check which channels have provider-native EPG data
-        val providerEpgChannelIds = channels.mapNotNull { it.epgChannelId?.trim()?.takeIf(String::isNotEmpty) }
-        val providerHasEpg = if (providerEpgChannelIds.isNotEmpty()) {
-            programDao.countByProvider(providerId) > 0
-        } else {
-            false
-        }
+        // Which channels actually have provider-native programmes. This has to be
+        // per-channel: a global "the programs table is non-empty" flag marks every
+        // channel carrying a tvg-id as covered, so a refresh that imported a handful
+        // of programmes still reports full provider-native coverage.
+        val channelIdsWithPrograms: Set<String> =
+            programDao.getChannelIdsWithPrograms(providerId).toSet()
 
         // Preserve existing manual overrides
         val existingMappings = channelEpgMappingDao.getForProvider(providerId)
@@ -164,7 +163,7 @@ class EpgResolutionEngine @Inject constructor(
             }
 
             // 4. Fall back to provider-native EPG
-            if (providerHasEpg && channelEpgId != null) {
+            if (channelEpgId != null && channelEpgId in channelIdsWithPrograms) {
                 providerNativeMatches++
                 return@map ChannelEpgMappingEntity(
                     providerChannelId = channel.id,

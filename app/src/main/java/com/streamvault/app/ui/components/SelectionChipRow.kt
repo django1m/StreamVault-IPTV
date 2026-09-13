@@ -37,6 +37,7 @@ import com.streamvault.app.ui.interaction.rememberTvInteractionSounds
 import androidx.compose.ui.graphics.Color
 import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.OsdFocus
+import com.streamvault.app.ui.design.osdSecondaryColor
 
 data class SelectionChip(
     val key: String,
@@ -148,7 +149,11 @@ fun ChipRowSection(
                             Text(
                                 text = it,
                                 style = supportingTextStyle,
-                                color = OnSurfaceDim,
+                                // OnSurfaceDim IS TextTertiary, so this is the same grey at
+                                // rest — but it also flips on the slab, which a hard-coded
+                                // grey does not: grey on white is as unreadable as white on
+                                // white, just less obviously so.
+                                color = osdSecondaryColor(wasFocused),
                                 maxLines = supportingTextMaxLines,
                                 overflow = TextOverflow.Ellipsis
                             )

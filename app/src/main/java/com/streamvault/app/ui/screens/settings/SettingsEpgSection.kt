@@ -71,7 +71,10 @@ internal fun LazyListScope.epgSourcesSection(
             )
         }
     } else {
-        items(epgSources, key = { it.id }) { source ->
+        // Both lists live in the same LazyListScope, so a raw `id` collides as soon as a
+        // source and a provider share one (both start at 1) and Compose throws
+        // "Key ... was already used". Namespace each list's keys.
+        items(epgSources, key = { "epg-source-${it.id}" }) { source ->
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -152,7 +155,7 @@ internal fun LazyListScope.epgSourcesSection(
                 modifier = Modifier.padding(bottom = 8.dp)
             )
         }
-        items(providers, key = { it.id }) { provider ->
+        items(providers, key = { "epg-provider-${it.id}" }) { provider ->
             val assignments = uiState.epgSourceAssignments[provider.id].orEmpty()
             val resolutionSummary = uiState.epgResolutionSummaries[provider.id]
             val assignedSourceIds = assignments.map { it.epgSourceId }.toSet()

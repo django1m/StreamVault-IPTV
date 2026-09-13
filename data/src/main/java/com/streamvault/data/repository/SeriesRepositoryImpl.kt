@@ -7,6 +7,7 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.XtreamProvider
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
+import com.streamvault.data.sync.ProviderOrderCounter
 import com.streamvault.data.sync.ContentCachePolicy
 import com.streamvault.domain.model.*
 import com.streamvault.domain.model.Result.Success
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import com.streamvault.data.util.toFtsAnyPrefixQuery
 import com.streamvault.data.util.toFtsPrefixQuery
 import com.streamvault.data.util.rankSearchResults
 import java.io.IOException
@@ -110,7 +112,7 @@ class SeriesRepositoryImpl @Inject constructor(
         ensureXtreamCategoryLoaded(providerId, categoryId)
         emitAll(
             combine(
-                seriesDao.getByCategoryPage(providerId, categoryId, limit, offset),
+                seriesDao.getByCategoryPage(providerId, categoryId, limit, offset, alphabetical = false),
                 preferencesRepository.parentalControlLevel
             ) { entities, level: Int ->
                 if (level == 2) {
@@ -272,23 +274,35 @@ class SeriesRepositoryImpl @Inject constructor(
         }
     }
 
-    override fun searchSeries(providerId: Long, query: String): Flow<List<Series>> =
-        query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }?.toFtsPrefixQuery().let { ftsQuery ->
-            if (ftsQuery.isNullOrBlank()) {
-            flowOf(emptyList())
-            } else combine(
-                seriesDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT),
-                preferencesRepository.parentalControlLevel
-            ) { entities, level: Int ->
-                if (level == 2) {
-                    entities.filter { !it.isUserProtected }
-                } else {
-                    entities
-                }
-            }.map { list ->
-                list.map { it.toDomain() }
-                    .rankSearchResults(query) { it.name }
+    override fun searchSeries(providerId: Long, query: String): Flow<List<Series>> {
+        val normalizedQuery = query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }
+        val strictQuery = normalizedQuery?.toFtsPrefixQuery() ?: return flowOf(emptyList())
+        val relaxedQuery = normalizedQuery.toFtsAnyPrefixQuery()
+
+        return searchSeriesMatching(providerId, strictQuery, query).flatMapLatest { strictResults ->
+            // Repli permissif quand la requête stricte ne donne rien : « walking dead saison 5 »
+            // doit remonter la série plutôt qu'un écran vide.
+            if (strictResults.isNotEmpty() || relaxedQuery == null) {
+                flowOf(strictResults)
+            } else {
+                searchSeriesMatching(providerId, relaxedQuery, query)
             }
+        }
+    }
+
+    private fun searchSeriesMatching(providerId: Long, ftsQuery: String, rawQuery: String): Flow<List<Series>> =
+        combine(
+            seriesDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT),
+            preferencesRepository.parentalControlLevel
+        ) { entities, level: Int ->
+            if (level == 2) {
+                entities.filter { !it.isUserProtected }
+            } else {
+                entities
+            }
+        }.map { list ->
+            list.map { it.toDomain() }
+                .rankSearchResults(rawQuery) { it.name }
         }
 
     override suspend fun getSeriesById(seriesId: Long): Series? =
@@ -483,6 +497,9 @@ class SeriesRepositoryImpl @Inject constructor(
     private fun seriesBrowseSource(query: LibraryBrowseQuery): Flow<List<Series>> {
         val normalizedSearch = query.searchQuery.trim()
         val fetchLimit = browseFetchLimit(query)
+        // A à Z doit être trié par SQL : la fenêtre LIMIT doit contenir les premiers titres, pas les
+        // premières séries du fournisseur retriées ensuite en mémoire.
+        val alphabetical = query.sortBy == LibrarySortBy.TITLE
         val fastFlow = when {
             normalizedSearch.length >= MIN_SEARCH_QUERY_LENGTH -> {
                 val ftsQuery = normalizedSearch.toFtsPrefixQuery() ?: return flowOf(emptyList())
@@ -537,7 +554,7 @@ class SeriesRepositoryImpl @Inject constructor(
                                 ensureXtreamCategoryLoaded(query.providerId, categoryId)
                                 emitAll(
                                     combine(
-                                        seriesDao.getByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                        seriesDao.getByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                         preferencesRepository.parentalControlLevel
                                     ) { entities, level ->
                                         if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -545,7 +562,7 @@ class SeriesRepositoryImpl @Inject constructor(
                                 )
                             }
                         } ?: combine(
-                            seriesDao.getByProviderPage(query.providerId, fetchLimit, 0),
+                            seriesDao.getByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                             preferencesRepository.parentalControlLevel
                         ) { entities, level ->
                             if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -561,7 +578,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId)
                         emitAll(
                             combine(
-                                seriesDao.getFavoritesByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                seriesDao.getFavoritesByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -569,7 +586,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    seriesDao.getFavoritesByProviderPage(query.providerId, fetchLimit, 0),
+                    seriesDao.getFavoritesByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -583,7 +600,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId)
                         emitAll(
                             combine(
-                                seriesDao.getInProgressByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                seriesDao.getInProgressByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -591,7 +608,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    seriesDao.getInProgressByProviderPage(query.providerId, fetchLimit, 0),
+                    seriesDao.getInProgressByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -605,7 +622,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId)
                         emitAll(
                             combine(
-                                seriesDao.getUnwatchedByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                seriesDao.getUnwatchedByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -613,7 +630,7 @@ class SeriesRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    seriesDao.getUnwatchedByProviderPage(query.providerId, fetchLimit, 0),
+                    seriesDao.getUnwatchedByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -805,7 +822,8 @@ class SeriesRepositoryImpl @Inject constructor(
                     xtreamProvider.getSeriesList(categoryId)
                 }) {
                     is Success -> {
-                        val entities = result.data.map { item -> item.toEntity() }
+                        val providerOrder = ProviderOrderCounter()
+                        val entities = result.data.map { item -> providerOrder.rank(item).toEntity() }
                         seriesDao.replaceCategory(providerId, categoryId, entities)
                         episodeDao.deleteOrphans()
                         seriesCategoryHydrationDao.upsert(

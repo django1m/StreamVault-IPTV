@@ -175,7 +175,13 @@ class EpgViewModel @Inject constructor(
 
     companion object {
         const val MAX_CHANNELS = 60
-        private const val MAX_XTREAM_GUIDE_FALLBACK_CHANNELS = 24
+        // Halved from 24. Requests are now paced at ~1/s in a lane shared with the
+        // catalogue sync, so the batch size IS the time the last row waits. A
+        // channel that answered with programmes is in Room and never asked again;
+        // one that answered empty carries a 6 h mark. The remaining rows therefore
+        // fill in over the next visits instead of in one long burst.
+        private const val MAX_XTREAM_GUIDE_FALLBACK_CHANNELS = 12
+        private const val XTREAM_GUIDE_FALLBACK_DEBOUNCE_MS = 400L
         const val LOOKBACK_MS = 60 * 60 * 1000L
         const val LOOKAHEAD_MS = 6 * 60 * 60 * 1000L
         const val HALF_HOUR_SHIFT_MS = 30 * 60 * 1000L
@@ -1096,6 +1102,12 @@ class EpgViewModel @Inject constructor(
         if (missingChannels.isEmpty()) {
             return emptyMap()
         }
+
+        // Debounce. This runs inside a collectLatest, so a category change, a
+        // guide-window move or a favourites edit arriving during this delay
+        // cancels us before a single request leaves the box. Cached programmes
+        // are already on screen at this point — only the panel round-trips wait.
+        kotlinx.coroutines.delay(XTREAM_GUIDE_FALLBACK_DEBOUNCE_MS)
 
         val fallbackChannels = missingChannels.take(MAX_XTREAM_GUIDE_FALLBACK_CHANNELS)
         val programsByRequest = providerRepository.getProgramsForLiveStreams(

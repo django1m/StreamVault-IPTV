@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.R
-import com.streamvault.app.BuildConfig
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.model.applyProviderCategoryDisplayPreferences
 import com.streamvault.app.ui.model.LiveTvChannelMode
@@ -15,6 +14,7 @@ import com.streamvault.app.update.AppUpdateDownloadStatus
 import com.streamvault.app.update.AppUpdateInstaller
 import com.streamvault.app.update.AppUpdateChecker
 import com.streamvault.app.update.AppUpdateInfo
+import com.streamvault.app.update.isAppUpdateNewer
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.data.sync.SyncRepairSection
@@ -59,7 +59,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlin.math.max
 import javax.inject.Inject
 
 @HiltViewModel
@@ -134,6 +133,12 @@ class SettingsViewModel @Inject constructor(
     )
 
     init {
+        // The EPG Sources screen renders `uiState.epgSources`, which only this collector
+        // fills. Without it the list stays empty for the life of the screen: an added
+        // source is written to the database but can never be seen, enabled, assigned to a
+        // provider or refreshed, so external EPG is unreachable from the UI.
+        epgActions.loadEpgSources(viewModelScope)
+
         viewModelScope.launch {
             observeSettingsPreferenceSnapshot(
                 providerRepository = providerRepository,
@@ -379,6 +384,17 @@ class SettingsViewModel @Inject constructor(
     fun setAutoCheckAppUpdates(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setAutoCheckAppUpdates(enabled)
+        }
+    }
+
+    /**
+     * Joining the beta channel takes effect on the next update check; it never
+     * downgrades a running build. Leaving it is equally safe — the device just
+     * stops being offered test builds and waits for stable to catch up.
+     */
+    fun setAppUpdateBetaChannel(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setAppUpdateBetaChannel(enabled)
         }
     }
 
@@ -638,26 +654,11 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(userMessage = null) }
     }
 
-    private fun isRemoteVersionNewer(remoteVersionCode: Int?, remoteVersionName: String): Boolean {
-        if (remoteVersionCode != null && remoteVersionCode > BuildConfig.VERSION_CODE) {
-            return true
-        }
-        return compareVersionNames(remoteVersionName, BuildConfig.VERSION_NAME) > 0
-    }
-
-    private fun compareVersionNames(left: String, right: String): Int {
-        val leftParts = left.removePrefix("v").split('.')
-        val rightParts = right.removePrefix("v").split('.')
-        val length = max(leftParts.size, rightParts.size)
-        for (index in 0 until length) {
-            val leftValue = leftParts.getOrNull(index)?.toIntOrNull() ?: 0
-            val rightValue = rightParts.getOrNull(index)?.toIntOrNull() ?: 0
-            if (leftValue != rightValue) {
-                return leftValue.compareTo(rightValue)
-            }
-        }
-        return 0
-    }
+    // Le versionCode fait autorité : voir isAppUpdateNewer. L'ancien repli sur les
+    // noms de version lisait "1.3.37-beta1" comme 1.3.0 et proposait donc une stable
+    // ANTÉRIEURE aux builds bêta (et à tous les builds mobile, suffixés -m<N>).
+    private fun isRemoteVersionNewer(remoteVersionCode: Int?, remoteVersionName: String): Boolean =
+        isAppUpdateNewer(remoteVersionCode, remoteVersionName)
 
     fun exportConfig(uriString: String) {
         backupActions.exportConfig(viewModelScope, uriString)

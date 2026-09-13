@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,6 +23,62 @@ class StreamVaultDatabaseMigrationTest {
         emptyList(),
         FrameworkSQLiteOpenHelperFactory()
     )
+
+    @Test
+    fun migrate34To35_addsSeriesProviderOrderAsUnknown() {
+        migrationTestHelper.createDatabase(testDbName, 34).apply {
+            execSQL(
+                """
+                INSERT INTO series (
+                    series_id, name, rating, last_modified, provider_id, is_adult, is_user_protected, sync_fingerprint
+                ) VALUES (3001, 'Series Prime', 8.1, 0, 1, 0, 0, 'abc')
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            testDbName,
+            35,
+            true,
+            StreamVaultDatabase.MIGRATION_34_35
+        )
+
+        migratedDb.query("SELECT provider_order FROM series WHERE series_id = 3001").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+        }
+        migratedDb.close()
+    }
+
+    @Test
+    fun migrate33To34_addsProviderOrderingColumnsAsUnknown() {
+        migrationTestHelper.createDatabase(testDbName, 33).apply {
+            execSQL(
+                """
+                INSERT INTO movies (
+                    stream_id, name, stream_url, duration_seconds, rating, provider_id,
+                    watch_progress, last_watched_at, is_adult, is_user_protected, sync_fingerprint
+                ) VALUES (2001, 'Movie Alpha', 'http://test/movie/alpha', 7200, 7.5, 1, 0, 0, 0, 0, 'abc')
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            testDbName,
+            34,
+            true,
+            StreamVaultDatabase.MIGRATION_33_34
+        )
+
+        migratedDb.query("SELECT provider_order, provider_added_at FROM movies WHERE stream_id = 2001").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+            assertEquals(0L, cursor.getLong(1))
+        }
+        migratedDb.close()
+    }
 
     @Test
     fun migrate9To10_createsBackfillsAndMaintainsFtsTables() {

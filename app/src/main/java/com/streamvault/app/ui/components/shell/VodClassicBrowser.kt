@@ -28,11 +28,13 @@ import com.streamvault.app.ui.design.LocalFormFactor
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
@@ -45,6 +47,7 @@ import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
 import androidx.compose.ui.graphics.Color
 import com.streamvault.app.ui.design.OsdFocus
+import com.streamvault.app.ui.design.osdSecondaryColor
 
 data class VodClassicCategoryOption(
     val key: String,
@@ -148,19 +151,14 @@ fun VodClassicSplitLayout(
             }
         }
 
+        // No panel: the grid sits on the ambient gradient the scaffold already installed,
+        // exactly like the channel column in Live TV. A rounded, filled box here is the
+        // "card inside a card" — and it is the second frame the eye has to cross before
+        // reaching a poster that already has its own.
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            AppColors.CanvasElevated,
-                            AppColors.Canvas
-                        )
-                    ),
-                    shape = RoundedCornerShape(28.dp)
-                )
                 .padding(horizontal = 18.dp, vertical = 16.dp)
         ) {
             content()
@@ -168,80 +166,64 @@ fun VodClassicSplitLayout(
     }
 }
 
+/**
+ * The VOD category rail row. Deliberately the same component as Live TV's `CategoryItem`
+ * down to the paddings: it is the same object in the same position on screen, and the two
+ * screens diverging was the whole complaint.
+ *
+ * Every child colour here is either [LocalContentColor] or [osdSecondaryColor]. Hard-coding
+ * one is what made this row unreadable: the slab filled in white while the label stayed
+ * `TextPrimary`, also white. See the note on [OsdFocus].
+ */
 @Composable
 private fun VodClassicCategoryRow(
     category: VodClassicCategoryOption,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(14.dp)
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
+    var isFocused by remember { mutableStateOf(false) }
+
+    TvClickableSurface(
+        onClick = category.onClick,
+        onLongClick = category.onLongClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .onFocusChanged { isFocused = it.isFocused },
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+        colors = OsdFocus.slabColors(active = category.isSelected),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale()
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .width(3.dp)
-                .height(36.dp)
-                .background(
-                    color = if (category.isSelected) AppColors.Brand else AppColors.Brand.copy(alpha = 0f),
-                    shape = RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp)
-                )
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        TvClickableSurface(
-            onClick = category.onClick,
-            onLongClick = category.onLongClick,
-            modifier = Modifier.weight(1f),
-            shape = ClickableSurfaceDefaults.shape(shape),
-            colors = ClickableSurfaceDefaults.colors(
-                containerColor = Color.Transparent,
-                focusedContainerColor = AppColors.Focus,
-                contentColor = if (category.isSelected) AppColors.ActiveText else AppColors.TextPrimary,
-                focusedContentColor = AppColors.FocusOnFill
-            ),
-            border = OsdFocus.noBorder(),
-            scale = ClickableSurfaceDefaults.scale(focusedScale = FocusSpec.FocusedScale)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Text(
+                text = category.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalContentColor.current,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (category.count > 0) {
                 Text(
-                    text = category.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (category.isSelected) AppColors.BrandStrong else AppColors.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    text = category.count.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = osdSecondaryColor(isFocused),
+                    modifier = Modifier.padding(start = 10.dp)
                 )
-                if (category.isLocked) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.home_locked_short),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = AppColors.BrandStrong
-                    )
-                }
-                if (category.count > 0) {
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                color = if (category.isSelected) AppColors.Brand.copy(alpha = 0.30f) else AppColors.SurfaceAccent.copy(alpha = 0.7f),
-                                shape = CircleShape
-                            )
-                            .padding(horizontal = 9.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = category.count.toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (category.isSelected) AppColors.BrandStrong else AppColors.TextSecondary
-                        )
-                    }
-                }
+            }
+            if (category.isLocked) {
+                Text(
+                    text = stringResource(R.string.home_locked_short),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = osdSecondaryColor(isFocused),
+                    modifier = Modifier.padding(start = 8.dp)
+                )
             }
         }
     }

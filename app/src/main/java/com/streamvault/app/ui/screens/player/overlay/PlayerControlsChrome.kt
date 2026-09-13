@@ -100,6 +100,12 @@ fun PlayerControlsOverlay(
     visible: Boolean,
     title: String,
     contentType: String,
+    /**
+     * Replay / catch-up : contentType vaut "LIVE" mais le flux est rejouable, donc
+     * la barre du bas doit montrer un playhead et les boutons avance/recul plutôt
+     * que la barre EPG et les boutons de zapping.
+     */
+    isTimeshift: Boolean = false,
     isPlaying: Boolean,
     currentProgram: Program?,
     currentChannelName: String?,
@@ -214,6 +220,7 @@ fun PlayerControlsOverlay(
             PlayerBottomBar(
                 title = title,
                 contentType = contentType,
+                isTimeshift = isTimeshift,
                 isPlaying = isPlaying,
                 currentProgram = currentProgram,
                 currentChannelName = currentChannelName,
@@ -377,6 +384,7 @@ private fun PlayerTopBar(
 private fun PlayerBottomBar(
     title: String,
     contentType: String,
+    isTimeshift: Boolean,
     isPlaying: Boolean,
     currentProgram: Program?,
     currentChannelName: String?,
@@ -431,7 +439,11 @@ private fun PlayerBottomBar(
     channelLogoUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
-    val isVod = contentType != "LIVE"
+    // Un catch-up est une chaîne (contentType "LIVE") qu’on rejoue : il lui faut la
+    // présentation VOD. Les boutons de zapping de PlayerLiveInfo et sa barre EPG
+    // n’ont aucun sens sur un programme rejoué, et sans playhead le seek au D-pad
+    // n’aurait aucun retour visuel.
+    val showLiveChrome = contentType == "LIVE" && !isTimeshift
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -447,7 +459,7 @@ private fun PlayerBottomBar(
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp)
             ) {
-                if (contentType == "LIVE") {
+                if (showLiveChrome) {
                     PlayerLiveInfo(
                         currentProgram = currentProgram,
                         currentChannelName = currentChannelName,

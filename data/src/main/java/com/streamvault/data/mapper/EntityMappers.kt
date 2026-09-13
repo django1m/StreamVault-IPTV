@@ -152,7 +152,9 @@ fun MovieEntity.toDomain() = Movie(
     lastWatchedAt = lastWatchedAt,
     isAdult = isAdult,
     isUserProtected = isUserProtected,
-    streamId = streamId
+    streamId = streamId,
+    providerOrder = providerOrder,
+    providerAddedAt = providerAddedAt
 )
 
 fun MovieBrowseEntity.toDomain() = Movie(
@@ -180,7 +182,9 @@ fun MovieBrowseEntity.toDomain() = Movie(
     lastWatchedAt = lastWatchedAt,
     isAdult = isAdult,
     isUserProtected = isUserProtected,
-    streamId = streamId
+    streamId = streamId,
+    providerOrder = providerOrder,
+    providerAddedAt = providerAddedAt
 )
 
 fun Movie.toEntity() = MovieEntity(
@@ -208,7 +212,9 @@ fun Movie.toEntity() = MovieEntity(
     watchProgress = watchProgress,
     lastWatchedAt = lastWatchedAt,
     isAdult = isAdult,
-    isUserProtected = isUserProtected
+    isUserProtected = isUserProtected,
+    providerOrder = providerOrder,
+    providerAddedAt = providerAddedAt
 )
 
 // ── Series ─────────────────────────────────────────────────────────
@@ -233,7 +239,8 @@ fun SeriesEntity.toDomain() = Series(
     providerId = providerId,
     isAdult = isAdult,
     isUserProtected = isUserProtected,
-    seriesId = seriesId
+    seriesId = seriesId,
+    providerOrder = providerOrder
 )
 
 fun SeriesBrowseEntity.toDomain() = Series(
@@ -256,7 +263,8 @@ fun SeriesBrowseEntity.toDomain() = Series(
     providerId = providerId,
     isAdult = isAdult,
     isUserProtected = isUserProtected,
-    seriesId = seriesId
+    seriesId = seriesId,
+    providerOrder = providerOrder
 )
 
 fun Series.toEntity() = SeriesEntity(
@@ -279,7 +287,8 @@ fun Series.toEntity() = SeriesEntity(
     lastModified = lastModified,
     providerId = providerId,
     isAdult = isAdult,
-    isUserProtected = isUserProtected
+    isUserProtected = isUserProtected,
+    providerOrder = providerOrder
 )
 
 // ── Episode ────────────────────────────────────────────────────────

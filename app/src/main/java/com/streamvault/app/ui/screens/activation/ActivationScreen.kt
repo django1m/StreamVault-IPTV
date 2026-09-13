@@ -229,18 +229,22 @@ fun ActivationScreen(
                             ActivationFailureKind.TOKEN_RESET_NEEDED -> "Appareil à réassocier"
                             ActivationFailureKind.UNKNOWN -> "Erreur"
                         }
+                        // Le compte à rebours n'est affiché que si le ViewModel en a
+                        // réellement programmé un : les échecs qui exigent un humain
+                        // (abonnement expiré, réassociation) ne repartent jamais seuls
+                        // et ne doivent pas promettre une nouvelle tentative.
+                        val countdown = s.retryInSeconds?.let { "\nNouvelle tentative dans $it s…" }.orEmpty()
                         val message = when (s.kind) {
                             ActivationFailureKind.NETWORK ->
-                                "La box n'arrive pas à joindre Internet.\nVérifiez le câble réseau ou le Wi-Fi." +
-                                    (s.retryInSeconds?.let { "\nNouvelle tentative dans $it s…" } ?: "")
+                                "La box n'arrive pas à joindre Internet.\nVérifiez le câble réseau ou le Wi-Fi." + countdown
                             ActivationFailureKind.SERVER ->
-                                "Le service FuzionTV est momentanément indisponible.\nRéessayez dans quelques minutes."
+                                "Le service FuzionTV est momentanément indisponible." + countdown
                             ActivationFailureKind.SUBSCRIPTION_EXPIRED ->
                                 "Votre abonnement a expiré ou cet appareil n'est pas associé.\nContactez votre revendeur."
                             ActivationFailureKind.TOKEN_RESET_NEEDED ->
                                 "Cet appareil doit être réassocié.\nContactez votre revendeur pour une réinitialisation."
                             ActivationFailureKind.UNKNOWN ->
-                                "Une erreur inattendue s'est produite.\nRéessayez, puis contactez votre revendeur si le problème persiste."
+                                "Une erreur inattendue s'est produite.\nContactez votre revendeur si le problème persiste." + countdown
                         }
                         Text(title, color = AppColors.Live, style = MaterialTheme.typography.headlineMedium)
                         Spacer(Modifier.height(12.dp))

@@ -14,6 +14,8 @@ android {
 
     defaultConfig {
         minSdk = 28
+        // Sans lui, l'APK de test tourne sous l'ancien runner JUnit3 et ne trouve aucun test JUnit4.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {

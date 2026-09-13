@@ -2,6 +2,8 @@ package com.streamvault.data.mapper
 
 import com.google.common.truth.Truth.assertThat
 import com.streamvault.data.local.entity.ChannelEntity
+import com.streamvault.data.local.entity.MovieBrowseEntity
+import com.streamvault.data.local.entity.SeriesBrowseEntity
 import com.streamvault.data.local.entity.PlaybackHistoryEntity
 import com.streamvault.data.local.entity.ProviderEntity
 import com.streamvault.domain.model.Channel
@@ -12,6 +14,7 @@ import com.streamvault.domain.model.PlaybackWatchedStatus
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.ProviderType
+import com.streamvault.domain.model.Series
 import org.junit.Test
 
 /**
@@ -114,6 +117,48 @@ class EntityMappersTest {
     }
 
     // ── Movie ─────────────────────────────────────────────────────
+
+    @Test
+    fun `series_providerOrder_survivesRoundTrip`() {
+        val original = Series(id = 5L, name = "Ordered", seriesId = 5L, providerId = 1L, providerOrder = 4)
+
+        val entity = original.toEntity()
+        val browsed = SeriesBrowseEntity(
+            id = entity.id,
+            seriesId = entity.seriesId,
+            name = entity.name,
+            providerOrder = entity.providerOrder
+        ).toDomain()
+
+        assertThat(entity.toDomain().providerOrder).isEqualTo(4)
+        assertThat(browsed.providerOrder).isEqualTo(4)
+    }
+
+    @Test
+    fun `movie_providerOrdering_survivesRoundTrip`() {
+        val original = Movie(
+            id = 5L,
+            name = "Ordered",
+            streamId = 5L,
+            providerId = 1L,
+            providerOrder = 7,
+            providerAddedAt = 1_757_012_345_000L
+        )
+
+        val entity = original.toEntity()
+        val browsed = MovieBrowseEntity(
+            id = entity.id,
+            streamId = entity.streamId,
+            name = entity.name,
+            providerOrder = entity.providerOrder,
+            providerAddedAt = entity.providerAddedAt
+        ).toDomain()
+
+        assertThat(entity.toDomain().providerOrder).isEqualTo(7)
+        assertThat(entity.toDomain().providerAddedAt).isEqualTo(1_757_012_345_000L)
+        assertThat(browsed.providerOrder).isEqualTo(7)
+        assertThat(browsed.providerAddedAt).isEqualTo(1_757_012_345_000L)
+    }
 
     @Test
     fun `movie_watchProgress_preserved`() {

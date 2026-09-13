@@ -1,8 +1,10 @@
 package com.streamvault.app.update
 
 import com.streamvault.app.BuildConfig
+import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.model.Result
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,20 +32,63 @@ data class AppUpdateInfo(
  */
 @Singleton
 class AppUpdateChecker @Inject constructor(
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val preferencesRepository: PreferencesRepository
 ) {
     private companion object {
         private const val MAX_RESPONSE_BYTES = 512 * 1024L
+        private const val CHANNEL_STABLE = "stable"
+        private const val CHANNEL_BETA = "beta"
     }
 
-    suspend fun fetchLatestRelease(): Result<AppUpdateInfo> = withContext(Dispatchers.IO) {
+    /**
+     * Resolves the update this device should be offered.
+     *
+     * Opting into the beta channel means "give me whichever build is newest",
+     * NOT "give me betas only": we query both channels and keep the higher
+     * versionCode. Querying beta alone would strand a tester on an old build
+     * during any period where no beta is published but stable has moved on —
+     * and it would also make turning the setting on look like a downgrade.
+     */
+    suspend fun fetchLatestRelease(): Result<AppUpdateInfo> {
+        val betaOptIn = try {
+            preferencesRepository.appUpdateBetaChannel.first()
+        } catch (_: IOException) {
+            // Unreadable DataStore must not block the update check; stable is
+            // the safe default. Cancellation deliberately still propagates.
+            false
+        }
+        val stable = fetchChannel(CHANNEL_STABLE)
+        if (!betaOptIn) return stable
+
+        val beta = fetchChannel(CHANNEL_BETA)
+        val stableInfo = stable.getOrNull()
+        val betaInfo = beta.getOrNull()
+        return when {
+            stableInfo == null -> beta
+            betaInfo == null -> stable
+            // Ties can't happen (version_code is globally UNIQUE backend-side),
+            // but prefer stable on equality anyway — it is the safer build.
+            (betaInfo.versionCode ?: 0) > (stableInfo.versionCode ?: 0) -> beta
+            else -> stable
+        }
+    }
+
+    private suspend fun fetchChannel(channel: String): Result<AppUpdateInfo> = withContext(Dispatchers.IO) {
         try {
             val baseUrl = BuildConfig.FUZIONTV_BASE_URL.trimEnd('/')
-            // `variant` scopes the lookup to this build's update channel. Without
+            // `variant` scopes the lookup to this build's form factor. Without
             // it the backend defaults to "tv", which would offer a TV APK to a
             // phone (and, since mobile versionCodes are offset by +100000, would
             // otherwise let a phone release reach the whole box fleet).
-            val url = "$baseUrl/api/v1/updates/latest?current=0&variant=${BuildConfig.APP_VARIANT}"
+            // `channel` is orthogonal: stable releases vs opt-in test builds.
+            // `current=0` est DÉLIBÉRÉ : on veut connaître la dernière version publiée
+            // même quand elle n’est pas plus récente que le build installé, sinon le
+            // backend répondrait updateAvailable:false (updates.js) et l’écran Réglages
+            // afficherait une erreur au lieu de « vous êtes à jour ». Le garde
+            // anti-downgrade vit donc côté client, dans isAppUpdateNewer — et lui seul.
+            val url = "$baseUrl/api/v1/updates/latest?current=0" +
+                "&variant=${BuildConfig.APP_VARIANT}&channel=$channel"
             val request = Request.Builder()
                 .url(url)
                 .header("Accept", "application/json")

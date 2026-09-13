@@ -16,7 +16,9 @@ import com.streamvault.domain.repository.ChannelRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import com.streamvault.data.util.toFtsAnyPrefixQuery
 import com.streamvault.data.util.toFtsPrefixQuery
 import com.streamvault.data.util.rankSearchResults
 import javax.inject.Inject
@@ -24,6 +26,7 @@ import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import javax.inject.Singleton
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @Singleton
 class ChannelRepositoryImpl @Inject constructor(
     private val channelDao: ChannelDao,
@@ -131,28 +134,40 @@ class ChannelRepositoryImpl @Inject constructor(
             listOf(allChannelsCategory) + filteredCategories
         }
 
-    override fun searchChannels(providerId: Long, query: String): Flow<List<Channel>> =
-        query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }?.toFtsPrefixQuery().let { ftsQuery ->
-            if (ftsQuery.isNullOrBlank()) {
-                flowOf(emptyList())
-            } else combine(
-                channelDao.search(providerId, ftsQuery, GLOBAL_SEARCH_LIMIT),
-                preferencesRepository.parentalControlLevel,
-                parentalControlManager.unlockedCategoriesForProvider(providerId),
-                preferencesRepository.liveChannelNumberingMode
-            ) { entities, level, unlockedCats, numberingMode ->
-                val filtered = if (level == 2) {
-                    entities.filter { entity ->
-                        val isUnlocked = entity.categoryId != null && unlockedCats.contains(entity.categoryId)
-                        (!entity.isAdult && !entity.isUserProtected) || isUnlocked
-                    }
-                } else {
-                    entities
-                }
+    override fun searchChannels(providerId: Long, query: String): Flow<List<Channel>> {
+        val normalizedQuery = query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }
+        val strictQuery = normalizedQuery?.toFtsPrefixQuery() ?: return flowOf(emptyList())
+        val relaxedQuery = normalizedQuery.toFtsAnyPrefixQuery()
 
-                applyNumbering(groupAndMapChannels(filtered, unlockedCats), numberingMode)
-                    .rankSearchResults(query) { it.name }
+        return searchChannelsMatching(providerId, strictQuery, query).flatMapLatest { strictResults ->
+            // Repli permissif quand la requête stricte ne donne rien : « canal sport hd » doit
+            // remonter les chaînes proches plutôt qu'un écran vide.
+            if (strictResults.isNotEmpty() || relaxedQuery == null) {
+                flowOf(strictResults)
+            } else {
+                searchChannelsMatching(providerId, relaxedQuery, query)
             }
+        }
+    }
+
+    private fun searchChannelsMatching(providerId: Long, ftsQuery: String, rawQuery: String): Flow<List<Channel>> =
+        combine(
+            channelDao.search(providerId, ftsQuery, GLOBAL_SEARCH_LIMIT),
+            preferencesRepository.parentalControlLevel,
+            parentalControlManager.unlockedCategoriesForProvider(providerId),
+            preferencesRepository.liveChannelNumberingMode
+        ) { entities, level, unlockedCats, numberingMode ->
+            val filtered = if (level == 2) {
+                entities.filter { entity ->
+                    val isUnlocked = entity.categoryId != null && unlockedCats.contains(entity.categoryId)
+                    (!entity.isAdult && !entity.isUserProtected) || isUnlocked
+                }
+            } else {
+                entities
+            }
+
+            applyNumbering(groupAndMapChannels(filtered, unlockedCats), numberingMode)
+                .rankSearchResults(rawQuery) { it.name }
         }
 
     override suspend fun getChannel(channelId: Long): Channel? =

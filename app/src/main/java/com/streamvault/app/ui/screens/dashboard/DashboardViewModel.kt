@@ -2,10 +2,10 @@ package com.streamvault.app.ui.screens.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.streamvault.app.BuildConfig
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.app.update.AppUpdateInstaller
+import com.streamvault.app.update.isAppUpdateNewer
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ContentType
@@ -282,13 +282,10 @@ class DashboardViewModel @Inject constructor(
             return@combine null
         }
 
-        val updateAvailable = if (latestVersionCode != null && latestVersionCode > BuildConfig.VERSION_CODE) {
-            true
-        } else {
-            compareVersionNames(latestVersionName, BuildConfig.VERSION_NAME) > 0
-        }
-
-        if (!updateAvailable) {
+        // Le versionCode fait autorité (isAppUpdateNewer). L’ancien repli sur les noms
+        // de version lisait "1.3.37-beta1" comme 1.3.0, ce qui affichait un bandeau
+        // « mise à jour » vers une stable ANTÉRIEURE sur tout build bêta ou mobile.
+        if (!isAppUpdateNewer(latestVersionCode, latestVersionName)) {
             return@combine null
         }
 
@@ -400,20 +397,6 @@ class DashboardViewModel @Inject constructor(
         val normalized = title.lowercase()
         val explicitTerms = listOf("porn", "porno", "xxx", "adult", "18+", "sex", "erotic", "hentai")
         return explicitTerms.any { term -> normalized.contains(term) }
-    }
-
-    private fun compareVersionNames(left: String, right: String): Int {
-        val leftParts = left.removePrefix("v").split('.')
-        val rightParts = right.removePrefix("v").split('.')
-        val length = maxOf(leftParts.size, rightParts.size)
-        for (index in 0 until length) {
-            val leftValue = leftParts.getOrNull(index)?.toIntOrNull() ?: 0
-            val rightValue = rightParts.getOrNull(index)?.toIntOrNull() ?: 0
-            if (leftValue != rightValue) {
-                return leftValue.compareTo(rightValue)
-            }
-        }
-        return 0
     }
 
     fun installDownloadedUpdate() {

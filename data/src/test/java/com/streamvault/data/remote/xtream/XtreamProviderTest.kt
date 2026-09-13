@@ -353,6 +353,29 @@ class XtreamProviderTest {
     }
 
     @Test
+    fun `getVodStreams keeps the provider added date in epoch millis`() = runBlocking {
+        val provider = XtreamProvider(
+            providerId = 42,
+            api = FakeXtreamApiService(
+                vodStreams = listOf(
+                    XtreamStream(name = "Recent", streamId = 1, added = "1757012345"),
+                    XtreamStream(name = "Undated", streamId = 2),
+                    XtreamStream(name = "Garbled", streamId = 3, added = "n/a")
+                )
+            ),
+            serverUrl = "https://example.com",
+            username = "user",
+            password = "pass"
+        )
+
+        val movies = provider.getVodStreams().getOrNull().orEmpty()
+
+        assertThat(movies.map { it.name to it.providerAddedAt })
+            .containsExactly("Recent" to 1_757_012_345_000L, "Undated" to 0L, "Garbled" to 0L)
+            .inOrder()
+    }
+
+    @Test
     fun `getLiveCategories honors explicit adult flag from xtream category payload`() = runBlocking {
         val provider = XtreamProvider(
             providerId = 42,

@@ -13,6 +13,7 @@ import com.streamvault.domain.model.LibraryFilterBy
 import com.streamvault.domain.model.LibraryFilterType
 import com.streamvault.domain.model.LibraryBrowseQuery
 import com.streamvault.domain.model.LibrarySortBy
+import com.streamvault.domain.model.MOVIE_NEWEST_FIRST
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.Result
@@ -1081,26 +1082,17 @@ class MoviesViewModel @Inject constructor(
                 )
             }
             LibraryFilterType.UNWATCHED -> searched.filter { it.watchProgress <= 0L }
-            LibraryFilterType.RECENTLY_UPDATED -> searched.sortedByDescending(::movieReleaseScore)
+            LibraryFilterType.RECENTLY_UPDATED -> searched.sortedWith(MOVIE_NEWEST_FIRST)
             LibraryFilterType.TOP_RATED -> searched.filter { it.rating > 0f }
         }
         return when (sortBy) {
             LibrarySortBy.LIBRARY -> filtered
             LibrarySortBy.TITLE -> filtered.sortedBy { it.name.lowercase() }
-            LibrarySortBy.RELEASE -> filtered.sortedByDescending(::movieReleaseScore)
-            LibrarySortBy.UPDATED -> filtered.sortedByDescending(::movieReleaseScore)
+            LibrarySortBy.RELEASE -> filtered.sortedWith(MOVIE_NEWEST_FIRST)
+            LibrarySortBy.UPDATED -> filtered.sortedWith(MOVIE_NEWEST_FIRST)
             LibrarySortBy.RATING -> filtered.sortedByDescending { it.rating }
             LibrarySortBy.WATCH_COUNT -> filtered.sortedByDescending { it.lastWatchedAt }
         }
-    }
-
-    private fun movieReleaseScore(movie: Movie): Long {
-        return movie.releaseDate
-            ?.filter { it.isDigit() }
-            ?.take(8)
-            ?.toLongOrNull()
-            ?: movie.year?.toLongOrNull()
-            ?: 0L
     }
 }
 

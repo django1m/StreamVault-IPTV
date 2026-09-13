@@ -59,6 +59,16 @@ class EpgSourceRepositoryImpl @Inject constructor(
     companion object {
         private const val TAG = "EpgSourceRepo"
         private const val MAX_EPG_SIZE_BYTES = 200L * 1_048_576 // 200 MB
+        private const val HTTP_NOT_MODIFIED = 304
+
+        /**
+         * Freshness window for an AUTOMATIC external-source refresh. Matches
+         * [com.streamvault.data.sync.ContentCachePolicy.EPG_TTL_MILLIS]: an XMLTV
+         * guide is published a few times a day at most, so anything shorter is
+         * bandwidth and exit-IP reputation spent for nothing. An explicit user
+         * refresh bypasses it.
+         */
+        private const val EXTERNAL_SOURCE_TTL_MILLIS = 6L * 60 * 60 * 1000L
         private const val CHANNEL_BATCH_SIZE = 500
         private const val PROGRAMME_BATCH_SIZE = 500
     }
@@ -164,11 +174,12 @@ class EpgSourceRepositoryImpl @Inject constructor(
     // ── Refresh / Ingestion ────────────────────────────────────────
 
     override suspend fun refreshSource(sourceId: Long): Result<Unit> =
-        refreshSourceInternal(sourceId, resolveAffectedProviders = true)
+        refreshSourceInternal(sourceId, resolveAffectedProviders = true, respectTtl = false)
 
     private suspend fun refreshSourceInternal(
         sourceId: Long,
-        resolveAffectedProviders: Boolean
+        resolveAffectedProviders: Boolean,
+        respectTtl: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val mutex = sourceRefreshMutexes.computeIfAbsent(sourceId) { Mutex() }
         mutex.withLock {
@@ -176,6 +187,20 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 ?: return@withLock Result.error("Source not found")
 
             val now = System.currentTimeMillis()
+
+            // An automatic refresh inside the TTL is pure waste: the previous
+            // import is still current and re-downloading it only spends exit-IP
+            // reputation. An explicit user refresh passes respectTtl = false.
+            if (respectTtl &&
+                source.lastSuccessAt > 0L &&
+                now - source.lastSuccessAt < EXTERNAL_SOURCE_TTL_MILLIS
+            ) {
+                Log.d(TAG, "Skipping source $sourceId: refreshed ${(now - source.lastSuccessAt) / 60_000}min ago")
+                return@withLock Result.success(Unit)
+            }
+
+            var responseEtag: String? = null
+            var responseLastModified: String? = null
             try {
                 epgSourceDao.updateRefreshStatus(sourceId, now, null)
 
@@ -187,8 +212,24 @@ class EpgSourceRepositoryImpl @Inject constructor(
                             return@withLock Result.error(err)
                         }
                 } else {
-                    val request = Request.Builder().url(source.url).build()
+                    // Conditional GET. When the server answers 304 we skip the whole
+                    // download AND the delete+reparse below — a few hundred bytes on
+                    // the wire instead of several MB, and zero DB churn on the 2 GB box.
+                    val request = Request.Builder()
+                        .url(source.url)
+                        .apply {
+                            source.httpEtag?.takeIf { it.isNotBlank() }?.let { header("If-None-Match", it) }
+                            source.httpLastModified?.takeIf { it.isNotBlank() }?.let { header("If-Modified-Since", it) }
+                        }
+                        .build()
                     val response = okHttpClient.newCall(request).execute()
+
+                    if (response.code == HTTP_NOT_MODIFIED) {
+                        response.close()
+                        epgSourceDao.updateNotModified(sourceId, System.currentTimeMillis())
+                        Log.d(TAG, "Source $sourceId unchanged (304) — download and reparse skipped")
+                        return@withLock Result.success(Unit)
+                    }
 
                     if (!response.isSuccessful) {
                         val err = "HTTP ${response.code}"
@@ -204,6 +245,9 @@ class EpgSourceRepositoryImpl @Inject constructor(
                         epgSourceDao.updateRefreshStatus(sourceId, now, err)
                         return@withLock Result.error(err)
                     }
+
+                    responseEtag = response.header("ETag")
+                    responseLastModified = response.header("Last-Modified")
 
                     response.body?.byteStream() ?: run {
                         epgSourceDao.updateRefreshStatus(sourceId, now, "Empty response")
@@ -286,7 +330,15 @@ class EpgSourceRepositoryImpl @Inject constructor(
                     epgProgrammeDao.insertAll(programmeBatch.toList())
                 }
 
-                epgSourceDao.updateRefreshSuccess(sourceId, System.currentTimeMillis())
+                // Store the validators only now: a download that threw mid-parse must
+                // not leave behind an ETag that would make the next refresh a 304 on
+                // top of half-ingested data.
+                epgSourceDao.updateRefreshSuccessWithValidators(
+                    id = sourceId,
+                    at = System.currentTimeMillis(),
+                    etag = responseEtag,
+                    lastModified = responseLastModified
+                )
                 if (resolveAffectedProviders) {
                     resolveAffectedProviders(providerEpgSourceDao.getProviderIdsForSourceSync(sourceId))
                 }
@@ -304,7 +356,13 @@ class EpgSourceRepositoryImpl @Inject constructor(
         val assignments = providerEpgSourceDao.getEnabledForProviderSync(providerId)
         val errors = mutableListOf<String>()
         for (assignment in assignments) {
-            val result = refreshSourceInternal(assignment.epgSourceId, resolveAffectedProviders = false)
+            // TTL-respecting: this runs on every provider sync, and an XMLTV guide
+            // that was imported an hour ago has nothing new to give.
+            val result = refreshSourceInternal(
+                sourceId = assignment.epgSourceId,
+                resolveAffectedProviders = false,
+                respectTtl = true
+            )
             if (result is Result.Error) {
                 errors.add("Source ${assignment.epgSourceId}: ${result.message}")
             }

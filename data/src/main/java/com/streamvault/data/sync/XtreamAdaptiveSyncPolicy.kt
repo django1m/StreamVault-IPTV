@@ -5,11 +5,26 @@ import com.streamvault.data.remote.xtream.XtreamNetworkException
 import com.streamvault.data.remote.xtream.XtreamRequestException
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-internal class XtreamAdaptiveSyncPolicy {
+/**
+ * Per-provider request pacing and ban avoidance, shared by EVERY control-plane
+ * caller that touches `player_api.php` — the catalogue sync AND the on-demand
+ * EPG hydration the guide/home screens perform while the user browses.
+ *
+ * Sharing is the whole point: the provider counts requests per exit IP, not per
+ * feature. A 24-channel `get_short_epg` burst fired while a catalogue sync is
+ * pacing itself at ~1 req/s is, from the panel's side, exactly the abuse pattern
+ * that got the VPN exit IP banned — and a banned exit IP takes every other
+ * client behind that IP down with it. One instance = one pacing lane and one
+ * health state per provider, so a 403 seen by either side cools down both.
+ */
+@Singleton
+class XtreamAdaptiveSyncPolicy @Inject constructor() {
     private companion object {
         const val MAX_SEGMENTED_CONCURRENCY = 4
     }
@@ -18,6 +33,10 @@ internal class XtreamAdaptiveSyncPolicy {
         LIGHTWEIGHT(15_000L),
         CATEGORY(35_000L),
         PAGED(40_000L),
+        // User-facing guide hydration. A short timeout keeps a stalled panel from
+        // freezing the EPG grid, and it is paced like the segmented stages so a
+        // scroll burst can never out-run the catalogue sync's cadence.
+        ON_DEMAND_EPG(12_000L),
         HEAVY(null)
     }
 
@@ -86,6 +105,10 @@ internal class XtreamAdaptiveSyncPolicy {
                 workloadSize <= 60 -> 3
                 else -> 4
             }
+            // Never more than 2 in flight: the guide only needs the visible rows
+            // filled, and the price of being wrong here is the exit IP, not a
+            // slower scroll.
+            Stage.ON_DEMAND_EPG -> if (workloadSize <= 2) 1 else 2
             Stage.HEAVY -> 1
         }
         val adjusted = when {
@@ -148,9 +171,10 @@ internal class XtreamAdaptiveSyncPolicy {
                 // MINUTES, not milliseconds. A ~6 s backoff just lets the next sync
                 // pass re-hammer the still-banned IP and re-burn live. Cool the whole
                 // provider for minutes so the ban can clear before we touch it again.
-                // This gates ONLY catalog-sync requests (via awaitTurn) — never live
-                // playback, which uses a separate HTTP path — so a long cooldown has
-                // zero cost to viewing.
+                // This gates ONLY control-plane requests (via awaitTurn): catalogue
+                // sync and on-demand guide hydration. Live playback uses a separate
+                // HTTP client and path, so a long cooldown costs viewing nothing —
+                // at worst the guide falls back to whatever is already in Room.
                 signal == StressSignal.THROTTLED -> 60_000L + (60_000L * finalStress)
                 signal == StressSignal.TIMEOUT -> 350L * finalStress
                 signal == StressSignal.CONNECTION_RESET || signal == StressSignal.CONNECTION_FAILURE -> 250L * finalStress
@@ -235,7 +259,7 @@ internal class XtreamAdaptiveSyncPolicy {
     }
 
     private fun segmentedRequestSpacingFor(providerId: Long, stage: Stage): Long {
-        if (stage != Stage.CATEGORY && stage != Stage.PAGED) {
+        if (stage != Stage.CATEGORY && stage != Stage.PAGED && stage != Stage.ON_DEMAND_EPG) {
             return 0L
         }
         val health = providerHealth[providerId] ?: ProviderHealth()
@@ -246,6 +270,13 @@ internal class XtreamAdaptiveSyncPolicy {
         val baseSpacingMs = when (stage) {
             Stage.CATEGORY -> 800L
             Stage.PAGED -> 600L
+            // Deliberately the SAME cadence as CATEGORY rather than something
+            // snappier. 800 ms is the spacing that empirically stopped tripping
+            // this provider's abuse ban; a user-facing burst is not a reason to
+            // run 1.6x faster than the only rate we have evidence for. The guide
+            // stays responsive anyway because Room data renders immediately and
+            // the empty-guide marks make this burst a one-off per channel.
+            Stage.ON_DEMAND_EPG -> 800L
             else -> 0L
         }
         val stressSpacingMs = when {

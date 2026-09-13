@@ -42,4 +42,38 @@ class SearchRankingUtilsTest {
             "Galactic Wars of the Stars"
         ).inOrder()
     }
+
+    /** L'index FTS replie les accents (`unicode61`) : le classement doit les replier aussi. */
+    @Test
+    fun `rankSearchResults ignores accents and case`() {
+        val results = listOf(
+            "Le Fabuleux Destin d'Amélie Poulain",
+            "Amélie Poulain"
+        )
+
+        val ranked = results.rankSearchResults("amelie") { it }
+
+        assertThat(ranked).containsExactly(
+            "Amélie Poulain",
+            "Le Fabuleux Destin d'Amélie Poulain"
+        ).inOrder()
+    }
+
+    /** Repli permissif : plus il manque de mots de la requête, plus le résultat descend. */
+    @Test
+    fun `rankSearchResults orders partial matches by how many tokens matched`() {
+        val results = listOf(
+            "VF Sport",
+            "Matrix",
+            "Matrix Reloaded"
+        )
+
+        val ranked = results.rankSearchResults("matrix reloaded vf") { it }
+
+        assertThat(ranked).containsExactly(
+            "Matrix Reloaded",
+            "Matrix",
+            "VF Sport"
+        ).inOrder()
+    }
 }

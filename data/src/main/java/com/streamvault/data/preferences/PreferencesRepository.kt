@@ -109,6 +109,7 @@ class PreferencesRepository @Inject constructor(
         val XTREAM_TEXT_IMPORT_GENERATION = longPreferencesKey("xtream_text_import_generation")
         val PREVENT_STANDBY_DURING_PLAYBACK = booleanPreferencesKey("prevent_standby_during_playback")
         val AUTO_CHECK_APP_UPDATES = booleanPreferencesKey("auto_check_app_updates")
+        val APP_UPDATE_BETA_CHANNEL = booleanPreferencesKey("app_update_beta_channel")
         val LAST_APP_UPDATE_CHECK_TIMESTAMP = longPreferencesKey("last_app_update_check_timestamp")
         val APP_UPDATE_DOWNLOAD_ID = longPreferencesKey("app_update_download_id")
         val APP_UPDATE_DOWNLOADED_VERSION_NAME = stringPreferencesKey("app_update_downloaded_version_name")
@@ -378,6 +379,16 @@ class PreferencesRepository @Inject constructor(
         preferences[PreferencesKeys.AUTO_CHECK_APP_UPDATES] ?: true
     }
 
+    /**
+     * Opt-in to the beta update channel. Defaults to false: a box only ever sees
+     * test builds if its owner asked for them. Turning it back off does not
+     * downgrade — the device simply waits for the stable release to overtake the
+     * beta it is running.
+     */
+    val appUpdateBetaChannel: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.APP_UPDATE_BETA_CHANNEL] ?: false
+    }
+
     val lastAppUpdateCheckTimestamp: Flow<Long?> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.LAST_APP_UPDATE_CHECK_TIMESTAMP]?.takeIf { it > 0L }
     }
@@ -441,6 +452,12 @@ class PreferencesRepository @Inject constructor(
     suspend fun setAutoCheckAppUpdates(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_CHECK_APP_UPDATES] = enabled
+        }
+    }
+
+    suspend fun setAppUpdateBetaChannel(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.APP_UPDATE_BETA_CHANNEL] = enabled
         }
     }
 

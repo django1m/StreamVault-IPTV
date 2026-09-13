@@ -27,6 +27,9 @@ import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.mock
+import okhttp3.ResponseBody.Companion.asResponseBody
+import okio.buffer
+import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import com.streamvault.domain.repository.EpgSourceRepository
 import org.mockito.kotlin.verify
@@ -50,6 +53,10 @@ class EpgRepositoryImplTest {
         whenever(xmltvParser.maybeDecompressGzip(any(), any())).thenAnswer { invocation ->
             invocation.getArgument(1)
         }
+        // countByProvider is a suspend function, so an unstubbed call returns null and NPEs on
+        // unboxing rather than defaulting to 0. Give every test a neutral count; the tests that
+        // exercise the size guards override it.
+        runBlocking { whenever(programDao.countByProvider(any())).thenReturn(0) }
     }
 
     @Test
@@ -274,8 +281,142 @@ class EpgRepositoryImplTest {
         assertThat(insertedPrograms.allValues.flatten().map { it.title }).contains("Morning News")
     }
 
+    @Test
+    fun `refreshEpg keeps a truncated import when it beats the live guide`() = runTest {
+        // Truncated body: the closing </tv> never arrives, so the parser throws mid-stream.
+        val truncated = """
+            <tv>
+              <programme channel="a" start="20260101000000 +0000" stop="20260101010000 +0000">
+                <title>Kept</title>
+              </programme>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        whenever(programDao.countByProvider(-7L)).thenReturn(120_000)
+        whenever(programDao.countByProvider(7L)).thenReturn(8)
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = XmltvParser(),
+            okHttpClient = okHttpClientTruncatingAfter(truncated),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml")
+
+        // Reported as an error so the caller never stamps lastEpgSync...
+        assertThat(result.isError).isTrue()
+        assertThat(result.toString()).contains("Partial EPG kept")
+        // ...but the partial data is promoted instead of discarded.
+        verify(programDao).moveToProvider(-7L, 7L)
+    }
+
+    @Test
+    fun `refreshEpg discards a truncated import smaller than the live guide`() = runTest {
+        val truncated = """
+            <tv>
+              <programme channel="a" start="20260101000000 +0000" stop="20260101010000 +0000">
+                <title>Dropped</title>
+              </programme>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        whenever(programDao.countByProvider(-7L)).thenReturn(1_000)
+        whenever(programDao.countByProvider(7L)).thenReturn(234_021)
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = XmltvParser(),
+            okHttpClient = okHttpClientTruncatingAfter(truncated),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml")
+
+        assertThat(result.isError).isTrue()
+        assertThat(result.toString()).contains("Failed to refresh EPG")
+        // A retry that got less than what is already live must not shrink the guide.
+        verify(programDao, never()).moveToProvider(-7L, 7L)
+    }
+
+    @Test
+    fun `refreshEpg refuses a parseable import that would collapse the guide`() = runTest {
+        // A truncated XMLTV does not necessarily throw: a clean end-of-stream parses fine and
+        // reaches the success path, where an unconditional swap used to wipe a full guide.
+        val tiny = """
+            <tv>
+              <programme channel="a" start="20260101000000 +0000" stop="20260101010000 +0000">
+                <title>Only one</title>
+              </programme>
+            </tv>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        whenever(programDao.countByProvider(-7L)).thenReturn(102)
+        whenever(programDao.countByProvider(7L)).thenReturn(238_672)
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = XmltvParser(),
+            okHttpClient = okHttpClientReturningBody(tiny),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml")
+
+        assertThat(result.isError).isTrue()
+        assertThat(result.toString()).contains("EPG import refused")
+        verify(programDao, never()).moveToProvider(-7L, 7L)
+    }
+
+    @Test
+    fun `refreshEpg accepts an import of comparable size`() = runTest {
+        val body = """
+            <tv>
+              <programme channel="a" start="20260101000000 +0000" stop="20260101010000 +0000">
+                <title>Fine</title>
+              </programme>
+            </tv>
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        // Ordinary variation must still go through: the guard only blocks a collapse.
+        whenever(programDao.countByProvider(-7L)).thenReturn(900)
+        whenever(programDao.countByProvider(7L)).thenReturn(1_000)
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = XmltvParser(),
+            okHttpClient = okHttpClientReturningBody(body),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml")
+
+        assertThat(result.isSuccess).isTrue()
+        verify(programDao).moveToProvider(-7L, 7L)
+    }
+
     private fun okHttpClientReturningXml(): OkHttpClient =
         okHttpClientReturningBody("<tv></tv>".toByteArray(Charsets.UTF_8))
+
+    private fun okHttpClientTruncatingAfter(prefix: ByteArray): OkHttpClient =
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val dying = object : okio.ForwardingSource(okio.Buffer().write(prefix)) {
+                    private var delivered = 0L
+                    override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                        if (delivered >= prefix.size) throw java.io.EOFException()
+                        val n = super.read(sink, byteCount)
+                        if (n > 0) delivered += n
+                        return n
+                    }
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(dying.buffer().asResponseBody("application/xml".toMediaType(), -1L))
+                    .build()
+            }
+            .build()
 
     private fun okHttpClientReturningBody(
         body: ByteArray,

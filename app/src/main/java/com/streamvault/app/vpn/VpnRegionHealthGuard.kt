@@ -77,6 +77,9 @@ class VpnRegionHealthGuard @Inject constructor(
         submit(VpnRegionHealthPolicy.Event.Enforced403(region, "$providerId:$contentId"))
     fun onLiveSuccess(region: String) = submit(VpnRegionHealthPolicy.Event.LiveSuccess(region))
     fun onLiveProbe403() = submit(VpnRegionHealthPolicy.Event.LiveProbe403)
+    fun onLiveBlackhole(region: String, providerId: Long, contentId: Long) =
+        submit(VpnRegionHealthPolicy.Event.LiveBlackhole(region, "$providerId:$contentId"))
+    fun onPanelLogin403() = submit(VpnRegionHealthPolicy.Event.PanelLogin403)
     fun onServerAssignedRegion(region: String?) =
         submit(VpnRegionHealthPolicy.Event.ServerAssignedRegion(region))
     fun onAdminVpnCycle() = submit(VpnRegionHealthPolicy.Event.AdminVpnCycleReset)
@@ -112,7 +115,17 @@ class VpnRegionHealthGuard @Inject constructor(
         when (d) {
             is VpnRegionHealthPolicy.Decision.ScheduleRetryCycle -> _retryCycles.tryEmit(d.delayMs)
             is VpnRegionHealthPolicy.Decision.RequestFallback -> _fallbackRequests.tryEmit(d)
-            is VpnRegionHealthPolicy.Decision.RequestEgressRotation -> _egressRotateRequests.tryEmit(d)
+            is VpnRegionHealthPolicy.Decision.RequestEgressRotation -> {
+                // Leave a trace on the panel. A rotation is rare (≤3 per 6 h) and it
+                // is the only externally visible sign of an exit IP going bad — the
+                // blackhole case in particular produces no error anywhere else, so
+                // without this line a support session starts from nothing.
+                diagnosticReporter.report(
+                    DiagnosticSeverity.WARNING, DiagnosticCategory.VPN,
+                    "VPN : rotation de l'IP de sortie dans ${d.failedRegion} — ${d.evidenceSummary}",
+                )
+                _egressRotateRequests.tryEmit(d)
+            }
             is VpnRegionHealthPolicy.Decision.RequestConfirmatoryLiveProbe ->
                 Log.d(TAG, "class-B: awaiting organic live proof (spacing ${d.minSpacingMs}ms)")
             is VpnRegionHealthPolicy.Decision.EnterTerminal -> diagnosticReporter.report(

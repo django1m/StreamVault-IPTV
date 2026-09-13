@@ -10,6 +10,7 @@ import com.streamvault.data.remote.xtream.XtreamProvider
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.data.security.CredentialDecryptionException
 import com.streamvault.data.sync.SyncManager
+import com.streamvault.data.sync.XtreamAdaptiveSyncPolicy
 import com.streamvault.data.util.ProviderInputSanitizer
 import com.streamvault.data.util.UrlSecurityPolicy
 import com.streamvault.domain.model.*
@@ -27,8 +28,25 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * How long a channel that the panel has no guide data for stays marked as such
+ * before we are willing to ask again.
+ *
+ * Without this mark, a channel with no EPG costs TWO panel requests
+ * (`get_short_epg`, then the `get_simple_data_table` fallback) EVERY time it
+ * scrolls back into view — forever, because an empty answer leaves nothing in
+ * Room to short-circuit the next lookup. On a panel where a third of the
+ * line-up has no guide, browsing the grid alone out-requests a full catalogue
+ * sync within minutes.
+ */
+private const val EMPTY_GUIDE_MARK_TTL_MILLIS = 6L * 60 * 60 * 1000L
 
 @Singleton
 class ProviderRepositoryImpl @Inject constructor(
@@ -40,9 +58,13 @@ class ProviderRepositoryImpl @Inject constructor(
     private val preferencesRepository: PreferencesRepository,
     private val syncManager: SyncManager,
     private val syncMetadataRepository: SyncMetadataRepository,
-    private val transactionRunner: DatabaseTransactionRunner
+    private val transactionRunner: DatabaseTransactionRunner,
+    private val adaptiveSyncPolicy: XtreamAdaptiveSyncPolicy
 ) : ProviderRepository {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** providerId to streamId to instant after which we may ask the panel again. */
+    private val emptyGuideMarks = ConcurrentHashMap<Long, ConcurrentHashMap<Long, Long>>()
 
     override fun getProviders(): Flow<List<Provider>> =
         providerDao.getAll().map { entities -> entities.map { it.toPublicDomain() } }
@@ -72,6 +94,7 @@ class ProviderRepositoryImpl @Inject constructor(
         programDao.deleteByProvider(id)
         providerDao.delete(id)
         syncManager.onProviderDeleted(id)
+        clearEmptyGuideMarks(id)
         Result.success(Unit)
     } catch (e: Exception) {
         Result.error("Failed to delete provider: ${e.message}", e)
@@ -296,14 +319,31 @@ class ProviderRepositoryImpl @Inject constructor(
         epgChannelId: String?,
         limit: Int
     ): Result<List<Program>> {
+        if (isMarkedEmptyGuide(providerId, streamId)) {
+            return Result.success(emptyList())
+        }
         return when (val providerContextResult = createXtreamLiveProgramProviderContext(providerId)) {
-            is Result.Success -> fetchXtreamProgramsForLiveStream(
-                providerId = providerId,
-                streamId = streamId,
-                epgChannelId = epgChannelId,
-                limit = limit,
-                xtreamProvider = providerContextResult.data
-            )
+            is Result.Success -> {
+                adaptiveSyncPolicy.awaitTurn(providerId, XtreamAdaptiveSyncPolicy.Stage.ON_DEMAND_EPG)
+                val result = fetchXtreamProgramsForLiveStream(
+                    providerId = providerId,
+                    streamId = streamId,
+                    epgChannelId = epgChannelId,
+                    limit = limit,
+                    xtreamProvider = providerContextResult.data
+                )
+                when (result) {
+                    is Result.Success -> {
+                        adaptiveSyncPolicy.recordSuccess(providerId)
+                        if (result.data.isNotEmpty()) refreshCachedEpgCount(providerId)
+                    }
+                    is Result.Error -> result.exception
+                        ?.takeIf(adaptiveSyncPolicy::isProviderStress)
+                        ?.let { adaptiveSyncPolicy.recordFailure(providerId, it) }
+                    is Result.Loading -> Unit
+                }
+                result
+            }
             is Result.Error -> Result.error(providerContextResult.message, providerContextResult.exception)
             is Result.Loading -> Result.error("Unexpected loading state")
         }
@@ -321,30 +361,102 @@ class ProviderRepositoryImpl @Inject constructor(
             return emptyMap()
         }
 
+        // Channels the panel already told us it has no guide for are skipped
+        // outright: they are the ones that would otherwise be re-asked on every
+        // scroll, and asking again inside the TTL cannot produce a new answer.
+        val fetchable = normalizedRequests.filterNot { isMarkedEmptyGuide(providerId, it.streamId) }
+        if (fetchable.isEmpty()) {
+            return emptyMap()
+        }
+
         return when (val providerContextResult = createXtreamLiveProgramProviderContext(providerId)) {
             is Result.Success -> coroutineScope {
-                normalizedRequests
+                // Two permits, and every request additionally waits its turn in the
+                // provider-wide pacing lane shared with the catalogue sync. The
+                // previous unbounded `async` fan-out put up to 24 (x2 with the
+                // fallback) requests on the wire at once with no spacing — the
+                // exact burst shape that gets an exit IP abuse-banned.
+                val gate = Semaphore(
+                    adaptiveSyncPolicy.concurrencyFor(
+                        providerId = providerId,
+                        workloadSize = fetchable.size,
+                        preferSequential = false,
+                        stage = XtreamAdaptiveSyncPolicy.Stage.ON_DEMAND_EPG
+                    )
+                )
+                // A 403/429 means the panel is already refusing this IP. Finishing
+                // the burst would only deepen the ban and can take live playback
+                // down with it, so the first throttle aborts the whole batch —
+                // same rule the catalogue sync applies.
+                val throttled = AtomicBoolean(false)
+                fetchable
                     .map { request ->
                         async {
-                            request to fetchXtreamProgramsForLiveStream(
-                                providerId = providerId,
-                                streamId = request.streamId,
-                                epgChannelId = request.epgChannelId,
-                                limit = limit,
-                                xtreamProvider = providerContextResult.data
-                            )
+                            if (throttled.get()) return@async null
+                            val result = gate.withPermit {
+                                if (throttled.get()) return@withPermit null
+                                adaptiveSyncPolicy.awaitTurn(providerId, XtreamAdaptiveSyncPolicy.Stage.ON_DEMAND_EPG)
+                                if (throttled.get()) return@withPermit null
+                                fetchXtreamProgramsForLiveStream(
+                                    providerId = providerId,
+                                    streamId = request.streamId,
+                                    epgChannelId = request.epgChannelId,
+                                    limit = limit,
+                                    xtreamProvider = providerContextResult.data
+                                )
+                            } ?: return@async null
+                            when (result) {
+                                is Result.Success -> adaptiveSyncPolicy.recordSuccess(providerId)
+                                is Result.Error -> result.exception?.let { error ->
+                                    if (adaptiveSyncPolicy.isProviderStress(error)) {
+                                        adaptiveSyncPolicy.recordFailure(providerId, error)
+                                    }
+                                    if (adaptiveSyncPolicy.isThrottleSignal(error)) {
+                                        throttled.set(true)
+                                    }
+                                }
+                                is Result.Loading -> Unit
+                            }
+                            request to result
                         }
                     }
                     .awaitAll()
+                    .filterNotNull()
                     .toMap()
+                    .also { fetched ->
+                        if (fetched.values.any { it is Result.Success && it.data.isNotEmpty() }) {
+                            refreshCachedEpgCount(providerId)
+                        }
+                    }
             }
-            is Result.Error -> normalizedRequests.associateWith { request ->
+            is Result.Error -> fetchable.associateWith {
                 Result.error(providerContextResult.message, providerContextResult.exception)
             }
-            is Result.Loading -> normalizedRequests.associateWith {
+            is Result.Loading -> fetchable.associateWith {
                 Result.error("Unexpected loading state")
             }
         }
+    }
+
+    private fun isMarkedEmptyGuide(providerId: Long, streamId: Long): Boolean {
+        val marks = emptyGuideMarks[providerId] ?: return false
+        val expiresAt = marks[streamId] ?: return false
+        if (System.currentTimeMillis() >= expiresAt) {
+            marks.remove(streamId)
+            return false
+        }
+        return true
+    }
+
+    private fun markEmptyGuide(providerId: Long, streamId: Long) {
+        if (streamId <= 0L) return
+        emptyGuideMarks
+            .computeIfAbsent(providerId) { ConcurrentHashMap() }[streamId] =
+            System.currentTimeMillis() + EMPTY_GUIDE_MARK_TTL_MILLIS
+    }
+
+    private fun clearEmptyGuideMarks(providerId: Long) {
+        emptyGuideMarks.remove(providerId)
     }
 
     override suspend fun buildCatchUpUrl(providerId: Long, streamId: Long, start: Long, end: Long): String? {
@@ -450,19 +562,33 @@ class ProviderRepositoryImpl @Inject constructor(
                 programs = shortPrograms
             )
             cacheProgramsForChannel(providerId, normalizedPrograms)
-            refreshCachedEpgMetadata(providerId)
             return Result.success(normalizedPrograms)
         }
 
+        // If the short call was REFUSED (403/429/auth) rather than answered empty,
+        // the panel is already rate-limiting this exit IP. Firing the fallback
+        // would be a second request into an active ban — exactly what deepens it.
+        (shortProgramsResult as? Result.Error)?.exception
+            ?.takeIf(adaptiveSyncPolicy::isThrottleSignal)
+            ?.let { return shortProgramsResult }
+
+        // `get_short_epg` answering successfully with nothing is the panel saying
+        // "no guide for this channel". The `get_simple_data_table` fallback exists
+        // for panels that only populate the full table, so it is still worth one
+        // try — but the empty mark below makes sure this pair of requests happens
+        // once per channel per TTL, not once per scroll.
         return when (val fullProgramsResult = xtreamProvider.getEpg(streamId.toString())) {
             is Result.Success -> {
+                if (fullProgramsResult.data.isEmpty()) {
+                    markEmptyGuide(providerId, streamId)
+                    return Result.success(emptyList())
+                }
                 val normalizedPrograms = normalizeXtreamPrograms(
                     providerId = providerId,
                     channelId = epgChannelId ?: streamId.toString(),
                     programs = fullProgramsResult.data.sortedBy { it.startTime }
                 )
                 cacheProgramsForChannel(providerId, normalizedPrograms)
-                refreshCachedEpgMetadata(providerId)
                 Result.success(normalizedPrograms)
             }
             is Result.Error -> {
@@ -529,10 +655,19 @@ class ProviderRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun refreshCachedEpgMetadata(providerId: Long) {
-        val now = System.currentTimeMillis()
+    /**
+     * Refreshes the displayed programme count only.
+     *
+     * It deliberately does NOT stamp `lastEpgSync`. That field is the 6 h TTL gate
+     * for the real XMLTV import; letting a single channel's on-demand lookup reset
+     * it meant that a user who browsed the guide kept postponing the full EPG
+     * sync indefinitely, and then paid for the missing guide one `get_short_epg`
+     * at a time. Called once per batch, not once per channel — the count is a
+     * statistic and a full `countByProvider` per row is pure DB churn on the
+     * 2 GB box.
+     */
+    private suspend fun refreshCachedEpgCount(providerId: Long) {
         val metadata = (syncMetadataRepository.getMetadata(providerId) ?: SyncMetadata(providerId)).copy(
-            lastEpgSync = now,
             epgCount = programDao.countByProvider(providerId)
         )
         syncMetadataRepository.updateMetadata(metadata)

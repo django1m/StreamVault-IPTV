@@ -17,14 +17,17 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.remote.xtream.XtreamProvider
 import com.streamvault.data.security.CredentialCrypto
+import com.streamvault.data.sync.ProviderOrderCounter
 import com.streamvault.data.sync.ContentCachePolicy
 import com.streamvault.data.util.rankSearchResults
+import com.streamvault.data.util.toFtsAnyPrefixQuery
 import com.streamvault.data.util.toFtsPrefixQuery
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.LibraryFilterType
 import com.streamvault.domain.model.LibraryBrowseQuery
 import com.streamvault.domain.model.LibrarySortBy
+import com.streamvault.domain.model.MOVIE_NEWEST_FIRST
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.PagedResult
 import com.streamvault.domain.model.ProviderType
@@ -117,7 +120,7 @@ class MovieRepositoryImpl @Inject constructor(
         ensureXtreamCategoryLoaded(providerId, categoryId, fetchIfMissing = true, refreshStaleInBackground = true)
         emitAll(
             combine(
-                movieDao.getByCategoryPage(providerId, categoryId, limit, offset),
+                movieDao.getByCategoryPage(providerId, categoryId, limit, offset, alphabetical = false),
                 preferencesRepository.parentalControlLevel
             ) { entities, level: Int ->
                 if (level == 2) {
@@ -322,23 +325,35 @@ class MovieRepositoryImpl @Inject constructor(
         }
     }
 
-    override fun searchMovies(providerId: Long, query: String): Flow<List<Movie>> =
-        query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }?.toFtsPrefixQuery().let { ftsQuery ->
-            if (ftsQuery.isNullOrBlank()) {
-            flowOf(emptyList())
-            } else combine(
-                movieDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT),
-                preferencesRepository.parentalControlLevel
-            ) { entities, level: Int ->
-                if (level == 2) {
-                    entities.filter { !it.isUserProtected }
-                } else {
-                    entities
-                }
-            }.map { list ->
-                list.map { it.toDomain() }
-                    .rankSearchResults(query) { it.name }
+    override fun searchMovies(providerId: Long, query: String): Flow<List<Movie>> {
+        val normalizedQuery = query.trim().takeIf { it.length >= MIN_SEARCH_QUERY_LENGTH }
+        val strictQuery = normalizedQuery?.toFtsPrefixQuery() ?: return flowOf(emptyList())
+        val relaxedQuery = normalizedQuery.toFtsAnyPrefixQuery()
+
+        return searchMoviesMatching(providerId, strictQuery, query).flatMapLatest { strictResults ->
+            // Repli permissif quand la requête stricte ne donne rien : « matrix reloaded vf »
+            // doit remonter les Matrix plutôt qu'un écran vide parce que « vf » n'est pas au titre.
+            if (strictResults.isNotEmpty() || relaxedQuery == null) {
+                flowOf(strictResults)
+            } else {
+                searchMoviesMatching(providerId, relaxedQuery, query)
             }
+        }
+    }
+
+    private fun searchMoviesMatching(providerId: Long, ftsQuery: String, rawQuery: String): Flow<List<Movie>> =
+        combine(
+            movieDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT),
+            preferencesRepository.parentalControlLevel
+        ) { entities, level: Int ->
+            if (level == 2) {
+                entities.filter { !it.isUserProtected }
+            } else {
+                entities
+            }
+        }.map { list ->
+            list.map { it.toDomain() }
+                .rankSearchResults(rawQuery) { it.name }
         }
 
     override suspend fun getMovie(movieId: Long): Movie? =
@@ -560,6 +575,9 @@ class MovieRepositoryImpl @Inject constructor(
     private fun movieBrowseSource(query: LibraryBrowseQuery): Flow<List<Movie>> {
         val normalizedSearch = query.searchQuery.trim()
         val fetchLimit = browseFetchLimit(query)
+        // A à Z doit être trié par SQL : la fenêtre LIMIT doit contenir les premiers titres, pas les
+        // premiers films du fournisseur retriés ensuite en mémoire.
+        val alphabetical = query.sortBy == LibrarySortBy.TITLE
         val fastFlow = when {
             normalizedSearch.length >= MIN_SEARCH_QUERY_LENGTH -> {
                 val ftsQuery = normalizedSearch.toFtsPrefixQuery() ?: return flowOf(emptyList())
@@ -614,7 +632,7 @@ class MovieRepositoryImpl @Inject constructor(
                                 ensureXtreamCategoryLoaded(query.providerId, categoryId, fetchIfMissing = true, refreshStaleInBackground = true)
                                 emitAll(
                                     combine(
-                                        movieDao.getByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                        movieDao.getByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                         preferencesRepository.parentalControlLevel
                                     ) { entities, level ->
                                         if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -622,7 +640,7 @@ class MovieRepositoryImpl @Inject constructor(
                                 )
                             }
                         } ?: combine(
-                            movieDao.getByProviderPage(query.providerId, fetchLimit, 0),
+                            movieDao.getByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                             preferencesRepository.parentalControlLevel
                         ) { entities, level ->
                             if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -638,7 +656,7 @@ class MovieRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId, fetchIfMissing = true, refreshStaleInBackground = true)
                         emitAll(
                             combine(
-                                movieDao.getFavoritesByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                movieDao.getFavoritesByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -646,7 +664,7 @@ class MovieRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    movieDao.getFavoritesByProviderPage(query.providerId, fetchLimit, 0),
+                    movieDao.getFavoritesByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -660,7 +678,7 @@ class MovieRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId, fetchIfMissing = true, refreshStaleInBackground = true)
                         emitAll(
                             combine(
-                                movieDao.getInProgressByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                movieDao.getInProgressByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -668,7 +686,7 @@ class MovieRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    movieDao.getInProgressByProviderPage(query.providerId, fetchLimit, 0),
+                    movieDao.getInProgressByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -682,7 +700,7 @@ class MovieRepositoryImpl @Inject constructor(
                         ensureXtreamCategoryLoaded(query.providerId, categoryId, fetchIfMissing = true, refreshStaleInBackground = true)
                         emitAll(
                             combine(
-                                movieDao.getUnwatchedByCategoryPage(query.providerId, categoryId, fetchLimit, 0),
+                                movieDao.getUnwatchedByCategoryPage(query.providerId, categoryId, fetchLimit, 0, alphabetical = alphabetical),
                                 preferencesRepository.parentalControlLevel
                             ) { entities, level ->
                                 if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -690,7 +708,7 @@ class MovieRepositoryImpl @Inject constructor(
                         )
                     }
                 } ?: combine(
-                    movieDao.getUnwatchedByProviderPage(query.providerId, fetchLimit, 0),
+                    movieDao.getUnwatchedByProviderPage(query.providerId, fetchLimit, 0, alphabetical = alphabetical),
                     preferencesRepository.parentalControlLevel
                 ) { entities, level ->
                     if (level == 2) entities.filter { !it.isUserProtected } else entities
@@ -791,7 +809,7 @@ class MovieRepositoryImpl @Inject constructor(
         val sorted = when (query.sortBy) {
             LibrarySortBy.LIBRARY -> filtered
             LibrarySortBy.TITLE -> filtered.sortedBy { it.name.lowercase() }
-            LibrarySortBy.RELEASE, LibrarySortBy.UPDATED -> filtered.sortedByDescending(::movieReleaseScore)
+            LibrarySortBy.RELEASE, LibrarySortBy.UPDATED -> filtered.sortedWith(MOVIE_NEWEST_FIRST)
             LibrarySortBy.RATING -> filtered.sortedByDescending { it.rating }
             LibrarySortBy.WATCH_COUNT -> filtered.sortedByDescending { watchCounts[it.id] ?: 0 }
         }
@@ -809,7 +827,7 @@ class MovieRepositoryImpl @Inject constructor(
         LibraryFilterType.IN_PROGRESS -> movie.id in inProgressIds || movieIsInProgress(movie)
         LibraryFilterType.UNWATCHED -> movie.id !in inProgressIds && movie.watchProgress <= 0L
         LibraryFilterType.TOP_RATED -> movie.rating > 0f
-        LibraryFilterType.RECENTLY_UPDATED -> movieReleaseScore(movie) > 0L
+        LibraryFilterType.RECENTLY_UPDATED -> movie.providerAddedAt > 0L || movieReleaseScore(movie) > 0L
     }
 
     private fun movieMatchesSearch(movie: Movie, searchQuery: String): Boolean {
@@ -916,7 +934,8 @@ class MovieRepositoryImpl @Inject constructor(
                     xtreamProvider.getVodStreams(categoryId)
                 }) {
                     is Success -> {
-                        val entities = result.data.map { movie -> movie.toEntity() }
+                        val providerOrder = ProviderOrderCounter()
+                        val entities = result.data.map { movie -> providerOrder.rank(movie).toEntity() }
                         transactionRunner.inTransaction {
                             movieDao.replaceCategory(providerId, categoryId, entities)
                             movieCategoryHydrationDao.upsert(

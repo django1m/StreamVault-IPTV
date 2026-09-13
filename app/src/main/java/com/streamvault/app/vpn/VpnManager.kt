@@ -58,7 +58,7 @@ class VpnManager @Inject constructor(
     private val guard: VpnRegionHealthGuard,
     private val diagnosticReporter: DiagnosticReporter,
     @ApplicationScope private val scope: CoroutineScope,
-) : VpnReadinessGate {
+) : VpnReadinessGate, VpnPanelBlockReporter {
     private val provisionMutex = Mutex()
     private val pendingAutoActivated = AtomicBoolean(false)
 
@@ -350,6 +350,37 @@ class VpnManager @Inject constructor(
         }
     }
 
+    /**
+     * A LIVE stream was accepted by the panel (2xx) but the origin sent no bytes,
+     * through a verified tunnel: the classic blackholed-exit signature. Unlike every
+     * 403 signal there is no refusal to key on — the panel says yes and the stream
+     * stays empty — so without this report the box waits forever on a black screen
+     * and no guard ever fires (the failure mode seen on 2026-09-05).
+     *
+     * Same verified-tunnel guard as the other signals: with no fresh handshake a
+     * starved stream says nothing about the exit IP.
+     */
+    fun reportLiveBlackhole(providerId: Long, contentId: Long) {
+        scope.launch {
+            val cached = store.cachedPeer()?.config ?: return@launch
+            if (!verifiedNow(cached)) return@launch
+            // A blackhole is an ABSENCE of bytes, so anything that stops bytes
+            // flowing looks identical to it — including the box's own link
+            // dropping. A 403 needs no such check (the provider had to be REACHED
+            // to refuse), but here the exit can only be blamed once we know the
+            // path still works: probe the backend through the tunnel right now.
+            // Measured 2026-09-07: a box on a flapping Wi-Fi link (60-90 s holes,
+            // every minute or two) reported two "blackholes" on a region whose
+            // servers all tested healthy, and each rotation tore the tunnel down
+            // again — the detector was feeding the very problem it saw.
+            if (!verifier.httpReachable()) {
+                Log.d(TAG, "live starved but backend unreachable — blaming the link, not the exit")
+                return@launch
+            }
+            guard.onLiveBlackhole(cached.region, providerId, contentId)
+        }
+    }
+
     /** A live channel reached READY through the tunnel — proof any on-demand
      *  block is selective (region-specific), not a provider-wide outage. */
     fun reportLivePlaybackSuccess() {
@@ -369,6 +400,23 @@ class VpnManager @Inject constructor(
             val cached = store.cachedPeer()?.config ?: return@launch
             if (!verifiedNow(cached)) return@launch
             guard.onLiveProbe403()
+        }
+    }
+
+    /**
+     * The provider refused the panel LOGIN with a 403 through a verified tunnel:
+     * this exit IP is burned for everything, not just on-demand. Unlike the three
+     * signals above this one fires OUTSIDE playback — it is the only escape for a
+     * box that never gets past activation (see [VpnPanelBlockReporter]).
+     *
+     * Same verified-tunnel guard as the others: without a fresh handshake a 403 is
+     * just the expected residential block, which the VPN gate already handles.
+     */
+    override fun reportPanelLogin403() {
+        scope.launch {
+            val cached = store.cachedPeer()?.config ?: return@launch
+            if (!verifiedNow(cached)) return@launch
+            guard.onPanelLogin403()
         }
     }
 

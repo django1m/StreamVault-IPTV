@@ -250,13 +250,13 @@ interface CatalogSyncDao {
             name, poster_url, backdrop_url, category_id, category_name, stream_url,
             container_extension, plot, cast, director, genre, release_date,
             duration, duration_seconds, rating, year, tmdb_id, youtube_trailer,
-            is_adult, sync_fingerprint
+            is_adult, sync_fingerprint, provider_order, provider_added_at
         ) = (
             SELECT
                 stage.name, stage.poster_url, stage.backdrop_url, stage.category_id, stage.category_name, stage.stream_url,
                 stage.container_extension, stage.plot, stage.cast, stage.director, stage.genre, stage.release_date,
                 stage.duration, stage.duration_seconds, stage.rating, stage.year, stage.tmdb_id, stage.youtube_trailer,
-                stage.is_adult, stage.sync_fingerprint
+                stage.is_adult, stage.sync_fingerprint, stage.provider_order, stage.provider_added_at
             FROM movie_import_stage AS stage
             WHERE stage.session_id = :sessionId
               AND stage.provider_id = :providerId
@@ -302,7 +302,9 @@ interface CatalogSyncDao {
             last_watched_at,
             is_adult,
             is_user_protected,
-            sync_fingerprint
+            sync_fingerprint,
+            provider_order,
+            provider_added_at
         )
         SELECT
             stage.stream_id,
@@ -329,7 +331,9 @@ interface CatalogSyncDao {
             0,
             stage.is_adult,
             0,
-            stage.sync_fingerprint
+            stage.sync_fingerprint,
+            stage.provider_order,
+            stage.provider_added_at
         FROM movie_import_stage AS stage
         WHERE stage.session_id = :sessionId
           AND stage.provider_id = :providerId
@@ -375,12 +379,12 @@ interface CatalogSyncDao {
         SET (
             name, poster_url, backdrop_url, category_id, category_name,
             plot, cast, director, genre, release_date, rating, tmdb_id,
-            youtube_trailer, episode_run_time, last_modified, is_adult, sync_fingerprint
+            youtube_trailer, episode_run_time, last_modified, is_adult, sync_fingerprint, provider_order
         ) = (
             SELECT
                 stage.name, stage.poster_url, stage.backdrop_url, stage.category_id, stage.category_name,
                 stage.plot, stage.cast, stage.director, stage.genre, stage.release_date, stage.rating, stage.tmdb_id,
-                stage.youtube_trailer, stage.episode_run_time, stage.last_modified, stage.is_adult, stage.sync_fingerprint
+                stage.youtube_trailer, stage.episode_run_time, stage.last_modified, stage.is_adult, stage.sync_fingerprint, stage.provider_order
             FROM series_import_stage AS stage
             WHERE stage.session_id = :sessionId
               AND stage.provider_id = :providerId
@@ -421,7 +425,8 @@ interface CatalogSyncDao {
             provider_id,
             is_adult,
             is_user_protected,
-            sync_fingerprint
+            sync_fingerprint,
+            provider_order
         )
         SELECT
             stage.series_id,
@@ -443,7 +448,8 @@ interface CatalogSyncDao {
             stage.provider_id,
             stage.is_adult,
             0,
-            stage.sync_fingerprint
+            stage.sync_fingerprint,
+            stage.provider_order
         FROM series_import_stage AS stage
         WHERE stage.session_id = :sessionId
           AND stage.provider_id = :providerId

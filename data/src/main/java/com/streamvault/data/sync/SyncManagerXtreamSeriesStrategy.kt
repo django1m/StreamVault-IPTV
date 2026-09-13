@@ -33,8 +33,8 @@ internal class SyncManagerXtreamSeriesStrategy(
     private val fullCatalogFallbackWarning: (String, Throwable?) -> String,
     private val categoryFailureWarning: (String, String, Throwable) -> String,
     private val pagingFailureWarning: (String, Int, Throwable) -> String,
-    private val stageSeriesItems: suspend (Long, List<Series>, MutableSet<Long>, FallbackCategoryCollector, Long?) -> StagedCatalogSnapshot,
-    private val stageSeriesSequence: suspend (Long, Sequence<Series>, MutableSet<Long>, FallbackCategoryCollector, Long?) -> StagedCatalogSnapshot,
+    private val stageSeriesItems: suspend (Long, List<Series>, MutableSet<Long>, FallbackCategoryCollector, Long?, ProviderOrderCounter) -> StagedCatalogSnapshot,
+    private val stageSeriesSequence: suspend (Long, Sequence<Series>, MutableSet<Long>, FallbackCategoryCollector, Long?, ProviderOrderCounter) -> StagedCatalogSnapshot,
     private val categorySequentialModeWarning: String,
     private val pagedSequentialModeWarning: String,
     private val fallbackStageBatchSize: Int,
@@ -275,6 +275,7 @@ internal class SyncManagerXtreamSeriesStrategy(
     suspend fun loadXtreamSeriesFull(provider: Provider, api: XtreamProvider): CatalogSyncPayload<Series> {
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.SERIES)
         val seenSeriesIds = HashSet<Long>()
+        val providerOrder = ProviderOrderCounter()
         val rawBatch = ArrayList<XtreamSeriesItem>(fallbackStageBatchSize)
         var stagedSessionId: Long? = null
         var acceptedCount = 0
@@ -283,7 +284,7 @@ internal class SyncManagerXtreamSeriesStrategy(
 
         suspend fun flushRawBatch() {
             if (rawBatch.isEmpty()) return
-            val staged = stageSeriesSequence(provider.id, api.mapSeriesListSequence(rawBatch.asSequence()), seenSeriesIds, fallbackCollector, stagedSessionId)
+            val staged = stageSeriesSequence(provider.id, api.mapSeriesListSequence(rawBatch.asSequence()), seenSeriesIds, fallbackCollector, stagedSessionId, providerOrder)
             stagedSessionId = staged.sessionId
             acceptedCount += staged.acceptedCount
             rawBatch.clear()
@@ -418,7 +419,7 @@ internal class SyncManagerXtreamSeriesStrategy(
             .flatMap { it.items }
         if (allSeriesItems.isNotEmpty()) {
             progress(provider.id, onProgress, "Saving ${allSeriesItems.size} series to database...")
-            val staged = stageSeriesItems(provider.id, allSeriesItems, seenSeriesIds, fallbackCollector, sessionId)
+            val staged = stageSeriesItems(provider.id, allSeriesItems, seenSeriesIds, fallbackCollector, sessionId, ProviderOrderCounter())
             sessionId = staged.sessionId
             acceptedCount = staged.acceptedCount
         }
@@ -467,6 +468,7 @@ internal class SyncManagerXtreamSeriesStrategy(
     ): CatalogSyncPayload<Series> {
         val seenSeriesIds = HashSet<Long>()
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.SERIES)
+        val providerOrder = ProviderOrderCounter()
         val warnings = mutableListOf<String>()
         var sessionId: Long? = null
         var acceptedCount = 0
@@ -494,7 +496,7 @@ internal class SyncManagerXtreamSeriesStrategy(
             timedOutcomes.sortedBy { it.page }.forEach { timedOutcome ->
                 when (val outcome = timedOutcome.outcome) {
                     is PageFetchOutcome.Success -> {
-                        val staged = stageSeriesItems(provider.id, outcome.items, seenSeriesIds, fallbackCollector, sessionId)
+                        val staged = stageSeriesItems(provider.id, outcome.items, seenSeriesIds, fallbackCollector, sessionId, providerOrder)
                         sessionId = staged.sessionId
                         acceptedCount += staged.acceptedCount
                         if (outcome.rawCount < pageSize || staged.acceptedCount == 0) stopPaging = true

@@ -153,7 +153,11 @@ fun PinDialog(
                                                     containerColor = Color.Transparent,
                                                     contentColor = Color.White,
                                                     focusedContainerColor = AppColors.Focus,
-                                                    focusedContentColor = Color.White
+                                                    // Was Color.White on a near-white slab:
+                                                    // the digit vanished under the cursor,
+                                                    // on the one screen where you have to
+                                                    // read what you are pressing.
+                                                    focusedContentColor = AppColors.FocusOnFill
                                                 )
                                             ) {
                                                 Text(
@@ -176,7 +180,7 @@ fun PinDialog(
                             containerColor = Color.Transparent,
                             contentColor = Color.White.copy(alpha = 0.7f),
                             focusedContainerColor = AppColors.Focus,
-                            focusedContentColor = Color.White
+                            focusedContentColor = AppColors.FocusOnFill
                         ),
                         border = ButtonDefaults.border(
                             focusedBorder = Border(

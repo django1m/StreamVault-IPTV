@@ -47,6 +47,22 @@ class VpnRegionHealthPolicy(
         data class LiveSuccess(val region: String) : Event
         /** Live was ALSO 403 → provider-wide refusal, not a region ban. */
         data object LiveProbe403 : Event
+        /** A LIVE stream was ACCEPTED by the panel (2xx) yet the origin sent ZERO
+         *  bytes, through a VERIFIED tunnel (caller-guaranteed). This is NOT the
+         *  generic timeout the KDoc rules out: the HTTP layer answered OK with the
+         *  right content type and the body stayed empty, which is the signature of a
+         *  blackholed exit IP — the one burn mode every 403 signal is blind to
+         *  (observed 2026-09-05: an exit answered `200 video/mp2t` + 0 byte on live
+         *  while VOD, served by other edges, kept working). contentKey identifies the
+         *  channel so zapping the same dead one twice can't over-count. */
+        data class LiveBlackhole(val region: String, val contentKey: String) : Event
+        /** The panel LOGIN (player_api without an action) was refused 403 through a
+         *  VERIFIED tunnel (caller-guaranteed). Unlike [Enforced403] this depends on
+         *  no content and no entitlement: the exit IP itself is refused, so the box
+         *  can neither sync its catalog nor play anything — it is stuck on the
+         *  activation screen. It is also the ONLY 403 signal a not-yet-activated box
+         *  can produce, since every other one comes from playback. */
+        data object PanelLogin403 : Event
         /** Network connectivity changed (open evidence-suppression window). */
         data object NetworkChanged : Event
         /** Server's authoritative region assignment from the heartbeat. */
@@ -115,6 +131,11 @@ class VpnRegionHealthPolicy(
     private var classACycleCount = 0
     private var lastCountedCycleMs = 0L
     private val blockEvidence = LinkedHashMap<String, Long>() // contentKey -> ts
+    // Distinct live channels that answered 2xx-with-no-bytes on the current exit.
+    // Kept apart from blockEvidence: that one feeds the region-fallback arithmetic
+    // (which requires live PROOF), and a blackhole is the exact opposite — live is
+    // what's broken, so mixing them would let a blackhole fabricate a region change.
+    private val blackholeEvidence = LinkedHashMap<String, Long>() // contentKey -> ts
     private var liveProofAtMs = 0L
     private var lastNetworkChangeMs = 0L
     // Timestamps of recent in-region egress rotations (per-window cap + min spacing,
@@ -137,7 +158,9 @@ class VpnRegionHealthPolicy(
         State.IDLE -> "idle"
         State.HEALTHY -> "healthy"
         State.TUNNEL_SUSPECT -> "tunnel_suspect($classACycleCount/$CLASS_A_CYCLES)"
-        State.BLOCK_SUSPECT -> "block_suspect(${blockEvidence.size}/$CLASS_B_DISTINCT)"
+        State.BLOCK_SUSPECT ->
+            if (blackholeEvidence.isNotEmpty()) "blackhole_suspect(${blackholeEvidence.size}/$BLACKHOLE_DISTINCT)"
+            else "block_suspect(${blockEvidence.size}/$CLASS_B_DISTINCT)"
         State.FALLBACK_PENDING -> "fallback_pending"
         State.COOLDOWN -> "cooldown"
         State.TERMINAL -> "terminal"
@@ -162,6 +185,8 @@ class VpnRegionHealthPolicy(
             is Event.Enforced403 -> onEnforced403(e.region, e.contentKey)
             is Event.LiveSuccess -> onLiveSuccess(e.region)
             Event.LiveProbe403 -> onLiveProbe403()
+            is Event.LiveBlackhole -> onLiveBlackhole(e.region, e.contentKey)
+            Event.PanelLogin403 -> onPanelLogin403()
             is Event.FallbackResult -> onFallbackResult(e.granted, e.newRegion)
             Event.FallbackAborted -> onFallbackAborted()
             is Event.EgressRotationResult -> onEgressRotationResult(e.dispatched)
@@ -206,6 +231,17 @@ class VpnRegionHealthPolicy(
         lastCountedCycleMs = 0L
         // A verified tunnel does NOT clear Class B evidence: a healthy tunnel can
         // still be region-banned for on-demand. Evidence expires by its window.
+        //
+        // Blackhole evidence is the exception, and the asymmetry is the point: a
+        // 403 is a DECISION the provider made about an exit IP, and it stands
+        // whatever the tunnel does afterwards. A blackhole is an ABSENCE of bytes,
+        // and this event means the tunnel just came back up — so the session that
+        // starved is gone, and anything gathered against it is about a tunnel that
+        // no longer exists. Keeping it lets a box whose link flaps (each flap
+        // reconnecting the tunnel) accumulate one starved channel per flap until
+        // it rotates a perfectly good exit, which then tears the tunnel down
+        // again. Observed on a Wi-Fi box on 2026-09-07.
+        blackholeEvidence.clear()
         if (state == State.COOLDOWN && clock() < cooldownUntilMs) return Decision.None
         state = State.HEALTHY
         return Decision.None
@@ -304,6 +340,7 @@ class VpnRegionHealthPolicy(
     private fun onEgressRotationResult(dispatched: Boolean): Decision {
         if (dispatched) {
             blockEvidence.clear()
+            blackholeEvidence.clear()
         } else if (egressRotateHistoryMs.isNotEmpty()) {
             egressRotateHistoryMs.removeAt(egressRotateHistoryMs.size - 1)
         }
@@ -313,9 +350,51 @@ class VpnRegionHealthPolicy(
     private fun onLiveSuccess(region: String): Decision {
         if (region != currentRegion) return Decision.None
         liveProofAtMs = clock()
+        // Bytes flowed on this exit → any starved channel before it was the
+        // channel's fault, not the exit's. Drop the evidence so a dead channel
+        // seen an hour apart from another can never add up to a rotation.
+        blackholeEvidence.clear()
         if (isInCooldown() || inSettleWindow()) return Decision.None
         pruneBlockEvidence()
         return maybeRequestBlockFallback() ?: Decision.None
+    }
+
+    /**
+     * A live channel was accepted (2xx) and then starved: no byte ever came. One
+     * such channel proves nothing — panels do carry dead channels, and a single
+     * origin can be down for everyone. TWO DISTINCT channels starved on the same
+     * exit, with no live success in between (any success clears the evidence),
+     * points at the EXIT rather than at the content: that is a blackholed egress,
+     * and only a fresh exit IP recovers it.
+     *
+     * Rotation, never a region fallback. A region change is the heavy, budgeted,
+     * twice-a-week move; a blackhole is cured by the next exit in the SAME region,
+     * and the rotation budget ([canRotateEgress]: ≥5 min apart, ≤3 per 6 h) already
+     * bounds the damage if this reading is wrong. [interruptLive] is true for the
+     * same reason as the live-403 path: live is the broken thing here, so there is
+     * no working live playback left to protect.
+     */
+    private fun onLiveBlackhole(region: String, contentKey: String): Decision {
+        if (isInCooldown() || inSettleWindow()) return Decision.None
+        if (region != currentRegion) return Decision.None // stale evidence
+        pruneBlackholeEvidence()
+        blackholeEvidence[contentKey] = clock()
+        if (blackholeEvidence.size < BLACKHOLE_DISTINCT || !canRotateEgress()) {
+            state = State.BLOCK_SUSPECT
+            return Decision.None
+        }
+        val n = blackholeEvidence.size
+        // Reserve the slot now (same contract as the on-demand path): the manager
+        // reports back via onEgressRotationResult, which either clears the evidence
+        // (dispatched — it was gathered against the exit we just left) or refunds
+        // the slot (not dispatched — never strand the box on the blackholed exit).
+        egressRotateHistoryMs.add(clock())
+        state = State.BLOCK_SUSPECT
+        return Decision.RequestEgressRotation(
+            currentRegion ?: region,
+            "egress blackholed: $n distinct live channels accepted with zero bytes",
+            interruptLive = true,
+        )
     }
 
     private fun onLiveProbe403(): Decision {
@@ -348,6 +427,40 @@ class VpnRegionHealthPolicy(
         return Decision.None
     }
 
+    /**
+     * The panel refused the LOGIN itself through a verified tunnel → the exit IP is
+     * burned for everything, and the box is 100 % unusable until it changes exit.
+     *
+     * This path deliberately drops every evidence requirement the on-demand paths
+     * carry: no live proof (there is nothing to play), and no N-distinct-contents
+     * accumulation (a login refusal names no content — a second sample would only
+     * confirm what the first already proved, at the cost of another failed screen
+     * for the customer). It also IGNORES the fallback cooldown: that budget rations
+     * REGION changes, while this is an in-region exit rotation with its own bounded
+     * budget — honoring it would freeze a dead box for 6 to 12 h.
+     *
+     * What still gates it: [inSettleWindow] (a 403 seconds after a network
+     * transition is not trustworthy evidence), [canRotateEgress] (≤3 per 6 h,
+     * ≥5 min apart, so a provider-wide outage can't rotate-storm), and TERMINAL /
+     * `currentRegion == null` (never provisioned → nothing to rotate).
+     *
+     * interruptLive stays false: if live somehow plays while the login 403s, the
+     * working stream is worth more than a faster rotation — the next attempt after
+     * playback ends re-triggers it.
+     */
+    private fun onPanelLogin403(): Decision {
+        val region = currentRegion ?: return Decision.None
+        if (inSettleWindow() || !canRotateEgress()) return Decision.None
+        // Reserve the slot now; the manager confirms via onEgressRotationResult
+        // (dispatched=false refunds it). Same contract as the other rotate paths.
+        egressRotateHistoryMs.add(clock())
+        state = State.BLOCK_SUSPECT
+        return Decision.RequestEgressRotation(
+            region,
+            "panel login 403 through verified tunnel: exit IP burned",
+        )
+    }
+
     /** Returns a RequestFallback decision if Class B is fully satisfied, else null. */
     private fun maybeRequestBlockFallback(): Decision? {
         if (blockEvidence.size < CLASS_B_DISTINCT) return null
@@ -365,6 +478,7 @@ class VpnRegionHealthPolicy(
         classACycleCount = 0
         lastCountedCycleMs = 0L
         blockEvidence.clear()
+        blackholeEvidence.clear()
         liveProofAtMs = 0L
         if (granted) {
             if (newRegion != null) currentRegion = newRegion
@@ -387,6 +501,12 @@ class VpnRegionHealthPolicy(
         return Decision.None
     }
 
+    private fun pruneBlackholeEvidence() {
+        val now = clock()
+        val it = blackholeEvidence.entries.iterator()
+        while (it.hasNext()) if (now - it.next().value > BLACKHOLE_WINDOW_MS) it.remove()
+    }
+
     private fun pruneBlockEvidence() {
         val now = clock()
         val it = blockEvidence.entries.iterator()
@@ -404,6 +524,7 @@ class VpnRegionHealthPolicy(
         classACycleCount = 0
         lastCountedCycleMs = 0L
         blockEvidence.clear()
+        blackholeEvidence.clear()
         liveProofAtMs = 0L
         egressRotateHistoryMs.clear()
     }
@@ -430,6 +551,13 @@ class VpnRegionHealthPolicy(
         const val MAX_EGRESS_ROTATES_PER_WINDOW = 3
         const val EGRESS_ROTATE_WINDOW_MS = 6 * 3_600_000L
         const val EGRESS_ROTATE_MIN_SPACING_MS = 5 * 60_000L
+        // Live blackhole (2xx + zero bytes). Two distinct channels is the same
+        // "it's the exit, not the content" arithmetic as EGRESS_ROTATE_DISTINCT.
+        // The window is short on purpose: unlike a 403, a starved channel is a
+        // plausible one-off, so evidence must not survive long enough for two
+        // unrelated dead channels to add up.
+        const val BLACKHOLE_DISTINCT = 2
+        const val BLACKHOLE_WINDOW_MS = 10 * 60_000L
     }
 }
 

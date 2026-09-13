@@ -85,6 +85,7 @@ class HomeViewModel @Inject constructor(
     private companion object {
         const val MIN_CHANNEL_SEARCH_QUERY_LENGTH = 2
         const val CATEGORY_SEARCH_DEBOUNCE_MS = 200L
+        const val XTREAM_NOW_PLAYING_FALLBACK_DEBOUNCE_MS = 400L
         // Parental PIN brute-force guard: after this many consecutive wrong
         // PINs, lock entry for the cooldown so a child can't just keep trying.
         const val MAX_PIN_ATTEMPTS = 5
@@ -1013,8 +1014,15 @@ class HomeViewModel @Inject constructor(
             return emptyMap()
         }
 
+        // Debounce: the caller cancels the previous job on every visible-window
+        // change, so scrolling the rail never puts a request on the wire until
+        // the user settles. Rows already backed by Room are unaffected.
+        kotlinx.coroutines.delay(XTREAM_NOW_PLAYING_FALLBACK_DEBOUNCE_MS)
+
         val now = System.currentTimeMillis()
-        val fallbackChannels = missingChannels.take(10)
+        // 6, not 10: same reasoning as the guide's cap — the batch size is the
+        // wait for the last row now that requests are paced at ~1/s.
+        val fallbackChannels = missingChannels.take(6)
         val programsByRequest = providerRepository.getProgramsForLiveStreams(
             providerId = providerId,
             requests = fallbackChannels.map { channel ->

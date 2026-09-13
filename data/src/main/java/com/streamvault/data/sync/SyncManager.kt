@@ -120,11 +120,14 @@ class SyncManager @Inject constructor(
     private val syncMetadataRepository: SyncMetadataRepository,
     private val transactionRunner: DatabaseTransactionRunner,
     private val preferencesRepository: com.streamvault.data.preferences.PreferencesRepository,
-    private val xtreamAuthInvalidationBus: com.streamvault.data.remote.xtream.XtreamAuthInvalidationBus
+    private val xtreamAuthInvalidationBus: com.streamvault.data.remote.xtream.XtreamAuthInvalidationBus,
+    // Injected, not constructed here: the on-demand EPG hydration in
+    // ProviderRepositoryImpl must share this exact pacing lane and health state.
+    // See the class doc — the panel bans per exit IP, not per feature.
+    private val xtreamAdaptiveSyncPolicy: XtreamAdaptiveSyncPolicy
 ) {
     private val syncStateTracker = SyncStateTracker()
     private val syncErrorSanitizer = SyncErrorSanitizer()
-    private val xtreamAdaptiveSyncPolicy = XtreamAdaptiveSyncPolicy()
     private val syncCatalogStore = SyncCatalogStore(
         movieDao = movieDao,
         catalogSyncDao = catalogSyncDao,
@@ -263,7 +266,14 @@ class SyncManager @Inject constructor(
         providerSyncMutexes.remove(providerId)
     }
 
-    fun scheduleBackgroundEpgSync(providerId: Long) {
+    /**
+     * @param force bypasses [ContentCachePolicy.EPG_TTL_MILLIS]. Defaults to false:
+     *   this runs after EVERY provider sync, and re-downloading an XMLTV that was
+     *   imported minutes ago is a multi-MB request that cannot return anything new.
+     *   The user's explicit escape hatch is "Retry EPG" (`retrySection`), which is
+     *   unconditional by design.
+     */
+    fun scheduleBackgroundEpgSync(providerId: Long, force: Boolean = false) {
         backgroundEpgJobs.remove(providerId)?.cancel()
         val job = backgroundEpgScope.launch {
             withProviderLock(providerId) {
@@ -277,7 +287,7 @@ class SyncManager @Inject constructor(
                         provider = provider,
                         metadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id),
                         now = System.currentTimeMillis(),
-                        force = true,
+                        force = force,
                         onProgress = null
                     )
                     publishSyncState(
@@ -862,7 +872,7 @@ class SyncManager @Inject constructor(
                         UrlSecurityPolicy.validateXtreamEpgUrl(xmltvUrl)?.let { message ->
                             throw IllegalStateException(message)
                         }
-                        retryTransient { epgRepository.refreshEpg(provider.id, xmltvUrl) }
+                        retryTransient { epgRepository.refreshEpg(provider.id, xmltvUrl).orThrowEpgFailure() }
                         val epgCount = programDao.countByProvider(provider.id)
                         updatedMetadata = updatedMetadata.copy(
                             lastEpgSync = now,
@@ -877,6 +887,13 @@ class SyncManager @Inject constructor(
                     } catch (e: Exception) {
                         Log.e(TAG, "EPG sync failed (non-fatal): ${sanitizeThrowableMessage(e)}")
                         warnings.add("EPG XMLTV sync failed; live guide will fall back to on-demand Xtream data.")
+                        // epgCount is a plain statistic, not the TTL gate: a truncated download
+                        // still leaves programmes behind, so refresh the number even on failure.
+                        // lastEpgSync stays untouched so the sync keeps retrying.
+                        updatedMetadata = updatedMetadata.copy(
+                            epgCount = programDao.countByProvider(provider.id)
+                        )
+                        syncMetadataRepository.updateMetadata(updatedMetadata)
                     }
                 }
             }
@@ -890,7 +907,7 @@ class SyncManager @Inject constructor(
                     } else {
                         try {
                             progress(provider.id, onProgress, "Downloading EPG...")
-                            retryTransient { epgRepository.refreshEpg(provider.id, currentEpgUrl) }
+                            retryTransient { epgRepository.refreshEpg(provider.id, currentEpgUrl).orThrowEpgFailure() }
                             updatedMetadata = updatedMetadata.copy(
                                 lastEpgSync = now,
                                 epgCount = programDao.countByProvider(provider.id)
@@ -901,6 +918,10 @@ class SyncManager @Inject constructor(
                         } catch (e: Exception) {
                             Log.e(TAG, "EPG sync failed (non-fatal): ${sanitizeThrowableMessage(e)}")
                             warnings.add("EPG sync failed")
+                            updatedMetadata = updatedMetadata.copy(
+                                epgCount = programDao.countByProvider(provider.id)
+                            )
+                            syncMetadataRepository.updateMetadata(updatedMetadata)
                         }
                     }
                 }
@@ -947,20 +968,38 @@ class SyncManager @Inject constructor(
         validationError?.let { message ->
             throw IllegalStateException(message)
         }
-        retryTransient { epgRepository.refreshEpg(provider.id, epgUrl) }
-        val now = System.currentTimeMillis()
-        val metadata = (syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id))
-            .copy(
-                lastEpgSync = now,
-                epgCount = programDao.countByProvider(provider.id)
-            )
-        syncMetadataRepository.updateMetadata(metadata)
+        // A failed provider XMLTV must not skip the steps below: a truncated download still
+        // leaves partial programmes behind, and the channel mappings have to be recomputed
+        // against them or the guide keeps resolving from stale data. The full sync already
+        // separates these concerns the same way; keep the failure and rethrow it at the end.
+        val epgFailure = try {
+            retryTransient { epgRepository.refreshEpg(provider.id, epgUrl).orThrowEpgFailure() }
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e
+        }
+
+        // The count always tracks the table -- a partial import is real data and the card
+        // must show it. lastEpgSync is the TTL gate and is stamped only on a real success.
+        val refreshedMetadata = (syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id))
+            .copy(epgCount = programDao.countByProvider(provider.id))
+        syncMetadataRepository.updateMetadata(
+            if (epgFailure == null) {
+                refreshedMetadata.copy(lastEpgSync = System.currentTimeMillis())
+            } else {
+                refreshedMetadata
+            }
+        )
 
         // Also refresh external sources and run resolution
         progress(provider.id, onProgress, "Refreshing external EPG sources...")
         epgSourceRepository.refreshAllForProvider(provider.id)
         progress(provider.id, onProgress, "Resolving EPG mappings...")
         epgSourceRepository.resolveForProvider(provider.id, hiddenLiveCategoryIds)
+
+        epgFailure?.let { throw it }
     }
 
     private suspend fun syncLiveOnly(
@@ -1695,6 +1734,22 @@ class SyncManager @Inject constructor(
         initialDelayMs = initialDelayMs,
         block = block
     )
+
+    /**
+     * [EpgRepository.refreshEpg] reports failures as a returned [Result.Error], which
+     * [retryTransient] cannot see -- it only retries on a thrown exception. Unwrapping it
+     * inside the retry lambda makes a truncated XMLTV download retryable, and makes the
+     * caller skip its `lastEpgSync` stamp so a failed refresh no longer parks the EPG
+     * behind [ContentCachePolicy.EPG_TTL_MILLIS].
+     *
+     * The original throwable is rethrown when present: `isRetryable` keys off
+     * `is IOException`, and the wrapped message alone would match none of its keywords.
+     */
+    private fun com.streamvault.domain.model.Result<Unit>.orThrowEpgFailure() {
+        if (this is com.streamvault.domain.model.Result.Error) {
+            throw exception ?: IllegalStateException(message)
+        }
+    }
 
     private suspend fun <T> attemptNonCancellation(block: suspend () -> T): Attempt<T> =
         xtreamSupport.attemptNonCancellation(block)

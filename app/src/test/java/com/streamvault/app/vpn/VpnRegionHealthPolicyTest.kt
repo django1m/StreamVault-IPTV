@@ -28,6 +28,136 @@ class VpnRegionHealthPolicyTest {
         onEvent(Event.VerifiedUp(region))
     }
 
+    // ---- Live blackhole (2xx accepted, zero bytes delivered) ---------------
+
+    @Test
+    fun `a single starved live channel does not rotate`() {
+        val (p, _) = policy(); p.healthy()
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:100"))).isEqualTo(Decision.None)
+        assertThat(p.state()).isEqualTo(State.BLOCK_SUSPECT)
+    }
+
+    @Test
+    fun `zapping the SAME starved channel twice does not rotate`() {
+        val (p, _) = policy(); p.healthy()
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:100"))).isEqualTo(Decision.None)
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:100"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `two DISTINCT starved live channels rotate the egress and interrupt live`() {
+        val (p, _) = policy(); p.healthy()
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:100"))).isEqualTo(Decision.None)
+        val d = p.onEvent(Event.LiveBlackhole(R, "1:101"))
+        assertThat(d).isInstanceOf(Decision.RequestEgressRotation::class.java)
+        d as Decision.RequestEgressRotation
+        assertThat(d.failedRegion).isEqualTo(R)
+        assertThat(d.interruptLive).isTrue()
+        assertThat(d.evidenceSummary).contains("blackholed")
+    }
+
+    @Test
+    fun `a live success between two starved channels prevents the rotation`() {
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.LiveBlackhole(R, "1:100"))
+        p.onEvent(Event.LiveSuccess(R))          // bytes flowed → the exit delivers
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:101"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `starved channels outside the window do not add up`() {
+        val (p, clock) = policy(); p.healthy()
+        p.onEvent(Event.LiveBlackhole(R, "1:100"))
+        clock.now += VpnRegionHealthPolicy.BLACKHOLE_WINDOW_MS + 1
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:101"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `a blackhole never triggers a region fallback`() {
+        val (p, clock) = policy(); p.healthy()
+        // Far more evidence than CLASS_B_DISTINCT, spaced inside the window.
+        repeat(6) { i ->
+            p.onEvent(Event.LiveBlackhole(R, "1:20$i"))
+            clock.now += 1_000
+            // Keep the rotation budget from masking a fallback: acknowledge each
+            // dispatched rotation, which also clears the evidence.
+            p.onEvent(Event.EgressRotationResult(true))
+        }
+        assertThat(p.state()).isNotEqualTo(State.FALLBACK_PENDING)
+    }
+
+    @Test
+    fun `blackhole evidence is dropped right after a network change`() {
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.NetworkChanged)
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:100"))).isEqualTo(Decision.None)
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:101"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `a starved channel from a stale region is ignored`() {
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.LiveBlackhole("belgium", "1:100"))
+        assertThat(p.onEvent(Event.LiveBlackhole("belgium", "1:101"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `an undispatched blackhole rotation refunds its slot`() {
+        val (p, clock) = policy(); p.healthy()
+        p.onEvent(Event.LiveBlackhole(R, "1:100"))
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:101")))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+        p.onEvent(Event.EgressRotationResult(false)) // deferred / transport failure
+        // Slot refunded AND evidence kept → the very next starved channel retries
+        // instead of stranding the box on the blackholed exit.
+        clock.now += VpnRegionHealthPolicy.EGRESS_ROTATE_MIN_SPACING_MS
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:102")))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+    }
+
+    @Test
+    fun `the rotation budget caps repeated blackholes`() {
+        val (p, clock) = policy(); p.healthy()
+        repeat(VpnRegionHealthPolicy.MAX_EGRESS_ROTATES_PER_WINDOW) { round ->
+            p.onEvent(Event.LiveBlackhole(R, "1:${round}0"))
+            assertThat(p.onEvent(Event.LiveBlackhole(R, "1:${round}1")))
+                .isInstanceOf(Decision.RequestEgressRotation::class.java)
+            p.onEvent(Event.EgressRotationResult(true))
+            clock.now += VpnRegionHealthPolicy.EGRESS_ROTATE_MIN_SPACING_MS
+        }
+        p.onEvent(Event.LiveBlackhole(R, "1:90"))
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:91"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `a tunnel reconnect between two starved channels prevents the rotation`() {
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.LiveBlackhole(R, "1:100"))
+        p.onEvent(Event.VerifiedUp(R))           // link flapped, tunnel came back
+        assertThat(p.onEvent(Event.LiveBlackhole(R, "1:101"))).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `a flapping link never rotates however long it flaps`() {
+        val (p, clock) = policy(); p.healthy()
+        repeat(12) { i ->
+            p.onEvent(Event.VerifiedUp(R))
+            assertThat(p.onEvent(Event.LiveBlackhole(R, "1:30$i"))).isEqualTo(Decision.None)
+            clock.now += 30_000
+        }
+    }
+
+    @Test
+    fun `a tunnel reconnect does NOT clear on-demand 403 evidence`() {
+        // The asymmetry that makes the blackhole clearing safe: a 403 is the
+        // provider's decision about the exit and survives a reconnect.
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.Enforced403(R, "1:10"))
+        p.onEvent(Event.VerifiedUp(R))
+        assertThat(p.onEvent(Event.Enforced403(R, "1:11")))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+    }
+
     // ---- Class B (region banned for on-demand) ----------------------------
 
     @Test
@@ -439,5 +569,88 @@ class VpnRegionHealthPolicyTest {
         clock.now += SPACE
         val d3 = p.onEvent(Event.VerificationCycleFailed(R, plainNetworkOk = true))
         assertThat(d3).isInstanceOf(Decision.RequestFallback::class.java)
+    }
+
+    // ---- Panel login 403 (box stuck on the activation screen) --------------
+
+    @Test
+    fun `a single panel login 403 rotates the egress immediately`() {
+        val (p, _) = policy(); p.healthy()
+        val d = p.onEvent(Event.PanelLogin403)
+        assertThat(d).isInstanceOf(Decision.RequestEgressRotation::class.java)
+        val r = d as Decision.RequestEgressRotation
+        assertThat(r.failedRegion).isEqualTo(R)
+        // Never tears a working live for a control-plane failure.
+        assertThat(r.interruptLive).isFalse()
+    }
+
+    @Test
+    fun `panel login 403 needs no live proof and no distinct-content evidence`() {
+        val (p, _) = policy(); p.healthy()
+        // No LiveSuccess, no Enforced403 beforehand — the login refusal stands alone.
+        assertThat(p.onEvent(Event.PanelLogin403))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+    }
+
+    @Test
+    fun `panel login 403 ignores the region-fallback cooldown`() {
+        // A device that just fell back sits in a 6 h cooldown. If its exit is burned
+        // it cannot log in at all — honouring that cooldown would freeze it for 6 h.
+        val clock = Clock()
+        val (p, _) = policy(clock = clock, initial = PersistedGuardState(cooldownUntilMs = clock.now + 6 * 3_600_000L))
+        p.onEvent(Event.ServerAssignedRegion(R))
+        assertThat(p.state()).isEqualTo(State.COOLDOWN)
+        assertThat(p.onEvent(Event.PanelLogin403))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+    }
+
+    @Test
+    fun `panel login 403 is ignored inside the network settle window`() {
+        val (p, _) = policy(); p.healthy()
+        p.onEvent(Event.NetworkChanged)
+        // Right after a Wi-Fi transition a 403 proves nothing.
+        assertThat(p.onEvent(Event.PanelLogin403)).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `panel login 403 respects the bounded rotation budget`() {
+        val (p, clock) = policy(); p.healthy()
+        repeat(VpnRegionHealthPolicy.MAX_EGRESS_ROTATES_PER_WINDOW) {
+            assertThat(p.onEvent(Event.PanelLogin403))
+                .isInstanceOf(Decision.RequestEgressRotation::class.java)
+            p.onEvent(Event.EgressRotationResult(dispatched = true))
+            clock.now += VpnRegionHealthPolicy.EGRESS_ROTATE_MIN_SPACING_MS + 1_000L
+        }
+        // Budget exhausted: several fresh exits still refuse the login → provider-wide.
+        assertThat(p.onEvent(Event.PanelLogin403)).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `panel login 403 twice in a row does not double-spend the budget`() {
+        val (p, _) = policy(); p.healthy()
+        assertThat(p.onEvent(Event.PanelLogin403))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+        // The screen's auto-retry fires again before the manager reports back: the
+        // 5-min spacing must swallow it instead of burning a second slot.
+        assertThat(p.onEvent(Event.PanelLogin403)).isEqualTo(Decision.None)
+    }
+
+    @Test
+    fun `an aborted panel-login rotation refunds its slot`() {
+        val (p, _) = policy(); p.healthy()
+        assertThat(p.onEvent(Event.PanelLogin403))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+        // Transport failure: the exit never changed, so the box must keep the budget
+        // to try again rather than stay stranded on the burned exit.
+        p.onEvent(Event.EgressRotationResult(dispatched = false))
+        assertThat(p.onEvent(Event.PanelLogin403))
+            .isInstanceOf(Decision.RequestEgressRotation::class.java)
+    }
+
+    @Test
+    fun `panel login 403 before any region assignment does nothing`() {
+        val (p, _) = policy()
+        // Never provisioned → no exit to rotate (and the 403 is the residential block).
+        assertThat(p.onEvent(Event.PanelLogin403)).isEqualTo(Decision.None)
     }
 }

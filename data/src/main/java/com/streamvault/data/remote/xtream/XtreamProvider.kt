@@ -713,9 +713,14 @@ class XtreamProvider(
                 adultCategoryIds = adultCategoryIds
             ),
             isUserProtected = false,
-            streamId = streamId
+            streamId = streamId,
+            providerAddedAt = parseAddedAtMillis(added)
         )
     }
+
+    /** `added` Xtream = epoch en secondes, envoyé en texte ; 0 si absent ou illisible. */
+    private fun parseAddedAtMillis(added: String?): Long =
+        added?.trim()?.toLongOrNull()?.takeIf { it > 0L }?.times(1000L) ?: 0L
 
     private fun mapVodStream(
         stream: XtreamStream,

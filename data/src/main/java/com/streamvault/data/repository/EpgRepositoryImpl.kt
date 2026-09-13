@@ -60,6 +60,9 @@ class EpgRepositoryImpl @Inject constructor(
 
     companion object {
         private const val MAX_EPG_SIZE_BYTES = 200L * 1_048_576 // 200 MB
+
+        /** Below this the stored guide is too small for a shrink to be worth blocking. */
+        private const val MIN_GUIDE_FOR_SHRINK_GUARD = 500
         private const val NOW_AND_NEXT_LOOKBACK_MS = 60L * 60L * 1000L
         private const val NOW_AND_NEXT_LOOKAHEAD_MS = 2L * 60L * 60L * 1000L
         private const val NOW_AND_NEXT_REFRESH_INTERVAL_MS = 60L * 1000L
@@ -234,6 +237,21 @@ class EpgRepositoryImpl @Inject constructor(
                         batch.clear()
                     }
 
+                    // A truncated XMLTV does not always throw: when the server closes the
+                    // connection cleanly the parser just sees end-of-document and this looks
+                    // like a success, so an unconditional swap replaces a full guide with a
+                    // near-empty one. Refuse a collapse to under half of what is already
+                    // stored; ordinary variation still goes through, and the error keeps the
+                    // sync retrying instead of stamping lastEpgSync.
+                    val importedCount = programDao.countByProvider(stagingProviderId)
+                    val currentCount = programDao.countByProvider(providerId)
+                    if (currentCount > MIN_GUIDE_FOR_SHRINK_GUARD && importedCount * 2 < currentCount) {
+                        programDao.deleteByProvider(stagingProviderId)
+                        return@withLock Result.error(
+                            "EPG import refused: $importedCount programmes would replace $currentCount"
+                        )
+                    }
+
                     transactionRunner.inTransaction {
                         programDao.deleteByProvider(providerId)
                         programDao.moveToProvider(stagingProviderId, providerId)
@@ -241,8 +259,30 @@ class EpgRepositoryImpl @Inject constructor(
 
                     Result.success(Unit)
                 } catch (e: Exception) {
-                    programDao.deleteByProvider(stagingProviderId)
-                    Result.error("Failed to refresh EPG: ${e.message}", e)
+                    // The provider feed can die mid-stream (a truncated body on a slow or
+                    // tunnelled link), and discarding the staging rows threw away every
+                    // programme parsed so far -- often hundreds of thousands of them, leaving
+                    // an empty guide. Keep the partial import instead, but ONLY when it beats
+                    // what is already live, so a retry can improve coverage and never shrink
+                    // it. Programmes carry explicit start/stop times, so channels the download
+                    // never reached simply show nothing rather than wrong data.
+                    val stagedCount = programDao.countByProvider(stagingProviderId)
+                    val liveCount = programDao.countByProvider(providerId)
+                    if (stagedCount > liveCount) {
+                        transactionRunner.inTransaction {
+                            programDao.deleteByProvider(providerId)
+                            programDao.moveToProvider(stagingProviderId, providerId)
+                        }
+                        // Still an error: the caller must not stamp lastEpgSync, so the sync
+                        // keeps retrying and can grow the partial guide further.
+                        Result.error(
+                            "Partial EPG kept ($stagedCount programmes) after: ${e.message}",
+                            e
+                        )
+                    } else {
+                        programDao.deleteByProvider(stagingProviderId)
+                        Result.error("Failed to refresh EPG: ${e.message}", e)
+                    }
                 }
             }
         }

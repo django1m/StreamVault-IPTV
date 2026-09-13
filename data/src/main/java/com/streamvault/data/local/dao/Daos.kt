@@ -111,6 +111,13 @@ interface ChannelDao {
     @Query("SELECT * FROM channels WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY number ASC LIMIT :limit OFFSET :offset")
     fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<ChannelEntity>>
 
+    /**
+     * Recherche FTS globale. Le tri par longueur de titre s'applique AVANT la troncature à
+     * :limit — le classement final est fait en Kotlin (rankSearchResults), mais SQLite coupe en
+     * premier, et une coupe alphabétique jetterait hors fenêtre le titre visé dès qu'une requête
+     * large dépasse la limite. À pertinence égale, le titre le plus court est le meilleur
+     * candidat. Idem pour la variante par catégorie juste en dessous.
+     */
     @Query(
         """
         SELECT c.id, c.stream_id, c.name, c.logo_url, c.group_title, c.category_id, c.category_name, c.stream_url,
@@ -120,7 +127,7 @@ interface ChannelDao {
         JOIN channels_fts ON c.id = channels_fts.rowid
         WHERE c.provider_id = :providerId
           AND channels_fts MATCH :query
-        ORDER BY c.name ASC
+        ORDER BY LENGTH(c.name) ASC, c.name ASC
         LIMIT :limit
         """
     )
@@ -136,7 +143,7 @@ interface ChannelDao {
         WHERE c.provider_id = :providerId
           AND c.category_id = :categoryId
           AND channels_fts MATCH :query
-        ORDER BY c.name ASC
+        ORDER BY LENGTH(c.name) ASC, c.name ASC
         LIMIT :limit
         """
     )
@@ -227,22 +234,42 @@ interface ChannelPreferenceDao {
     suspend fun deleteAll()
 }
 
+/**
+ * « Ordre de la bibliothèque » des films = l'ordre du fournisseur. `provider_order` est le rang du
+ * film dans sa catégorie tel que le fournisseur l'envoie ; 0 = inconnu (M3U, ou catalogue pas encore
+ * resynchronisé depuis la migration 34) : ceux-là passent après, par titre.
+ */
+private const val MOVIE_PROVIDER_ORDER = "(movies.provider_order = 0), movies.provider_order, movies.name"
+
+/** Toute la bibliothèque : les catégories dans l'ordre où l'app les liste, puis l'ordre du fournisseur. */
+private const val MOVIE_CATEGORY_JOIN =
+    "LEFT JOIN categories AS library_category ON library_category.provider_id = movies.provider_id " +
+        "AND library_category.category_id = movies.category_id AND library_category.type = 'MOVIE'"
+private const val MOVIE_LIBRARY_ORDER = "(library_category.id IS NULL), library_category.id, $MOVIE_PROVIDER_ORDER"
+
+/** « A à Z » quand :alphabetical est vrai ; sinon clé neutre, et l'ordre qui suit décide. */
+private const val MOVIE_TITLE_FIRST = "CASE WHEN :alphabetical THEN movies.name END"
+
+/** « Le plus récent » : date d'ajout chez le fournisseur, puis date de sortie. */
+private const val MOVIE_NEWEST_ORDER = "movies.provider_added_at DESC, movies.release_date DESC, movies.name ASC"
+
 @Dao
 @RewriteQueriesToDropUnusedColumns
 interface MovieDao {
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId ORDER BY name ASC")
+    @Query("SELECT movies.* FROM movies $MOVIE_CATEGORY_JOIN WHERE movies.provider_id = :providerId ORDER BY $MOVIE_LIBRARY_ORDER")
     fun getByProvider(providerId: Long): Flow<List<MovieBrowseEntity>>
 
     /** SQL-level parental filter — avoids loading protected items into memory. */
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND is_user_protected = 0 ORDER BY name ASC")
+    @Query("SELECT movies.* FROM movies $MOVIE_CATEGORY_JOIN WHERE movies.provider_id = :providerId AND movies.is_user_protected = 0 ORDER BY $MOVIE_LIBRARY_ORDER")
     fun getByProviderUnprotected(providerId: Long): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId ORDER BY name ASC LIMIT :limit OFFSET :offset")
-    fun getByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    @Query("SELECT movies.* FROM movies $MOVIE_CATEGORY_JOIN WHERE movies.provider_id = :providerId ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_LIBRARY_ORDER LIMIT :limit OFFSET :offset")
+    fun getByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         """
         SELECT movies.* FROM movies
+        $MOVIE_CATEGORY_JOIN
         WHERE movies.provider_id = :providerId
           AND EXISTS (
               SELECT 1 FROM favorites
@@ -250,11 +277,11 @@ interface MovieDao {
                 AND favorites.group_id IS NULL
                 AND favorites.content_id = movies.id
           )
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getFavoritesByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getFavoritesByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         """
@@ -274,6 +301,7 @@ interface MovieDao {
     @Query(
         """
         SELECT movies.* FROM movies
+        $MOVIE_CATEGORY_JOIN
         WHERE movies.provider_id = :providerId
           AND EXISTS (
               SELECT 1 FROM playback_history
@@ -286,11 +314,11 @@ interface MovieDao {
                     OR playback_history.resume_position_ms < CAST(playback_history.total_duration_ms * 0.95 AS INTEGER)
                 )
           )
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getInProgressByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getInProgressByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         """
@@ -315,13 +343,14 @@ interface MovieDao {
     @Query(
         """
         SELECT movies.* FROM movies
+        $MOVIE_CATEGORY_JOIN
         WHERE movies.provider_id = :providerId
           AND COALESCE(movies.watch_progress, 0) <= 0
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getUnwatchedByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getUnwatchedByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query("SELECT COUNT(*) FROM movies WHERE provider_id = :providerId AND COALESCE(watch_progress, 0) <= 0")
     fun getUnwatchedCountByProvider(providerId: Long): Flow<Int>
@@ -343,7 +372,7 @@ interface MovieDao {
     )
     fun getByWatchCountProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC")
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $MOVIE_PROVIDER_ORDER")
     fun getByCategory(providerId: Long, categoryId: Long): Flow<List<MovieBrowseEntity>>
 
     @Query(
@@ -357,11 +386,11 @@ interface MovieDao {
                 AND favorites.group_id IS NULL
                 AND favorites.content_id = movies.id
           )
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getFavoritesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getFavoritesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         """
@@ -395,11 +424,11 @@ interface MovieDao {
                     OR playback_history.resume_position_ms < CAST(playback_history.total_duration_ms * 0.95 AS INTEGER)
                 )
           )
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getInProgressByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getInProgressByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         """
@@ -428,11 +457,11 @@ interface MovieDao {
         WHERE movies.provider_id = :providerId
           AND movies.category_id = :categoryId
           AND COALESCE(movies.watch_progress, 0) <= 0
-        ORDER BY movies.name ASC
+        ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getUnwatchedByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    fun getUnwatchedByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
     @Query(
         "SELECT COUNT(*) FROM movies WHERE provider_id = :providerId AND category_id = :categoryId AND COALESCE(watch_progress, 0) <= 0"
@@ -458,13 +487,13 @@ interface MovieDao {
     fun getByWatchCountCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
 
     /** SQL-level parental filter per category. */
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId AND is_user_protected = 0 ORDER BY name ASC")
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId AND is_user_protected = 0 ORDER BY $MOVIE_PROVIDER_ORDER")
     fun getByCategoryUnprotected(providerId: Long, categoryId: Long): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC LIMIT :limit OFFSET :offset")
-    fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<MovieBrowseEntity>>
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $MOVIE_TITLE_FIRST, $MOVIE_PROVIDER_ORDER LIMIT :limit OFFSET :offset")
+    fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC LIMIT :limit")
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $MOVIE_PROVIDER_ORDER LIMIT :limit")
     fun getByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<MovieBrowseEntity>>
 
     @Query("SELECT * FROM movies WHERE provider_id = :providerId ORDER BY rating DESC, name ASC LIMIT :limit")
@@ -473,19 +502,26 @@ interface MovieDao {
     @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY rating DESC, name ASC LIMIT :limit")
     fun getTopRatedByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId ORDER BY release_date DESC, name ASC LIMIT :limit")
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId ORDER BY $MOVIE_NEWEST_ORDER LIMIT :limit")
     fun getFreshPreview(providerId: Long, limit: Int): Flow<List<MovieBrowseEntity>>
 
-    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY release_date DESC, name ASC LIMIT :limit")
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $MOVIE_NEWEST_ORDER LIMIT :limit")
     fun getFreshByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<MovieBrowseEntity>>
 
+    /**
+     * Recherche FTS globale. Le tri par longueur de titre s'applique AVANT la troncature à
+     * :limit — le classement final est fait en Kotlin (rankSearchResults), mais SQLite coupe en
+     * premier, et une coupe alphabétique jetterait hors fenêtre le titre visé dès qu'une requête
+     * large dépasse la limite. À pertinence égale, le titre le plus court est le meilleur
+     * candidat. Idem pour la variante par catégorie juste en dessous.
+     */
     @Query(
         """
         SELECT m.* FROM movies m
         JOIN movies_fts ON m.id = movies_fts.rowid
         WHERE m.provider_id = :providerId
           AND movies_fts MATCH :query
-        ORDER BY m.name ASC
+        ORDER BY LENGTH(m.name) ASC, m.name ASC
         LIMIT :limit
         """
     )
@@ -498,7 +534,7 @@ interface MovieDao {
         WHERE m.provider_id = :providerId
           AND m.category_id = :categoryId
           AND movies_fts MATCH :query
-        ORDER BY m.name ASC
+        ORDER BY LENGTH(m.name) ASC, m.name ASC
         LIMIT :limit
         """
     )
@@ -660,18 +696,27 @@ interface MovieDao {
     suspend fun updateProtectionStatus(providerId: Long, categoryId: Long, isProtected: Boolean)
 }
 
+/** Même ordre que pour les films (voir MOVIE_PROVIDER_ORDER), appliqué aux séries. */
+private const val SERIES_PROVIDER_ORDER = "(series.provider_order = 0), series.provider_order, series.name"
+private const val SERIES_CATEGORY_JOIN =
+    "LEFT JOIN categories AS library_category ON library_category.provider_id = series.provider_id " +
+        "AND library_category.category_id = series.category_id AND library_category.type = 'SERIES'"
+private const val SERIES_LIBRARY_ORDER = "(library_category.id IS NULL), library_category.id, $SERIES_PROVIDER_ORDER"
+private const val SERIES_TITLE_FIRST = "CASE WHEN :alphabetical THEN series.name END"
+
 @Dao
 @RewriteQueriesToDropUnusedColumns
 interface SeriesDao {
-    @Query("SELECT * FROM series WHERE provider_id = :providerId ORDER BY name ASC")
+    @Query("SELECT series.* FROM series $SERIES_CATEGORY_JOIN WHERE series.provider_id = :providerId ORDER BY $SERIES_LIBRARY_ORDER")
     fun getByProvider(providerId: Long): Flow<List<SeriesBrowseEntity>>
 
-    @Query("SELECT * FROM series WHERE provider_id = :providerId ORDER BY name ASC LIMIT :limit OFFSET :offset")
-    fun getByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    @Query("SELECT series.* FROM series $SERIES_CATEGORY_JOIN WHERE series.provider_id = :providerId ORDER BY $SERIES_TITLE_FIRST, $SERIES_LIBRARY_ORDER LIMIT :limit OFFSET :offset")
+    fun getByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
         SELECT series.* FROM series
+        $SERIES_CATEGORY_JOIN
         WHERE series.provider_id = :providerId
           AND EXISTS (
               SELECT 1 FROM favorites
@@ -679,11 +724,11 @@ interface SeriesDao {
                 AND favorites.group_id IS NULL
                 AND favorites.content_id = series.id
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getFavoritesByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getFavoritesByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -703,6 +748,7 @@ interface SeriesDao {
     @Query(
         """
         SELECT series.* FROM series
+        $SERIES_CATEGORY_JOIN
         WHERE series.provider_id = :providerId
           AND EXISTS (
               SELECT 1 FROM playback_history
@@ -724,11 +770,11 @@ interface SeriesDao {
                     )
                 )
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getInProgressByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getInProgressByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -762,6 +808,7 @@ interface SeriesDao {
     @Query(
         """
         SELECT series.* FROM series
+        $SERIES_CATEGORY_JOIN
         WHERE series.provider_id = :providerId
           AND NOT EXISTS (
               SELECT 1 FROM playback_history
@@ -778,11 +825,11 @@ interface SeriesDao {
                     )
                 )
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_LIBRARY_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getUnwatchedByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getUnwatchedByProviderPage(providerId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -833,7 +880,7 @@ interface SeriesDao {
     )
     fun getByWatchCountProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
 
-    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC")
+    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $SERIES_PROVIDER_ORDER")
     fun getByCategory(providerId: Long, categoryId: Long): Flow<List<SeriesBrowseEntity>>
 
     @Query(
@@ -847,11 +894,11 @@ interface SeriesDao {
                 AND favorites.group_id IS NULL
                 AND favorites.content_id = series.id
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getFavoritesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getFavoritesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -894,11 +941,11 @@ interface SeriesDao {
                     )
                 )
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getInProgressByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getInProgressByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -950,11 +997,11 @@ interface SeriesDao {
                     )
                 )
           )
-        ORDER BY series.name ASC
+        ORDER BY $SERIES_TITLE_FIRST, $SERIES_PROVIDER_ORDER
         LIMIT :limit OFFSET :offset
         """
     )
-    fun getUnwatchedByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    fun getUnwatchedByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
     @Query(
         """
@@ -1007,10 +1054,10 @@ interface SeriesDao {
     )
     fun getByWatchCountCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
 
-    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC LIMIT :limit OFFSET :offset")
-    fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<SeriesBrowseEntity>>
+    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $SERIES_TITLE_FIRST, $SERIES_PROVIDER_ORDER LIMIT :limit OFFSET :offset")
+    fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int, alphabetical: Boolean): Flow<List<SeriesBrowseEntity>>
 
-    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY name ASC LIMIT :limit")
+    @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY $SERIES_PROVIDER_ORDER LIMIT :limit")
     fun getByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<SeriesBrowseEntity>>
 
     @Query("SELECT * FROM series WHERE provider_id = :providerId ORDER BY rating DESC, name ASC LIMIT :limit")
@@ -1025,13 +1072,20 @@ interface SeriesDao {
     @Query("SELECT * FROM series WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY last_modified DESC, name ASC LIMIT :limit")
     fun getFreshByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<SeriesBrowseEntity>>
 
+    /**
+     * Recherche FTS globale. Le tri par longueur de titre s'applique AVANT la troncature à
+     * :limit — le classement final est fait en Kotlin (rankSearchResults), mais SQLite coupe en
+     * premier, et une coupe alphabétique jetterait hors fenêtre le titre visé dès qu'une requête
+     * large dépasse la limite. À pertinence égale, le titre le plus court est le meilleur
+     * candidat. Idem pour la variante par catégorie juste en dessous.
+     */
     @Query(
         """
         SELECT s.* FROM series s
         JOIN series_fts ON s.id = series_fts.rowid
         WHERE s.provider_id = :providerId
           AND series_fts MATCH :query
-        ORDER BY s.name ASC
+        ORDER BY LENGTH(s.name) ASC, s.name ASC
         LIMIT :limit
         """
     )
@@ -1044,7 +1098,7 @@ interface SeriesDao {
         WHERE s.provider_id = :providerId
           AND s.category_id = :categoryId
           AND series_fts MATCH :query
-        ORDER BY s.name ASC
+        ORDER BY LENGTH(s.name) ASC, s.name ASC
         LIMIT :limit
         """
     )
@@ -1556,6 +1610,9 @@ interface ProgramDao {
     @Query("SELECT COUNT(*) FROM programs WHERE provider_id = :providerId")
     suspend fun countByProvider(providerId: Long): Int
 
+    @Query("SELECT DISTINCT channel_id FROM programs WHERE provider_id = :providerId")
+    suspend fun getChannelIdsWithPrograms(providerId: Long): List<String>
+
     @Query("DELETE FROM programs WHERE end_time < :beforeTime")
     suspend fun deleteOld(beforeTime: Long): Int
 
@@ -1747,6 +1804,20 @@ interface EpgSourceDao {
 
     @Query("UPDATE epg_sources SET last_refresh_at = :at, last_success_at = :at, last_error = NULL, updated_at = :at WHERE id = :id")
     suspend fun updateRefreshSuccess(id: Long, at: Long)
+
+    @Query(
+        "UPDATE epg_sources SET last_refresh_at = :at, last_success_at = :at, last_error = NULL, " +
+            "http_etag = :etag, http_last_modified = :lastModified, updated_at = :at WHERE id = :id"
+    )
+    suspend fun updateRefreshSuccessWithValidators(id: Long, at: Long, etag: String?, lastModified: String?)
+
+    /**
+     * Marks a 304 Not Modified. The content on disk is still current, so this
+     * only moves the freshness clock forward — it must NOT touch the validators
+     * (a 304 may carry none) and must not disturb the ingested rows.
+     */
+    @Query("UPDATE epg_sources SET last_refresh_at = :at, last_success_at = :at, last_error = NULL, updated_at = :at WHERE id = :id")
+    suspend fun updateNotModified(id: Long, at: Long)
 }
 
 @Dao

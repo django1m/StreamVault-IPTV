@@ -553,9 +553,17 @@ class Media3PlayerEngine @Inject constructor(
         // moins de matraquage d'un panel rate-limité. VOD : gros buffer conservé.
         val bufferMs = if (activeBufferProfile == BufferProfile.LIVE) {
             when (deviceProfile.tier) {
-                DevicePerformanceProfile.Tier.LOW -> intArrayOf(6_000, 10_000, 1_500, 3_000)
-                DevicePerformanceProfile.Tier.MID -> intArrayOf(6_000, 12_000, 1_500, 3_500)
-                DevicePerformanceProfile.Tier.HIGH -> intArrayOf(8_000, 15_000, 2_000, 4_000)
+                // Seul le MAX monte. min/playback/afterRebuffer sont inchangés, donc
+                // le zapping démarre exactement aussi vite qu'avant : ce qui change,
+                // c'est la RÉSERVE que le lecteur a le droit d'accumuler quand le
+                // réseau va bien, et donc le trou qu'il peut traverser sans que
+                // l'image s'arrête. Mesuré le 07/09/2026 sur une box en Wi-Fi :
+                // des coupures de 60-90 s toutes les 1-2 min, là où un buffer de
+                // 10 s ne tenait aucune d'elles. Coût mémoire : ~1,3 Mo par
+                // seconde de réserve à 10 Mbps, borné par setTargetBufferBytes.
+                DevicePerformanceProfile.Tier.LOW -> intArrayOf(6_000, 30_000, 1_500, 3_000)
+                DevicePerformanceProfile.Tier.MID -> intArrayOf(6_000, 45_000, 1_500, 3_500)
+                DevicePerformanceProfile.Tier.HIGH -> intArrayOf(8_000, 60_000, 2_000, 4_000)
             }
         } else {
             when (deviceProfile.tier) {
@@ -577,6 +585,16 @@ class Media3PlayerEngine @Inject constructor(
                 ) {
                     setTargetBufferBytes(16 * 1024 * 1024)
                 }
+                // Live sur petite box : la réserve de 30 s ci-dessus vaut ~40 Mo à
+                // 10 Mbps et bien plus sur une chaîne 4K. Ce plafond laisse le
+                // buffer temporel s'exprimer sur un flux normal tout en empêchant
+                // une chaîne à très haut débit de faire exploser le heap natif des
+                // 2 Go — le garde-fou qui protège déjà le VOD, appliqué au live.
+                if (deviceProfile.tier == DevicePerformanceProfile.Tier.LOW &&
+                    activeBufferProfile == BufferProfile.LIVE
+                ) {
+                    setTargetBufferBytes(24 * 1024 * 1024)
+                }
             }
             .build()
         val livePlaybackSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
@@ -585,6 +603,7 @@ class Media3PlayerEngine @Inject constructor(
             .build()
 
         return ExoPlayer.Builder(context, renderersFactory)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .setLoadControl(loadControl)
             .setLivePlaybackSpeedControl(livePlaybackSpeedControl)
             .setSeekBackIncrementMs(10_000)

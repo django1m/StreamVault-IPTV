@@ -10,7 +10,7 @@ class FakeVpnGate(
     @Volatile var required: Boolean = false,
     /** Délai virtuel simulant un cycle en cours (runTest l'avance). */
     @Volatile var awaitDelayMs: Long = 0L,
-) : VpnReadinessGate {
+) : VpnReadinessGate, VpnPanelBlockReporter {
 
     val phaseFlow = MutableStateFlow(VpnDisplayPhase.IDLE)
     override val displayPhase: StateFlow<VpnDisplayPhase> = phaseFlow
@@ -21,6 +21,13 @@ class FakeVpnGate(
         private set
     var userRetryCalls = 0
         private set
+    /** Combien de fois un 403 du panel a été signalé (fix rotation d'egress). */
+    var panelLogin403Reports = 0
+        private set
+
+    override fun reportPanelLogin403() {
+        panelLogin403Reports++
+    }
 
     override suspend fun isVpnRequired(): Boolean = required
 

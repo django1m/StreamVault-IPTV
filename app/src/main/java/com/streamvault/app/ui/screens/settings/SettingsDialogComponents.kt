@@ -62,6 +62,7 @@ import java.text.DateFormat
 import java.util.Locale
 import androidx.tv.material3.LocalContentColor
 import com.streamvault.app.ui.design.OsdFocus
+import com.streamvault.app.ui.design.osdSecondaryColor
 import com.streamvault.app.ui.design.AppColors
 
 internal enum class ParentalAction {
@@ -716,19 +717,17 @@ internal fun LiveChannelNumberingModeDialog(
 @Composable
 internal fun SettingsRow(label: String, value: String) {
     val focusRequester = remember { FocusRequester() }
+    var isFocused by remember { mutableStateOf(false) }
     TvClickableSurface(
         onClick = {},
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = AppColors.Focus,
-            contentColor = OnBackground,
-            focusedContentColor = AppColors.FocusOnFill
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        colors = OsdFocus.slabColors(restingContent = OnBackground),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale(),
         modifier = Modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
+            .onFocusChanged { isFocused = it.isFocused }
             .mouseClickable(
                 focusRequester = focusRequester,
                 onClick = {}
@@ -741,8 +740,18 @@ internal fun SettingsRow(label: String, value: String) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = label, style = MaterialTheme.typography.bodyMedium, color = OnSurface)
-            Text(text = value, style = MaterialTheme.typography.bodyMedium, color = OnBackground)
+            // `OnSurface` and `OnBackground` are both aliases of TextPrimary — white. Pinning
+            // them here left the whole row invisible on its own focus slab.
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalContentColor.current
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = osdSecondaryColor(isFocused)
+            )
         }
     }
 }
@@ -750,19 +759,17 @@ internal fun SettingsRow(label: String, value: String) {
 @Composable
 internal fun ClickableSettingsRow(label: String, value: String, onClick: () -> Unit) {
     val focusRequester = remember { FocusRequester() }
+    var isFocused by remember { mutableStateOf(false) }
     TvClickableSurface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = AppColors.Focus,
-            contentColor = OnBackground,
-            focusedContentColor = AppColors.FocusOnFill
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        colors = OsdFocus.slabColors(restingContent = OnBackground),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale(),
         modifier = Modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
+            .onFocusChanged { isFocused = it.isFocused }
             .mouseClickable(
                 focusRequester = focusRequester,
                 onClick = onClick
@@ -775,8 +782,18 @@ internal fun ClickableSettingsRow(label: String, value: String, onClick: () -> U
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = label, style = MaterialTheme.typography.bodyMedium, color = OnSurface)
-            Text(text = value, style = MaterialTheme.typography.bodyMedium, color = Primary)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalContentColor.current
+            )
+            // Was `Primary`: blue on the white slab, and a settings value is not an "active"
+            // item — the accent is reserved for that.
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = osdSecondaryColor(isFocused)
+            )
         }
     }
 }
@@ -784,19 +801,17 @@ internal fun ClickableSettingsRow(label: String, value: String, onClick: () -> U
 @Composable
 internal fun SwitchSettingsRow(label: String, value: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     val focusRequester = remember { FocusRequester() }
+    var isFocused by remember { mutableStateOf(false) }
     TvClickableSurface(
         onClick = { onCheckedChange(!checked) },
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = AppColors.Focus,
-            contentColor = OnBackground,
-            focusedContentColor = AppColors.FocusOnFill
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        colors = OsdFocus.slabColors(restingContent = OnBackground),
+        border = OsdFocus.noBorder(),
+        scale = OsdFocus.noScale(),
         modifier = Modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
+            .onFocusChanged { isFocused = it.isFocused }
             .mouseClickable(
                 focusRequester = focusRequester,
                 onClick = { onCheckedChange(!checked) }
@@ -810,8 +825,16 @@ internal fun SwitchSettingsRow(label: String, value: String, checked: Boolean, o
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(text = label, style = MaterialTheme.typography.bodyMedium, color = OnSurface)
-                Text(text = value, style = MaterialTheme.typography.bodySmall, color = OnSurfaceDim)
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalContentColor.current
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = osdSecondaryColor(isFocused)
+                )
             }
             Switch(
                 checked = checked,

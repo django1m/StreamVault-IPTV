@@ -322,6 +322,12 @@ class PlayerViewModel @Inject constructor(
     // message instead of a generic one. Reset by beginPlaybackSession().
     private var probeAdvisoryHttpCode: Int? = null
 
+    // Whether the CURRENT live session ever reached READY. A live stream that the
+    // panel accepted and that never produces a first frame is the blackholed-exit
+    // signature — there is no error to catch, so this flag is the only way to tell
+    // "never started" from "started then stalled" when a watchdog fires.
+    private var liveFirstFrameSeen = false
+
     /** Dernière relance auto post-activation VPN (epoch ms) — voir cooldown. */
     @Volatile private var lastVpnAutoRetryAtMs = 0L
     // Last probe-failure diagnostic identity — dedups the RETRY button
@@ -330,6 +336,14 @@ class PlayerViewModel @Inject constructor(
     private var lastProbeDiagKey: Triple<Long, Long, Int>? = null
     internal var lastRecordedLivePlaybackKey: Pair<Long, Long>? = null
     private var currentStreamClassLabel: String = "Primary"
+
+    // Replay / catch-up : le contentType reste "LIVE" (c’est bien une chaîne), mais le
+    // flux est rejouable — position, durée et seek ont un sens, le zapping non. Suivi
+    // PAR SESSION de lecture et non dérivé de currentStreamClassLabel : une bascule
+    // vers un flux alternatif (tryAlternateStreamInternal) réécrit ce label en
+    // "Alternate" et ferait silencieusement retomber le replay en mode zapping.
+    private val _isTimeshiftPlayback = MutableStateFlow(false)
+    val isTimeshiftPlayback: StateFlow<Boolean> = _isTimeshiftPlayback.asStateFlow()
     private var prepareRequestVersion: Long = 0L
     internal var currentArtworkUrl: String? = null
     private var currentResolvedPlaybackUrl: String = ""
@@ -501,6 +515,7 @@ class PlayerViewModel @Inject constructor(
                         // proves any on-demand block is selective (region-specific),
                         // not a provider-wide outage — Class B ban evidence needs it.
                         if (currentContentType == ContentType.LIVE) {
+                            liveFirstFrameSeen = true
                             vpnManager.reportLivePlaybackSuccess()
                         }
                     }
@@ -892,6 +907,7 @@ class PlayerViewModel @Inject constructor(
         recoveryJob?.cancel()
         hasRetriedXtreamAuthRefresh = false
         probeAdvisoryHttpCode = null
+        liveFirstFrameSeen = false
         val version = ++prepareRequestVersion
         // Disarm history writes until the engine is prepared + READY for this
         // version. Same-content retries (engine fallback, alternate stream)
@@ -1583,6 +1599,7 @@ class PlayerViewModel @Inject constructor(
         )
         lastFinalPersistKey = null
         currentStreamClassLabel = if (hasArchiveRequest) "Catch-up" else "Primary"
+        _isTimeshiftPlayback.value = hasArchiveRequest
         if (!hasArchiveRequest) {
             pendingCatchUpUrls = emptyList()
         }
@@ -2608,6 +2625,39 @@ class PlayerViewModel @Inject constructor(
         return true
     }
 
+    /**
+     * A live channel the panel ACCEPTED never produced a first frame before its
+     * watchdog fired. That combination — no HTTP refusal, no bytes — is what a
+     * blackholed exit IP looks like from inside the player, and it is invisible to
+     * every other signal the VPN guard has (they all key on a 403).
+     *
+     * Deliberately reported from the watchdogs rather than from a pre-playback
+     * body probe: the panel's lines are max=1 and an extra media request steals the
+     * slot from the playback that follows it (measured — the origin answers 509 to
+     * the engine for seconds afterwards). The watchdogs already know the answer and
+     * cost nothing.
+     *
+     * Reported only when:
+     *  - the content is LIVE (VOD refusals are loud, and are already handled);
+     *  - no frame was ever shown ([liveFirstFrameSeen]) — a stall AFTER playback
+     *    started is a different failure, and its live success already told the guard
+     *    this exit delivers bytes;
+     *  - the probe did not report a refusal ([probeAdvisoryHttpCode]) — with an HTTP
+     *    code in hand this is a refusal, not a blackhole.
+     * The guard then needs a SECOND distinct channel before it rotates anything.
+     */
+    private fun reportLiveBlackholeIfNeverStarted() {
+        if (currentContentType != ContentType.LIVE) return
+        if (liveFirstFrameSeen || probeAdvisoryHttpCode != null) return
+        val streamId = XtreamUrlFactory.parsePlaybackUrl(currentResolvedPlaybackUrl)?.streamId
+            ?: currentContentId
+        android.util.Log.w(
+            "PlayerVM",
+            "live accepted but no first frame (id=$streamId) — reporting exit IP as suspect"
+        )
+        vpnManager.reportLiveBlackhole(currentProviderId, streamId)
+    }
+
     internal fun scheduleZapBufferWatchdog(targetIndex: Int) {
         zapBufferWatchdogJob?.cancel()
         val requestVersion = prepareRequestVersion
@@ -2618,6 +2668,7 @@ class PlayerViewModel @Inject constructor(
             val state = playerEngine.playbackState.value
             val stalled = state == PlaybackState.BUFFERING || state == PlaybackState.ERROR
             if (stillOnTarget && stalled) {
+                reportLiveBlackholeIfNeverStarted()
                 markStreamFailure(currentStreamUrl)
                 setLastFailureReason("Channel timed out in buffering state")
                 appendRecoveryAction("Buffer watchdog triggered")
@@ -2696,6 +2747,9 @@ class PlayerViewModel @Inject constructor(
             }
             val state = playerEngine.playbackState.value
             if (!stillOnTarget || state != PlaybackState.BUFFERING) return@launch
+            // First channel of the session has no zap watchdog, so this is where a
+            // never-started live surfaces. No-op once a frame has been shown.
+            if (isLiveTarget) reportLiveBlackholeIfNeverStarted()
             // Re-arm so the next tick can decide whether to restart again (after
             // cooldown) or fall back — the BUFFERING watchdog drives its own loop.
             handleMidStreamStall(targetIndex, reArmBufferingWatchdog = true)
@@ -2900,7 +2954,9 @@ class PlayerViewModel @Inject constructor(
     fun seekBackward() = playerEngine.seekBackward()
 
     fun startProgressiveSeek(direction: SeekDirection) {
-        if (currentContentType == ContentType.LIVE) return
+        // Le direct pur n’est pas rejouable ; un catch-up l’est, même s’il porte
+        // contentType LIVE.
+        if (currentContentType == ContentType.LIVE && !_isTimeshiftPlayback.value) return
         if (playerEngine.playbackState.value == PlaybackState.ERROR) return
         if (progressiveSeekController.isActive.value) return
         wasPlayingBeforeProgressiveSeek = playerEngine.isPlaying.value ||
@@ -3005,6 +3061,7 @@ class PlayerViewModel @Inject constructor(
         triedAlternativeStreams.add(primaryUrl)
         currentStreamUrl = primaryUrl
         updateStreamClass("Catch-up")
+        _isTimeshiftPlayback.value = true
         appendRecoveryAction(recoveryAction)
 
         val catchupStream = com.streamvault.domain.model.StreamInfo(

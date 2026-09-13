@@ -80,6 +80,7 @@ internal fun observeSettingsPreferenceSnapshot(
             guideDefaultCategoryOptions = emptyList(),
             preventStandbyDuringPlayback = true,
             autoCheckAppUpdates = true,
+            appUpdateBetaChannel = false,
             lastAppUpdateCheckAt = null,
             cachedAppUpdateVersionName = null,
             cachedAppUpdateVersionCode = null,
@@ -152,6 +153,8 @@ internal fun observeSettingsPreferenceSnapshot(
         snapshot.copy(preventStandbyDuringPlayback = preventStandby)
     }.combine(preferencesRepository.autoCheckAppUpdates) { snapshot, autoCheckAppUpdates ->
         snapshot.copy(autoCheckAppUpdates = autoCheckAppUpdates)
+    }.combine(preferencesRepository.appUpdateBetaChannel) { snapshot, betaChannel ->
+        snapshot.copy(appUpdateBetaChannel = betaChannel)
     }.combine(preferencesRepository.lastAppUpdateCheckTimestamp) { snapshot, lastAppUpdateCheckAt ->
         snapshot.copy(lastAppUpdateCheckAt = lastAppUpdateCheckAt)
     }.combine(preferencesRepository.cachedAppUpdateVersionName) { snapshot, versionName ->
@@ -212,6 +215,7 @@ internal fun SettingsUiState.applyPreferenceSnapshot(snapshot: SettingsPreferenc
         guideDefaultCategoryOptions = guideDefaultCategoryOptions,
         preventStandbyDuringPlayback = snapshot.preventStandbyDuringPlayback,
         autoCheckAppUpdates = snapshot.autoCheckAppUpdates,
+        appUpdateBetaChannel = snapshot.appUpdateBetaChannel,
         appUpdate = cachedAppUpdate.copy(
             downloadStatus = appUpdate.downloadStatus,
             downloadedVersionName = appUpdate.downloadedVersionName,

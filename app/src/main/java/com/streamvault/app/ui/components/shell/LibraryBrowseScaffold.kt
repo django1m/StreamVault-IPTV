@@ -22,7 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -123,48 +126,45 @@ fun CategoryRailPanel(
     content: LazyListScope.() -> Unit
 ) {
     val spacing = LocalAppSpacing.current
-    Surface(
-        modifier = modifier.fillMaxSize(),
-        shape = RoundedCornerShape(28.dp),
-        colors = androidx.tv.material3.SurfaceDefaults.colors(containerColor = AppColors.SurfaceElevated)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            AppColors.SurfaceElevated,
-                            AppColors.Surface
-                        )
-                    )
+    val dividerColor = AppColors.Divider
+    // Same treatment as the Live TV category column (HomeScreen): a hairline on the trailing
+    // edge instead of a filled, rounded panel. The two screens show the same object in the
+    // same place, and the filled panel here is what made Films/Séries read as a different app.
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .drawBehind {
+                drawRect(
+                    color = dividerColor,
+                    topLeft = Offset(size.width - 1.dp.toPx(), 0f),
+                    size = Size(1.dp.toPx(), size.height)
                 )
-                .padding(horizontal = spacing.md, vertical = spacing.md)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = AppColors.TextPrimary
-            )
-            Spacer(modifier = Modifier.height(spacing.sm))
-            SearchInput(
-                value = searchValue,
-                onValueChange = onSearchValueChange,
-                placeholder = searchPlaceholder,
-                focusRequester = searchFocusRequester
-            )
-            if (headerContent != null) {
-                Spacer(modifier = Modifier.height(spacing.sm))
-                headerContent()
             }
+            .padding(horizontal = spacing.md, vertical = spacing.md)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            color = AppColors.TextPrimary
+        )
+        Spacer(modifier = Modifier.height(spacing.sm))
+        SearchInput(
+            value = searchValue,
+            onValueChange = onSearchValueChange,
+            placeholder = searchPlaceholder,
+            focusRequester = searchFocusRequester
+        )
+        if (headerContent != null) {
             Spacer(modifier = Modifier.height(spacing.sm))
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                contentPadding = contentPadding,
-                content = content
-            )
+            headerContent()
         }
+        Spacer(modifier = Modifier.height(spacing.sm))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = contentPadding,
+            content = content
+        )
     }
 }
 

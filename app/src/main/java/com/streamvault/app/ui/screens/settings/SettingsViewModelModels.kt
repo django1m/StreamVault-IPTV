@@ -1,7 +1,6 @@
 package com.streamvault.app.ui.screens.settings
 
 import android.app.Application
-import com.streamvault.app.BuildConfig
 import com.streamvault.app.R
 import com.streamvault.app.ui.model.LiveTvChannelMode
 import com.streamvault.app.ui.model.LiveTvQuickFilterVisibilityMode
@@ -9,6 +8,7 @@ import com.streamvault.app.ui.model.VodViewMode
 import com.streamvault.app.update.AppUpdateDownloadState
 import com.streamvault.app.update.AppUpdateDownloadStatus
 import com.streamvault.app.update.AppUpdateInfo
+import com.streamvault.app.update.isAppUpdateNewer
 import com.streamvault.domain.manager.BackupImportPlan
 import com.streamvault.domain.manager.BackupPreview
 import com.streamvault.domain.model.ActiveLiveSource
@@ -23,7 +23,6 @@ import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.RecordingItem
 import com.streamvault.domain.model.RecordingStorageState
 import com.streamvault.domain.model.VodSyncMode
-import kotlin.math.max
 
 enum class ProviderWarningAction {
     EPG,
@@ -77,6 +76,7 @@ internal data class SettingsPreferenceSnapshot(
     val guideDefaultCategoryOptions: List<Category>,
     val preventStandbyDuringPlayback: Boolean,
     val autoCheckAppUpdates: Boolean,
+    val appUpdateBetaChannel: Boolean,
     val lastAppUpdateCheckAt: Long?,
     val cachedAppUpdateVersionName: String?,
     val cachedAppUpdateVersionCode: Int?,
@@ -177,6 +177,7 @@ data class SettingsUiState(
     val epgSourceAssignments: Map<Long, List<com.streamvault.domain.model.ProviderEpgSourceAssignment>> = emptyMap(),
     val epgResolutionSummaries: Map<Long, EpgResolutionSummary> = emptyMap(),
     val autoCheckAppUpdates: Boolean = true,
+    val appUpdateBetaChannel: Boolean = false,
     val isCheckingForUpdates: Boolean = false,
     val appUpdate: AppUpdateUiModel = AppUpdateUiModel()
 )
@@ -217,29 +218,14 @@ internal fun SettingsPreferenceSnapshot.toCachedAppUpdateUiModel(): AppUpdateUiM
         downloadUrl = cachedAppUpdateDownloadUrl,
         releaseNotes = cachedAppUpdateReleaseNotes,
         publishedAt = cachedAppUpdatePublishedAt,
-        isUpdateAvailable = versionName?.let {
-            if (cachedAppUpdateVersionCode != null && cachedAppUpdateVersionCode > BuildConfig.VERSION_CODE) {
-                true
-            } else {
-                compareVersionNamesStatic(it, BuildConfig.VERSION_NAME) > 0
-            }
-        } ?: false,
+        // Le versionCode fait autorité (isAppUpdateNewer) : le cache peut parfaitement
+        // contenir une stable ANTÉRIEURE au build installé — c’est le cas normal sur
+        // une bêta dont le canal n’est pas activé. Le nom reste requis : sans lui la
+        // ligne « Dernière version » n’aurait rien à afficher.
+        isUpdateAvailable = !versionName.isNullOrBlank() &&
+            isAppUpdateNewer(cachedAppUpdateVersionCode, versionName),
         lastCheckedAt = lastAppUpdateCheckAt
     )
-}
-
-internal fun compareVersionNamesStatic(left: String, right: String): Int {
-    val leftParts = left.removePrefix("v").split('.')
-    val rightParts = right.removePrefix("v").split('.')
-    val length = max(leftParts.size, rightParts.size)
-    for (index in 0 until length) {
-        val leftValue = leftParts.getOrNull(index)?.toIntOrNull() ?: 0
-        val rightValue = rightParts.getOrNull(index)?.toIntOrNull() ?: 0
-        if (leftValue != rightValue) {
-            return leftValue.compareTo(rightValue)
-        }
-    }
-    return 0
 }
 
 internal fun ProviderSyncSelection.label(application: Application): String = when (this) {

@@ -34,8 +34,8 @@ internal class SyncManagerXtreamMovieStrategy(
     private val fullCatalogFallbackWarning: (String, Throwable?) -> String,
     private val categoryFailureWarning: (String, String, Throwable) -> String,
     private val pagingFailureWarning: (String, Int, Throwable) -> String,
-    private val stageMovieItems: suspend (Long, List<Movie>, MutableSet<Long>, FallbackCategoryCollector, Long?) -> StagedCatalogSnapshot,
-    private val stageMovieSequence: suspend (Long, Sequence<Movie>, MutableSet<Long>, FallbackCategoryCollector, Long?) -> StagedCatalogSnapshot,
+    private val stageMovieItems: suspend (Long, List<Movie>, MutableSet<Long>, FallbackCategoryCollector, Long?, ProviderOrderCounter) -> StagedCatalogSnapshot,
+    private val stageMovieSequence: suspend (Long, Sequence<Movie>, MutableSet<Long>, FallbackCategoryCollector, Long?, ProviderOrderCounter) -> StagedCatalogSnapshot,
     private val movieCategorySequentialModeWarning: String,
     private val moviePagedSequentialModeWarning: String,
     private val fallbackStageBatchSize: Int,
@@ -297,6 +297,7 @@ internal class SyncManagerXtreamMovieStrategy(
     ): CatalogSyncPayload<Movie> {
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.MOVIE)
         val seenStreamIds = HashSet<Long>()
+        val providerOrder = ProviderOrderCounter()
         val rawBatch = ArrayList<XtreamStream>(fallbackStageBatchSize)
         var stagedSessionId: Long? = null
         var acceptedCount = 0
@@ -310,7 +311,8 @@ internal class SyncManagerXtreamMovieStrategy(
                 api.mapVodStreamsSequence(rawBatch.asSequence()),
                 seenStreamIds,
                 fallbackCollector,
-                stagedSessionId
+                stagedSessionId,
+                providerOrder
             )
             stagedSessionId = staged.sessionId
             acceptedCount += staged.acceptedCount
@@ -500,7 +502,7 @@ internal class SyncManagerXtreamMovieStrategy(
             .flatMap { it.items }
         if (allMovieItems.isNotEmpty()) {
             progress(provider.id, onProgress, "Saving ${allMovieItems.size} movies to database...")
-            val staged = stageMovieItems(provider.id, allMovieItems, seenStreamIds, fallbackCollector, sessionId)
+            val staged = stageMovieItems(provider.id, allMovieItems, seenStreamIds, fallbackCollector, sessionId, ProviderOrderCounter())
             sessionId = staged.sessionId
             acceptedCount = staged.acceptedCount
         }
@@ -550,6 +552,7 @@ internal class SyncManagerXtreamMovieStrategy(
     ): CatalogSyncPayload<Movie> {
         val seenStreamIds = HashSet<Long>()
         val fallbackCollector = FallbackCategoryCollector(provider.id, ContentType.MOVIE)
+        val providerOrder = ProviderOrderCounter()
         val warnings = mutableListOf<String>()
         var sessionId: Long? = null
         var acceptedCount = 0
@@ -610,7 +613,7 @@ internal class SyncManagerXtreamMovieStrategy(
             timedOutcomes.sortedBy { it.page }.forEach { timedOutcome ->
                 when (val outcome = timedOutcome.outcome) {
                     is PageFetchOutcome.Success -> {
-                        val staged = stageMovieItems(provider.id, outcome.items, seenStreamIds, fallbackCollector, sessionId)
+                        val staged = stageMovieItems(provider.id, outcome.items, seenStreamIds, fallbackCollector, sessionId, providerOrder)
                         sessionId = staged.sessionId
                         acceptedCount += staged.acceptedCount
                         val newItems = staged.acceptedCount

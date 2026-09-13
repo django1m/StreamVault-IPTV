@@ -22,7 +22,9 @@ data class Series(
     val lastModified: Long = 0L,
     val isAdult: Boolean = false,
     val isUserProtected: Boolean = false,
-    val seriesId: Long = 0L
+    val seriesId: Long = 0L,
+    /** Rang de la série dans sa catégorie, dans l'ordre d'envoi du fournisseur (1 = premier, 0 = inconnu). */
+    val providerOrder: Int = 0
 ) {
     init {
         require(rating in 0f..10f) { "rating must be between 0 and 10" }

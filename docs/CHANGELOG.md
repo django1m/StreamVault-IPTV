@@ -2,6 +2,38 @@
 
 All notable product changes are recorded in this document.
 
+## 1.3.37-beta12 (536) - 07/09/2026
+
+### Fixed
+- Fixed the new blackhole detector turning a flaky link into rotations. A box whose Wi-Fi drops for 60-90 s every minute or two fails to start channels for the same reason a blackholed exit does — no bytes — so the detector blamed the exit and rotated it, tearing the tunnel down again and feeding the problem it thought it saw (observed on a Formuler Z Mini, twice in one evening, the second time on a region whose every server measured healthy). Two guards now separate the two cases: the box probes the backend through the tunnel before blaming an exit (a 403 needs no such check — the provider had to be reached to refuse), and a tunnel reconnect clears blackhole evidence, since it was gathered against a session that no longer exists. On-demand 403 evidence deliberately survives a reconnect: that one is the provider's decision about the exit, not an absence of bytes.
+
+### Changed
+- Live playback keeps a much larger buffer reserve (30 s on low-end boxes, 45 s mid, 60 s high, up from 10/12/15 s), capped at 24 MB on 2 GB boxes so a very-high-bitrate channel cannot blow the native heap. Only the ceiling changed — start-up and rebuffer thresholds are untouched, so zapping is exactly as fast as before; what changes is how long a network hole the picture can ride through.
+- The player now holds a network wake lock during playback (`setWakeMode`), so the Wi-Fi chip cannot enter power-save mid-stream.
+
+## 1.3.37-beta11 (535) - 06/09/2026
+
+### Fixed
+- Fixed a box sitting forever on a black screen when its VPN exit IP is blackholed by the provider's live edges. The panel accepts the stream (`200 video/mp2t`) and the origin then sends nothing, so no error is ever raised and none of the VPN supervisor's health signals — which all key on a 403 — could fire; the box stayed stuck until an admin moved it by hand (observed 05/09/2026, exit `191.96.168.95` on `amsterdam426`: live dead, VOD fine, since the two are served by different edges). A live channel that the panel accepted and that never shows a first frame before its watchdog fires is now reported to the supervisor, and TWO DISTINCT such channels — any successful playback in between clears the evidence — rotate the exit IP within the same region, under the existing budget (≤3 per 6 h, ≥5 min apart). Detection sits in the watchdogs on purpose rather than in a pre-playback body probe: lines are max=1 and a second media request steals the connection slot from the playback that follows it.
+- Egress rotations are now reported as a device diagnostic, so the panel shows which box changed exit IP and on what evidence.
+
+## 1.3.37-beta2 (526) - 27/08/2026
+
+### Fixed
+- Fixed multi-word search returning nothing: "jason bourne" found no result while "jason" alone found the film. FTS queries joined their tokens with the literal `AND` keyword, but Android's system SQLite is built without `SQLITE_ENABLE_FTS3_PARENTHESIS`, so FTS3/FTS4 falls back to the standard query syntax where "AND" is a search term rather than an operator — every multi-word search silently demanded a title containing the word "and". Tokens are now separated by a space, which means implicit AND in both syntaxes.
+- Fixed accented titles being unreachable: the FTS index used the `simple` tokenizer, which folds ASCII case only, so "L'Été" was indexed under the term `Été` and neither "été" nor "ete" matched it. The three indexes now use `unicode61` (migration 31 → 32 rebuilds them on first launch), which folds case and diacritics on both the index and the query side.
+- Fixed searches broken by punctuation: the query was split on whitespace only, so "l'été" looked for the term `lété`, and titles made of initials ("9-1-1", "S.W.A.T.") searched for nothing at all. The query is now split exactly the way the FTS tokenizer splits the indexed titles.
+
+### Changed
+- Search falls back to a permissive match when no title contains every word typed ("matrix reloaded vf"): the closest partial matches are shown, ranked by how many words they match, instead of an empty screen.
+- Search ranking folds accents like the index does, and SQLite now orders candidates by title length before the 300-row cut, so a broad query no longer truncates the relevant title out of the window.
+
+## 1.3.37-beta1 (mobile 100535) - 17/08/2026
+
+### Fixed
+- Fixed a box being stranded forever on the activation screen when its VPN exit IP is banned by the provider. A 403 on the panel login now reports the burned exit to the VPN supervisor, which asks the server to rotate the exit IP within the same region (bounded: ≤3 per 6 h, ≥5 min apart). Until now every 403 health signal came from playback, which a device that never gets past activation can never produce.
+- Fixed the activation screen freezing on a failure that could recover on its own: only network errors retried automatically, so a panel 403 left the box waiting for a human to press "Réessayer". Server and unknown failures now retry on a 1 min → 2 min → 5 min backoff (spaced out on purpose: the panel rate-limits to roughly one request per IP, and a tight loop would re-burn the freshly rotated exit). Failures that need a human — expired subscription, device to re-pair — still stop and say so.
+
 ## 1.3.31 (519) - 04/07/2026
 
 ### Fixed

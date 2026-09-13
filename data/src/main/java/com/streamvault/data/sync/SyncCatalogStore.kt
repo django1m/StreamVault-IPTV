@@ -348,7 +348,9 @@ internal class SyncCatalogStore(
                 tmdbId = movie.tmdbId,
                 youtubeTrailer = movie.youtubeTrailer,
                 isAdult = movie.isAdult,
-                syncFingerprint = movieFingerprint(movie)
+                syncFingerprint = movieFingerprint(movie),
+                providerOrder = movie.providerOrder,
+                providerAddedAt = movie.providerAddedAt
             )
         }
     }
@@ -380,7 +382,8 @@ internal class SyncCatalogStore(
                 episodeRunTime = item.episodeRunTime,
                 lastModified = item.lastModified,
                 isAdult = item.isAdult,
-                syncFingerprint = seriesFingerprint(item)
+                syncFingerprint = seriesFingerprint(item),
+                providerOrder = item.providerOrder
             )
         }
     }
@@ -504,7 +507,9 @@ internal class SyncCatalogStore(
             tmdbId = movie.tmdbId,
             youtubeTrailer = movie.youtubeTrailer,
             isAdult = movie.isAdult,
-            syncFingerprint = movieFingerprint(movie)
+            syncFingerprint = movieFingerprint(movie),
+            providerOrder = movie.providerOrder,
+            providerAddedAt = movie.providerAddedAt
         )
     }
 
@@ -533,7 +538,8 @@ internal class SyncCatalogStore(
             episodeRunTime = item.episodeRunTime,
             lastModified = item.lastModified,
             isAdult = item.isAdult,
-            syncFingerprint = seriesFingerprint(item)
+            syncFingerprint = seriesFingerprint(item),
+            providerOrder = item.providerOrder
         )
     }
 
@@ -574,7 +580,9 @@ internal class SyncCatalogStore(
             normalizeText(movie.year),
             movie.tmdbId?.toString().orEmpty(),
             normalizeUrl(movie.youtubeTrailer),
-            movie.isAdult.toString()
+            movie.isAdult.toString(),
+            movie.providerOrder.toString(),
+            movie.providerAddedAt.toString()
         )
     }
 
@@ -595,7 +603,8 @@ internal class SyncCatalogStore(
             normalizeUrl(series.youtubeTrailer),
             normalizeText(series.episodeRunTime),
             series.lastModified.toString(),
-            series.isAdult.toString()
+            series.isAdult.toString(),
+            series.providerOrder.toString()
         )
     }
 

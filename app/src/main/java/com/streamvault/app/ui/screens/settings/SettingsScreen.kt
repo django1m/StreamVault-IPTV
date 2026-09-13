@@ -946,6 +946,14 @@ fun SettingsScreen(
                                     checked = uiState.autoCheckAppUpdates,
                                     onCheckedChange = viewModel::setAutoCheckAppUpdates
                                 )
+                                SwitchSettingsRow(
+                                    label = stringResource(R.string.settings_update_beta_channel),
+                                    value = stringResource(
+                                        if (uiState.appUpdateBetaChannel) R.string.settings_update_beta_channel_on else R.string.settings_update_beta_channel_off
+                                    ),
+                                    checked = uiState.appUpdateBetaChannel,
+                                    onCheckedChange = viewModel::setAppUpdateBetaChannel
+                                )
                                 SettingsRow(
                                     label = stringResource(R.string.settings_update_latest_release),
                                     value = formatLatestReleaseLabel(uiState.appUpdate, context)
