@@ -2,6 +2,16 @@
 
 All notable product changes are recorded in this document.
 
+## 1.3.37-beta13 (537) - 13/09/2026
+
+### Fixed
+- Fixed the focused item being invisible in lists. The series episode list had no focus cue at all — the row card painted its own opaque background over the surface's focused colour — and elsewhere focus came down to a shift between two navy tints. A 2 dp white outline now marks the focused item in the episode list, favorites, the in-player guide, track selection and the resume prompt; the archive dialog's brand-blue outline turns white.
+- Fixed the resume prompt swallowing the arrows. LEFT on "Resume" sought backward in the video and raised the control bar, which took focus away from the prompt, instead of moving to "Start over". The player now leaves the arrows and OK to the resume prompt and to the options panel while either is on screen.
+- D-pad seeking no longer hands focus to the control bar: the first LEFT/RIGHT seeks and brings the bar up for its timecode, every following press seeks too, and OK, UP or DOWN step into the bar. Already in 536, missing from its notes.
+
+### Changed
+- Films and series follow the provider's own order in the library instead of alphabetical (rank per category, Room migrations 34 and 35); "Newest" sorts films on the provider's added date. The order shows up after the next catalog sync, which rewrites every film and series row once.
+
 ## 1.3.37-beta12 (536) - 07/09/2026
 
 ### Fixed
