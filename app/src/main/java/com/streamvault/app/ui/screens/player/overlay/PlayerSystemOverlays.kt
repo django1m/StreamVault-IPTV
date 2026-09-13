@@ -55,6 +55,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.streamvault.app.R
 import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.OsdFocus
 import com.streamvault.app.ui.design.requestFocusSafely
 import com.streamvault.app.ui.screens.player.PlayerNoticeAction
 import com.streamvault.app.ui.screens.player.PlayerNoticeState
@@ -822,6 +823,7 @@ private fun TrackSelectionItem(
             containerColor = if (isSelected) Primary.copy(alpha = 0.2f) else Color.Transparent,
             focusedContainerColor = SurfaceHighlight
         ),
+        border = OsdFocus.tileBorder(RoundedCornerShape(8.dp)),
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
@@ -921,6 +923,7 @@ fun PlayerResumePrompt(
                         containerColor = SurfaceElevated,
                         focusedContainerColor = SurfaceHighlight
                     ),
+                    border = OsdFocus.tileBorder(RoundedCornerShape(8.dp)),
                     modifier = Modifier
                         .weight(1f)
                         .focusRequester(startOverFocusRequester)
@@ -945,6 +948,7 @@ fun PlayerResumePrompt(
                         containerColor = Primary,
                         focusedContainerColor = PrimaryLight
                     ),
+                    border = OsdFocus.tileBorder(RoundedCornerShape(8.dp)),
                     modifier = Modifier
                         .weight(1f)
                         .focusRequester(resumeFocusRequester)

@@ -53,6 +53,7 @@ import com.streamvault.app.ui.components.shell.EpisodeRowCard
 import com.streamvault.app.ui.components.shell.ExternalRatingsStrip
 import com.streamvault.app.ui.components.shell.StatusPill
 import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.OsdFocus
 import com.streamvault.app.ui.model.formatVodRatingLabel
 import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.ExternalRatings
@@ -397,13 +398,17 @@ fun EpisodeItem(
     episode: Episode,
     onClick: () -> Unit
 ) {
+    // EpisodeRowCard peint son propre fond opaque, qui recouvre la couleur de focus de
+    // la surface : seul un contour, dessiné par-dessus le contenu, signale le focus.
+    val shape = RoundedCornerShape(18.dp)
     TvClickableSurface(
         onClick = onClick,
-        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(18.dp)),
+        shape = ClickableSurfaceDefaults.shape(shape = shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = AppColors.SurfaceElevated,
             focusedContainerColor = AppColors.SurfaceEmphasis
         ),
+        border = OsdFocus.tileBorder(shape),
         modifier = Modifier.fillMaxWidth()
     ) {
         EpisodeRowCard(

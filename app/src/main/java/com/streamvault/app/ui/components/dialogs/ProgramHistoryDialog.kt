@@ -2,6 +2,8 @@ package com.streamvault.app.ui.components.dialogs
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.FocusSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -134,12 +136,10 @@ fun ProgramHistoryDialog(
                                         else Modifier
                                     )
                                     .border(
-                                        width = if (isFocused) 2.dp else 1.dp,
-                                        color = if (isFocused) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            unfocusedBorderColor
-                                        },
+                                        // Blanc comme toutes les listes : le bleu de marque
+                                        // ne se détachait pas du fond du dialogue à 3 mètres.
+                                        width = if (isFocused) FocusSpec.OutlineWidth else 1.dp,
+                                        color = if (isFocused) AppColors.Focus else unfocusedBorderColor,
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),

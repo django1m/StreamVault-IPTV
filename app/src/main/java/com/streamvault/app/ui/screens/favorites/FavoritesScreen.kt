@@ -49,6 +49,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.tv.material3.Border
+import com.streamvault.app.ui.design.AppColors
+import com.streamvault.app.ui.design.FocusSpec
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
@@ -1096,7 +1098,17 @@ private fun FavoriteRow(
                     width = if (isReorderingThis) 2.dp else 0.dp,
                     color = if (isReorderingThis) Primary else Color.Transparent
                 )
-            )
+            ),
+            // Sans contour, le focus se réduisait à SurfaceElevated → SurfaceHighlight :
+            // deux bleus nuit indiscernables à 3 mètres.
+            focusedBorder = if (isReorderingThis) {
+                Border(border = androidx.compose.foundation.BorderStroke(2.dp, Primary))
+            } else {
+                Border(
+                    border = androidx.compose.foundation.BorderStroke(FocusSpec.OutlineWidth, AppColors.Focus),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
         )
     ) {
         Row(

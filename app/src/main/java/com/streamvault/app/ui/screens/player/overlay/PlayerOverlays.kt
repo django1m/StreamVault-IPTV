@@ -89,6 +89,7 @@ import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.interaction.TvButton
 import com.streamvault.app.ui.interaction.TvIconButton
 import com.streamvault.app.ui.design.AppMotion
+import com.streamvault.app.ui.design.OsdFocus
 import com.streamvault.app.ui.screens.player.overlay.components.PlayerGlassBar
 import androidx.tv.material3.Icon
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -1210,6 +1211,7 @@ fun EpgOverlay(
                                 containerColor = if (isNext) Primary.copy(alpha = 0.08f) else Color.Transparent,
                                 focusedContainerColor = Primary.copy(alpha = 0.2f)
                             ),
+                            border = OsdFocus.tileBorder(RoundedCornerShape(12.dp)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .then(

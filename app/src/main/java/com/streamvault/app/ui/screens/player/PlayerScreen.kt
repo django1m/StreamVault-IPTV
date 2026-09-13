@@ -730,6 +730,22 @@ fun PlayerScreen(
                             else -> true
                         }
                     }
+                    // Le prompt « Reprendre » et le panneau d’options vivent dans l’arbre du
+                    // lecteur : leurs flèches remontent jusqu’ici. Les consommer les rendait
+                    // inutilisables — gauche sur « Reprendre » cherchait dans la vidéo au
+                    // lieu d’aller sur « Recommencer », et la barre qui montait volait le
+                    // focus au prompt.
+                    if (resumePrompt.show || showOptionsPanel) {
+                        when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_DPAD_DOWN,
+                            KeyEvent.KEYCODE_DPAD_LEFT,
+                            KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_CENTER,
+                            KeyEvent.KEYCODE_ENTER,
+                            KeyEvent.KEYCODE_NUMPAD_ENTER -> return@onKeyEvent false
+                        }
+                    }
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                             if (viewModel.isProgressiveSeekActive.value) {
