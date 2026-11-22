@@ -62,20 +62,29 @@ class ForegroundHeartbeatController @Inject constructor(
     private suspend fun pingHeartbeat() {
         val deviceId = try { device.deviceId() } catch (_: Exception) { return }
         val token = try { device.deviceToken() } catch (_: Exception) { null } ?: return
-        try {
-            val res = device.api.heartbeat(
+        val res = try {
+            device.api.heartbeat(
                 deviceId, token, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME,
                 health = runCatching { healthSnapshot.capture() }.getOrNull(),
                 vpnAutoActivated = vpnManager.consumePendingAutoActivated().takeIf { it },
                 vpn = runCatching { vpnManager.vpnStateForHeartbeat() }.getOrNull(),
             )
+        } catch (e: Exception) {
+            // Feeds the data-plane watchdog: repeated transport failures behind a
+            // tunnel that still handshakes mean the tunnel carries nothing.
+            vpnManager.onBackendCallFailed(e)
+            Log.d(TAG, "foreground heartbeat failed (non-fatal): ${e.message}")
+            return
+        }
+        vpnManager.onBackendCallSucceeded()
+        try {
             vpnManager.applyMode(res.vpnMode)
             vpnManager.applyAssignedRegion(res.vpnRegion)
             if (res.commands.isNotEmpty()) {
                 commandExecutor.executeAll(res.commands)
             }
         } catch (e: Exception) {
-            Log.d(TAG, "foreground heartbeat failed (non-fatal): ${e.message}")
+            Log.d(TAG, "foreground heartbeat follow-up failed (non-fatal): ${e.message}")
         }
     }
 

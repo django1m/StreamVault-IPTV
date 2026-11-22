@@ -228,6 +228,7 @@ dependencies {
     implementation(libs.retrofit.gson)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
+    implementation(libs.okhttp.dnsoverhttps)
 
     // WireGuard userspace tunnel (PIA VPN to bypass the provider's on-demand
     // IP filtering). Apache-2.0 + MIT (wireguard-go) — embeddable in the app.

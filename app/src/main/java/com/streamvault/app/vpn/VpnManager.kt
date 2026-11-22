@@ -71,6 +71,12 @@ class VpnManager @Inject constructor(
 
     @Volatile private var consentDenied = false
 
+    // A tunnel "verified" by its handshakes while nothing else gets through — see
+    // TunnelDataPlaneWatchdog. Fed by the heartbeat outcomes: no extra traffic.
+    private val dataPlaneWatchdog = TunnelDataPlaneWatchdog(System::currentTimeMillis)
+    private val dataPlaneRecoveryInFlight = AtomicBoolean(false)
+    @Volatile private var lastBackendBlockedReportAtMs = 0L
+
     // Phase AFFICHAGE du cycle (splash / notices player). Les décisions de
     // gating n'en dépendent jamais — voir VpnDisplayPhase.
     private val _displayPhase = MutableStateFlow(VpnDisplayPhase.IDLE)
@@ -373,7 +379,7 @@ class VpnManager @Inject constructor(
             // every minute or two) reported two "blackholes" on a region whose
             // servers all tested healthy, and each rotation tore the tunnel down
             // again — the detector was feeding the very problem it saw.
-            if (!verifier.httpReachable()) {
+            if (!verifier.tunnelHttpReachable()) {
                 Log.d(TAG, "live starved but backend unreachable — blaming the link, not the exit")
                 return@launch
             }
@@ -418,6 +424,82 @@ class VpnManager @Inject constructor(
             if (!verifiedNow(cached)) return@launch
             guard.onPanelLogin403()
         }
+    }
+
+    // --- data-plane watchdog (fed by heartbeat outcomes) ---------------------
+
+    /** A backend call got an answer — any answer: the path works. */
+    fun onBackendCallSucceeded() = dataPlaneWatchdog.onBackendSuccess()
+
+    /**
+     * A backend call failed. An HTTP error still proves the path works; only a
+     * transport failure while the tunnel is up feeds the watchdog, and only a
+     * confirmed trip rebuilds the tunnel.
+     */
+    fun onBackendCallFailed(error: Throwable) {
+        if (!TunnelTrafficRules.isTransportFailure(error)) {
+            dataPlaneWatchdog.onBackendSuccess()
+            return
+        }
+        scope.launch {
+            if (!controller.isUp && !controller.isTunnelRunning()) return@launch
+            val cached = store.cachedPeer()?.config ?: return@launch
+            val stats = controller.peerStats(cached.serverPublicKey) ?: return@launch
+            if (dataPlaneWatchdog.onBackendTransportFailure(stats.handshakeAgeSec, stats.rxBytes)) {
+                recoverDeadDataPlane(cached)
+            }
+        }
+    }
+
+    /**
+     * The tunnel handshakes but carries nothing. Confirm with a probe through it —
+     * any HTTP answer, even a 5xx, clears it — then rebuild it on a fresh
+     * registration with the tunnel DOWN (blackhole invariant), the way a scheduled
+     * Class-A retry would.
+     */
+    private suspend fun recoverDeadDataPlane(peer: VpnPeerConfig) {
+        if (!dataPlaneRecoveryInFlight.compareAndSet(false, true)) return
+        try {
+            if (verifier.tunnelCarriesBackendTraffic()) {
+                dataPlaneWatchdog.onBackendSuccess()
+                return
+            }
+            dataPlaneWatchdog.onRecoveryStarted()
+            diagnosticReporter.report(
+                DiagnosticSeverity.WARNING, DiagnosticCategory.VPN,
+                "VPN : tunnel connecté mais aucun trafic ne passe (${peer.region}) — reconnexion sur une configuration fraîche",
+            )
+            provisionAndConnect(forceFresh = true, tearDownFirst = true)
+        } finally {
+            dataPlaneRecoveryInFlight.set(false)
+        }
+    }
+
+    /**
+     * Our backend is unreachable with the tunnel DOWN. When Android itself says the
+     * internet works (validated network), this is not "no internet": something on
+     * the box's network filters us — typically an ISP or router security filter.
+     * The guard keeps its retry pacing either way (a region change needs the backend
+     * too); this only leaves the admin an explicit trace, at most once an hour.
+     */
+    private fun noteBackendUnreachableOffVpn() {
+        if (!internetValidated()) return
+        val now = System.currentTimeMillis()
+        if (now - lastBackendBlockedReportAtMs < BACKEND_BLOCKED_REPORT_INTERVAL_MS) return
+        lastBackendBlockedReportAtMs = now
+        diagnosticReporter.report(
+            DiagnosticSeverity.WARNING, DiagnosticCategory.CONNECTION,
+            "Serveur FuzionTV injoignable hors VPN alors qu'Internet fonctionne — filtre du fournisseur Internet ou du routeur probable",
+        )
+    }
+
+    private fun internetValidated(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        return runCatching {
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        }.getOrDefault(false)
     }
 
     private suspend fun verifiedNow(peer: VpnPeerConfig): Boolean {
@@ -513,7 +595,10 @@ class VpnManager @Inject constructor(
      * re-provision (covers an expired PIA key without counting a Class-A cycle);
      * a further failure reports exactly one Class-A cycle to the guard.
      */
-    private suspend fun provisionAndConnect(forceFresh: Boolean = false) = provisionMutex.withLock {
+    private suspend fun provisionAndConnect(
+        forceFresh: Boolean = false,
+        tearDownFirst: Boolean = false,
+    ) = provisionMutex.withLock {
         // Respect the admin escape hatch and the auto-not-yet-triggered state on
         // EVERY path (a scheduled Class-A retry must not resurrect an OFF tunnel).
         val mode = store.mode()
@@ -550,6 +635,8 @@ class VpnManager @Inject constructor(
 
         val token = deviceRepo.deviceToken()
         if (token == null) { Log.w(TAG, "no device token yet — skipping VPN provision"); return@withLock }
+        // A tunnel known to carry nothing would blackhole the vpn-config request below.
+        if (tearDownFirst) controller.disconnect()
         val (priv, pub) = ensureKeyPair()
         val cached = store.cachedPeer()
         val stale = cached != null && now - cached.provisionedAtMs > PEER_REFRESH_AFTER_MS
@@ -576,7 +663,9 @@ class VpnManager @Inject constructor(
         if (!controller.connect(peer, priv)) {
             controller.disconnect()
             _displayPhase.value = VpnDisplayPhase.FAILED
-            failCycle(peer.region, plainNetworkOk = verifier.httpReachable())
+            val plainNetworkOk = verifier.httpReachable()
+            if (!plainNetworkOk) noteBackendUnreachableOffVpn()
+            failCycle(peer.region, plainNetworkOk = plainNetworkOk)
             return@withLock
         }
         val rxStart = controller.peerStats(peer.serverPublicKey)?.rxBytes ?: 0L
@@ -586,9 +675,12 @@ class VpnManager @Inject constructor(
             _displayPhase.value = VpnDisplayPhase.READY
             return@withLock
         }
-        // Anti-flap: if bytes actually flowed, the tunnel is alive despite the probe.
+        // Anti-flap: the probe can miss a working tunnel (cold DNS…), so real payload
+        // bytes still count as proof it is alive. WireGuard's own handshake and
+        // keepalive bytes do NOT: counting them validated tunnels that carried
+        // nothing, and the box then blackholed itself behind a tunnel it trusted.
         val rxNow = controller.peerStats(peer.serverPublicKey)?.rxBytes ?: rxStart
-        if (rxNow > rxStart) {
+        if (TunnelTrafficRules.rxProvesTraffic(rxStart, rxNow)) {
             guard.onVerified(peer.region)
             _displayPhase.value = VpnDisplayPhase.READY
             return@withLock
@@ -598,6 +690,7 @@ class VpnManager @Inject constructor(
         controller.disconnect()
         _displayPhase.value = VpnDisplayPhase.FAILED
         if (!verifier.httpReachable()) {
+            noteBackendUnreachableOffVpn()
             failCycle(peer.region, plainNetworkOk = false); return@withLock
         }
         if (haveFresh) {
@@ -801,6 +894,7 @@ class VpnManager @Inject constructor(
         // Suppress non-forced (heartbeat-driven) reconnect attempts this long
         // after a failed cycle, so the guard's scheduled retry sets the pace.
         const val CONVERGE_THROTTLE_MS = 150_000L
+        const val BACKEND_BLOCKED_REPORT_INTERVAL_MS = 3_600_000L
 
         // Budgets du gate STRICT (awaitVpnReadyIfRequired, chemin VOD) : "on"
         // couvre un cycle complet provision + double-vérification (~110-120 s) ;

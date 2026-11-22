@@ -70,6 +70,7 @@ class HeartbeatWorker(
 
         val deviceId = device.deviceId()
         val token = device.deviceToken() ?: return Result.success()
+        var heartbeatAnswered = false
         return try {
             val res = device.api.heartbeat(
                 deviceId, token, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME,
@@ -77,6 +78,8 @@ class HeartbeatWorker(
                 vpnAutoActivated = vpnManager.consumePendingAutoActivated().takeIf { it },
                 vpn = runCatching { vpnManager.vpnStateForHeartbeat() }.getOrNull(),
             )
+            heartbeatAnswered = true
+            vpnManager.onBackendCallSucceeded()
             // Apply the authoritative VPN mode + region assignment from the server.
             vpnManager.applyMode(res.vpnMode)
             vpnManager.applyAssignedRegion(res.vpnRegion)
@@ -106,6 +109,8 @@ class HeartbeatWorker(
             }
             Result.success()
         } catch (e: FuziontvApiException) {
+            // An HTTP answer, from the heartbeat or a follow-up call: the path works.
+            vpnManager.onBackendCallSucceeded()
             if (e.httpCode == 401 || e.httpCode == 403) {
                 Log.w(TAG, "Device disabled or token revoked (${e.errorCode})")
                 device.clearActivation()
@@ -116,6 +121,9 @@ class HeartbeatWorker(
                 Result.retry()
             }
         } catch (e: Exception) {
+            // Only the heartbeat itself speaks for the backend path: a follow-up
+            // failure (provider login…) is not evidence about our tunnel.
+            if (!heartbeatAnswered) vpnManager.onBackendCallFailed(e)
             Log.w(TAG, "Heartbeat error", e)
             reportConnectionIssue("Connexion au backend FuzionTV échouée — ${e.message ?: "réseau indisponible"}")
             Result.retry()

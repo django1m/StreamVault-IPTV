@@ -12,6 +12,8 @@ import com.streamvault.data.remote.xtream.OkHttpXtreamApiService
 import com.streamvault.data.remote.xtream.XtreamUrlFactory
 import com.streamvault.data.parser.XmltvParser
 import com.streamvault.app.BuildConfig
+import com.streamvault.app.network.BackendConnectFailureListener
+import com.streamvault.app.network.BackendDns
 import com.streamvault.data.remote.fuziontv.FuziontvApi
 import com.streamvault.data.repository.FuziontvDeviceRepositoryImpl
 import com.streamvault.player.LibVlcPlayerEngine
@@ -33,11 +35,21 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
+    /**
+     * Resolver of the control-plane client: the system DNS for every host, plus a
+     * DNS-over-HTTPS rescue for OUR backend when the box's resolver filters it.
+     * The playback client is untouched.
+     */
+    @Provides
+    @Singleton
+    fun provideBackendDns(): BackendDns = BackendDns.create(BuildConfig.FUZIONTV_BASE_URL)
+
     @Provides
     @Singleton
     fun provideOkHttpClient(
         @ApplicationContext context: Context,
-        deviceProfile: DevicePerformanceProfile
+        deviceProfile: DevicePerformanceProfile,
+        backendDns: BackendDns,
     ): OkHttpClient {
         val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         val loggingLevel = if (isDebuggable) {
@@ -65,6 +77,8 @@ object NetworkModule {
             .readTimeout(NetworkTimeoutConfig.READ_TIMEOUT_SECONDS, SECONDS)
             .writeTimeout(NetworkTimeoutConfig.WRITE_TIMEOUT_SECONDS, SECONDS)
             .addInterceptor(httpLogger)
+            .dns(backendDns)
+            .eventListener(BackendConnectFailureListener(backendDns.backendHost, backendDns::onBackendConnectFailed))
             .followRedirects(true)
             .followSslRedirects(true)
             .connectionPool(okhttp3.ConnectionPool(idle, 5, java.util.concurrent.TimeUnit.MINUTES))

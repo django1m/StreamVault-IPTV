@@ -5,6 +5,8 @@ import com.streamvault.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -34,10 +36,21 @@ class VpnTunnelVerifier @Inject constructor(
     enum class Result { VERIFIED, NO_HANDSHAKE, HANDSHAKE_BUT_NO_HTTP }
 
     // A short-timeout clone of the shared client (mirrors XtreamPlaybackProber).
+    // Inherits its resolver, so the backend gets the DoH rescue (BackendDns).
     private val probeClient: OkHttpClient = okHttpClient.newBuilder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .callTimeout(8, TimeUnit.SECONDS)
+        .build()
+
+    // The same probe pinned to the system resolver, without the backend
+    // connect-failure listener. Through the tunnel the system resolver IS the PIA
+    // DNS, and proving it answers is half the point of verifying the tunnel: a
+    // DoH rescue here would pass a tunnel whose DNS is broken while playback,
+    // which resolves through the system, keeps failing.
+    private val tunnelProbeClient: OkHttpClient = probeClient.newBuilder()
+        .dns(Dns.SYSTEM)
+        .eventListener(EventListener.NONE)
         .build()
 
     private val probeUrl =
@@ -70,26 +83,40 @@ class VpnTunnelVerifier @Inject constructor(
         // A healthy tunnel answers on the first attempt (< 1 s), so the retries only
         // cost wall-clock when there is a genuine problem.
         repeat(HTTP_PROBE_ATTEMPTS) { attempt ->
-            if (httpReachable()) return Result.VERIFIED
+            if (tunnelHttpReachable()) return Result.VERIFIED
             if (attempt < HTTP_PROBE_ATTEMPTS - 1) delay(HTTP_PROBE_RETRY_DELAY_MS)
         }
         return Result.HANDSHAKE_BUT_NO_HTTP
     }
 
     /**
-     * Single GET to our backend. Any HTTP response (2xx–4xx) proves the round
-     * trip; only an I/O failure (blackhole / no route) counts as unreachable.
-     * Usable both through the tunnel (verification) and with the tunnel DOWN
-     * (Class A "is the plain internet even up?" check).
+     * Single GET to our backend with the tunnel DOWN (Class A "is the plain internet
+     * even up?" check). Any HTTP response (2xx–4xx) proves the round trip; only an
+     * I/O failure counts as unreachable. Resolves the backend with the DoH rescue, so
+     * a box whose resolver filters us is not mistaken for a box with no internet.
      */
-    suspend fun httpReachable(): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            probeClient.newCall(Request.Builder().url(probeUrl).build()).execute().use { it.code in 200..499 }
-        }.getOrElse {
-            Log.d(TAG, "http probe failed: ${it.message}")
-            false
+    suspend fun httpReachable(): Boolean = probe(probeClient) { it in 200..499 }
+
+    /** The same GET through the tunnel, on the system (PIA) resolver: the [verify] semantics. */
+    suspend fun tunnelHttpReachable(): Boolean = probe(tunnelProbeClient) { it in 200..499 }
+
+    /**
+     * Confirmation for [TunnelDataPlaneWatchdog]: does the tunnel carry a round trip
+     * to our backend at all? ANY HTTP answer — even a 5xx during a backend outage —
+     * proves DNS, TCP and TLS all made it through; only a transport failure means
+     * the data plane is dead.
+     */
+    suspend fun tunnelCarriesBackendTraffic(): Boolean = probe(tunnelProbeClient) { true }
+
+    private suspend fun probe(client: OkHttpClient, accept: (Int) -> Boolean): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.newCall(Request.Builder().url(probeUrl).build()).execute().use { accept(it.code) }
+            }.getOrElse {
+                Log.d(TAG, "http probe failed: ${it.message}")
+                false
+            }
         }
-    }
 
     private companion object {
         const val TAG = "VpnTunnelVerifier"
