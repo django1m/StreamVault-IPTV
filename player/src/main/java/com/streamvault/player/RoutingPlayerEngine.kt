@@ -8,6 +8,8 @@ import android.widget.FrameLayout
 import com.streamvault.domain.model.DecoderMode
 import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.model.VideoFormat
+import com.streamvault.player.playback.FreezeFallbackCoordinator
+import com.streamvault.player.playback.FreezeFallbackTarget
 import com.streamvault.player.playback.ResolvedStreamType
 import com.streamvault.player.playback.StreamTypeResolver
 import kotlinx.coroutines.CoroutineScope
@@ -111,8 +113,37 @@ class RoutingPlayerEngine(
     private val _isMuted = MutableStateFlow(false)
     override val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
 
+    /**
+     * Repli anti-gel vidéo (LibVLC : audio qui avance, image figée). Niveaux :
+     * LibVLC logiciel, puis Media3 — une tentative chacun par média. Réarmé à
+     * chaque [prepare] public (nouveau média / relance utilisateur).
+     */
+    private val freezeFallback = FreezeFallbackCoordinator(object : FreezeFallbackTarget {
+        override fun restartLibVlcSoftware(positionMs: Long) {
+            libvlc.restartWithSoftwareDecoder(positionMs)
+        }
+
+        override fun switchToMedia3(positionMs: Long) {
+            val streamInfo = libvlc.currentStreamInfo() ?: return
+            Log.w(LibVlcPlayerEngine.FREEZE_TAG, "repli 2/2 : bascule LibVLC → Media3 à ${positionMs}ms")
+            swapTo(media3, streamInfo) { media3.prepareAt(streamInfo, positionMs) }
+        }
+    })
+
     init {
         startForwarding(activeEngine)
+        scope.launch {
+            libvlc.videoFreezes.collect { positionMs ->
+                if (activeEngine !== libvlc) return@collect
+                val step = freezeFallback.onFreeze(positionMs, libvlc.isSoftwareDecodingActive())
+                if (step == null) {
+                    Log.w(
+                        LibVlcPlayerEngine.FREEZE_TAG,
+                        "gel vidéo à ${positionMs}ms : tous les replis déjà tentés pour ce média, abandon"
+                    )
+                }
+            }
+        }
     }
 
     // ---- Routing decision -------------------------------------------------
@@ -155,29 +186,10 @@ class RoutingPlayerEngine(
     // ---- Lifecycle --------------------------------------------------------
 
     override fun prepare(streamInfo: StreamInfo) {
+        freezeFallback.reset()
         val target = engineFor(streamInfo)
         if (target !== activeEngine) {
-            Log.i(TAG, "swap engine ${describe(activeEngine)} → ${describe(target)} for ${streamInfo.url}")
-            // Swap activeEngine FIRST so any in-flight collect from the old
-            // forwardJob (cancellation is asynchronous) auto-filters itself
-            // out via the `engine === activeEngine` check in startForwarding.
-            val previous = activeEngine
-            activeEngine = target
-            runCatching { previous.stop() }
-            resetAggregatedStateForSwap()
-            swapSubViewIfNeeded()
-            // Forward only AFTER target.prepare(): StateFlow replays its
-            // current value to a new collector, so subscribing first would
-            // replay the stale position/duration/state left over from the
-            // target's previous playback (frozen-seekbar bug). Both engines
-            // reset their flows synchronously at the top of prepare(), so the
-            // replayed values are fresh. try/finally: even if prepare()
-            // throws, the UI must end up observing the target's error flow.
-            try {
-                target.prepare(streamInfo)
-            } finally {
-                startForwarding(target)
-            }
+            swapTo(target, streamInfo) { target.prepare(streamInfo) }
         } else {
             target.prepare(streamInfo)
             // release() (player screen back-out) cancels forwardJob. A
@@ -188,6 +200,30 @@ class RoutingPlayerEngine(
             if (forwardJob?.isActive != true) {
                 startForwarding(target)
             }
+        }
+    }
+
+    private inline fun swapTo(target: PlayerEngine, streamInfo: StreamInfo, prepareTarget: () -> Unit) {
+        Log.i(TAG, "swap engine ${describe(activeEngine)} → ${describe(target)} for ${streamInfo.url}")
+        // Swap activeEngine FIRST so any in-flight collect from the old
+        // forwardJob (cancellation is asynchronous) auto-filters itself
+        // out via the `engine === activeEngine` check in startForwarding.
+        val previous = activeEngine
+        activeEngine = target
+        runCatching { previous.stop() }
+        resetAggregatedStateForSwap()
+        swapSubViewIfNeeded()
+        // Forward only AFTER target.prepare(): StateFlow replays its
+        // current value to a new collector, so subscribing first would
+        // replay the stale position/duration/state left over from the
+        // target's previous playback (frozen-seekbar bug). Both engines
+        // reset their flows synchronously at the top of prepare(), so the
+        // replayed values are fresh. try/finally: even if prepare()
+        // throws, the UI must end up observing the target's error flow.
+        try {
+            prepareTarget()
+        } finally {
+            startForwarding(target)
         }
     }
 

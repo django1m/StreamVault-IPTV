@@ -135,7 +135,11 @@ data class PlayerStats(
 )
 
 sealed class PlayerError(val message: String) {
-    class NetworkError(message: String) : PlayerError(message)
+    /**
+     * [httpCode] = statut HTTP amont quand il est connu (Media3 :
+     * InvalidResponseCodeException). LibVLC ne l'expose pas : null.
+     */
+    class NetworkError(message: String, val httpCode: Int? = null) : PlayerError(message)
     class SourceError(message: String) : PlayerError(message)
     class DecoderError(message: String) : PlayerError(message)
     class DrmError(message: String, val scheme: DrmScheme? = null) : PlayerError(message)
@@ -149,7 +153,7 @@ sealed class PlayerError(val message: String) {
                 PlaybackErrorCategory.HTTP_SERVER,
                 PlaybackErrorCategory.HTTP_AUTH,
                 PlaybackErrorCategory.CLEAR_TEXT_BLOCKED,
-                PlaybackErrorCategory.SSL -> NetworkError(msg)
+                PlaybackErrorCategory.SSL -> NetworkError(msg, PlayerErrorClassifier.httpStatus(e))
 
                 PlaybackErrorCategory.SOURCE_MALFORMED,
                 PlaybackErrorCategory.LIVE_WINDOW -> SourceError(msg)

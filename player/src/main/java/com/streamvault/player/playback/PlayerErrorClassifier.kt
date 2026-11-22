@@ -34,12 +34,7 @@ object PlayerErrorClassifier {
         val playbackException = chain.filterIsInstance<PlaybackException>().firstOrNull()
         val httpError = chain.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
 
-        val httpCode = httpError?.responseCode
-            ?: when (playbackException?.errorCode) {
-                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> parseHttpStatus(playbackException.message)
-                else -> null
-            }
-            ?: chain.firstNotNullOfOrNull { parseHttpStatus(it.message) }
+        val httpCode = httpStatus(error)
 
         return when {
             chain.any { it is BehindLiveWindowException } ||
@@ -74,6 +69,18 @@ object PlayerErrorClassifier {
                 PlaybackErrorCategory.NETWORK
             else -> PlaybackErrorCategory.UNKNOWN
         }
+    }
+
+    /** Statut HTTP amont porté par [error] ou sa chaîne de causes, sinon null. */
+    fun httpStatus(error: Throwable): Int? {
+        val chain = generateSequence(error) { it.cause }.toList()
+        val playbackException = chain.filterIsInstance<PlaybackException>().firstOrNull()
+        return chain.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
+            ?: when (playbackException?.errorCode) {
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> parseHttpStatus(playbackException.message)
+                else -> null
+            }
+            ?: chain.firstNotNullOfOrNull { parseHttpStatus(it.message) }
     }
 
     private fun parseHttpStatus(message: String?): Int? {

@@ -734,6 +734,7 @@ class PlayerViewModel @Inject constructor(
                     // 401/403 (advisory attempt), the provider refusal is the
                     // real story — not the engine's generic failure.
                     message = probeAdvisoryHttpCode?.let { probeFailureMessage(it) }
+                        ?: PlaybackRefusalMessages.forError(error, currentContentType)
                         ?: resolvePlaybackErrorMessage(error),
                     recoveryType = recoveryType,
                     actions = buildRecoveryActions(recoveryType)
@@ -1501,25 +1502,8 @@ class PlayerViewModel @Inject constructor(
     }
 
     /** French, actionable message for a terminal probe rejection. */
-    private fun probeFailureMessage(httpCode: Int): String = when {
-        httpCode == 401 || httpCode == 403 -> when (currentContentType) {
-            ContentType.SERIES_EPISODE ->
-                "Le fournisseur refuse l'accès aux séries sur cette ligne (HTTP $httpCode). " +
-                    "Si le direct et les films fonctionnent, votre abonnement n'inclut " +
-                    "probablement pas les séries — contactez votre fournisseur."
-            ContentType.MOVIE ->
-                "Le fournisseur refuse l'accès à ce film sur cette ligne (HTTP $httpCode). " +
-                    "Contactez votre fournisseur si le problème touche tous les films."
-            else ->
-                "Ce flux a été refusé par le fournisseur (HTTP $httpCode)."
-        }
-        httpCode == 404 ->
-            "Ce contenu est introuvable chez le fournisseur (HTTP 404), " +
-                "y compris sous les formats alternatifs."
-        else ->
-            "Le serveur du fournisseur est en erreur pour ce flux (HTTP $httpCode). " +
-                "Réessayez plus tard."
-    }
+    private fun probeFailureMessage(httpCode: Int): String =
+        PlaybackRefusalMessages.forHttpCode(httpCode, currentContentType)
 
     private suspend fun shouldProbePlaybackUrl(url: String): Boolean {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return false

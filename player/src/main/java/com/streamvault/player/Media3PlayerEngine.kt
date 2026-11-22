@@ -202,6 +202,14 @@ class Media3PlayerEngine @Inject constructor(
         prepareInternal(streamInfo = streamInfo, preserveRetryState = false, seekPositionMs = null, autoPlay = true)
     }
 
+    /**
+     * Prépare [streamInfo] et démarre à [positionMs]. Utilisé par le repli
+     * anti-gel de [RoutingPlayerEngine] (LibVLC figé → Media3 à la même position).
+     */
+    fun prepareAt(streamInfo: StreamInfo, positionMs: Long) {
+        prepareInternal(streamInfo = streamInfo, preserveRetryState = false, seekPositionMs = positionMs, autoPlay = true)
+    }
+
     override fun restart() {
         val streamInfo = lastStreamInfo ?: return
         // Live streams must re-attach to the live edge (a stored position is

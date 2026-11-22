@@ -33,3 +33,20 @@ class PlayerErrorClassifierTest {
     }
 }
 
+
+class PlayerErrorHttpCodeTest {
+
+    @Test
+    fun `403 from the provider keeps its HTTP code on the PlayerError`() {
+        val e = java.io.IOException("Source error", java.io.IOException("Response code: 403"))
+        val error = com.streamvault.player.PlayerError.fromException(e)
+        assertThat(error).isInstanceOf(com.streamvault.player.PlayerError.NetworkError::class.java)
+        assertThat((error as com.streamvault.player.PlayerError.NetworkError).httpCode).isEqualTo(403)
+    }
+
+    @Test
+    fun `plain network failure has no HTTP code`() {
+        val error = com.streamvault.player.PlayerError.fromException(java.net.SocketTimeoutException("timeout"))
+        assertThat((error as com.streamvault.player.PlayerError.NetworkError).httpCode).isNull()
+    }
+}

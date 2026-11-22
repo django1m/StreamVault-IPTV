@@ -8,6 +8,9 @@ import android.view.View
 import com.streamvault.domain.model.DecoderMode
 import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.model.VideoFormat
+import com.streamvault.player.playback.LibVlcMediaOptions
+import com.streamvault.player.playback.PlaybackSample
+import com.streamvault.player.playback.VideoFreezeDetector
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -18,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import android.os.SystemClock
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
@@ -77,6 +81,7 @@ class LibVlcPlayerEngine @Inject constructor(
 
     companion object {
         private const val TAG = "LibVlcPlayerEngine"
+        const val FREEZE_TAG = "VideoFreezeFallback"
         private const val POSITION_POLL_INTERVAL_MS = 250L
         private const val SEEK_END_GUARD_MS = 5_000L
         private val LAYOUT_LISTENER_TAG_ID = "libvlc_layout_listener".hashCode()
@@ -151,6 +156,7 @@ class LibVlcPlayerEngine @Inject constructor(
                     if (_isPlaying.value != playing) {
                         _isPlaying.value = playing
                     }
+                    sampleForFreeze(player, time, playing)
                 } catch (t: Throwable) {
                     Log.w(TAG, "polling read failed", t)
                 }
@@ -239,7 +245,71 @@ class LibVlcPlayerEngine @Inject constructor(
     private val _availableVideoTracks = MutableStateFlow<List<PlayerTrack>>(emptyList())
     override val availableVideoTracks: StateFlow<List<PlayerTrack>> = _availableVideoTracks.asStateFlow()
 
-    private var requestedDecoderMode: DecoderMode = DecoderMode.AUTO
+    @Volatile private var requestedDecoderMode: DecoderMode = DecoderMode.AUTO
+
+    /**
+     * Mode décodeur imposé au média courant par le repli anti-gel (one-shot,
+     * effacé par le prochain [prepare] public). Prioritaire sur
+     * [requestedDecoderMode] ; survit à [restart] (watchdog de stall).
+     */
+    @Volatile private var mediaDecoderOverride: DecoderMode? = null
+
+    /** Mode réellement appliqué au média en cours de lecture. */
+    @Volatile private var activeDecoderMode: DecoderMode = DecoderMode.AUTO
+
+    // ---- Watchdog gel vidéo (audio avance, plus d'image) -------------------
+
+    /** Lu/écrit uniquement sur [pollThread] (reset via [pollHandler]). */
+    private val freezeDetector = VideoFreezeDetector()
+
+    private val _videoFreezes = MutableSharedFlow<Long>(extraBufferCapacity = 1)
+
+    /**
+     * Émet la position (ms) quand l'image est figée alors que l'audio avance
+     * (`Media.Stats.displayedPictures` immobile ~3 s pendant que la position
+     * progresse). Consommé par [RoutingPlayerEngine] qui choisit le repli.
+     */
+    val videoFreezes: Flow<Long> = _videoFreezes.asSharedFlow()
+
+    fun isSoftwareDecodingActive(): Boolean = activeDecoderMode == DecoderMode.SOFTWARE
+
+    fun currentStreamInfo(): StreamInfo? = lastStreamInfo
+
+    /** Doit tourner sur pollThread. */
+    private fun sampleForFreeze(player: MediaPlayer, positionMs: Long, playing: Boolean) {
+        val pictures = try {
+            // getMedia() retient le Media : il faut le relâcher.
+            player.media?.let { media ->
+                try { media.stats?.displayedPictures } finally { media.release() }
+            }
+        } catch (t: Throwable) {
+            null
+        }
+        val sample = PlaybackSample(positionMs, pictures, playing)
+        if (freezeDetector.onSample(SystemClock.elapsedRealtime(), sample)) {
+            Log.w(
+                FREEZE_TAG,
+                "gel vidéo détecté pos=${positionMs}ms displayedPictures=$pictures " +
+                    "decoder=$activeDecoderMode — demande de repli"
+            )
+            _videoFreezes.tryEmit(positionMs)
+        }
+    }
+
+    private fun resetFreezeDetector() {
+        pollHandler.post { freezeDetector.reset() }
+    }
+
+    /**
+     * Repli anti-gel niveau 1 : relance le média courant en décodage logiciel
+     * (avcodec) à [positionMs]. N'altère pas le réglage utilisateur.
+     */
+    fun restartWithSoftwareDecoder(positionMs: Long) {
+        val streamInfo = lastStreamInfo ?: return
+        pendingResumeSeconds = (positionMs / 1000L).coerceAtLeast(0L)
+        Log.w(FREEZE_TAG, "repli 1/2 : LibVLC décodage logiciel à ${positionMs}ms")
+        prepareInternal(streamInfo, decoderOverride = DecoderMode.SOFTWARE)
+    }
 
     // ---- Lifecycle --------------------------------------------------------
 
@@ -252,6 +322,11 @@ class LibVlcPlayerEngine @Inject constructor(
     }
 
     override fun prepare(streamInfo: StreamInfo) {
+        prepareInternal(streamInfo, decoderOverride = null)
+    }
+
+    private fun prepareInternal(streamInfo: StreamInfo, decoderOverride: DecoderMode?) {
+        mediaDecoderOverride = decoderOverride
         lastStreamInfo = streamInfo
         // Incrément côté Main pour que tout event/poll qui fire APRÈS cette
         // ligne soit considéré obsolète tant que activeMediaGeneration n'est
@@ -264,6 +339,7 @@ class LibVlcPlayerEngine @Inject constructor(
         // nouvel épisode). pollRunnable est sur pollHandler — handlé à part.
         cmdHandler.removeCallbacksAndMessages(null)
         pollHandler.removeCallbacks(pollRunnable)
+        resetFreezeDetector()
 
         // Reset état UI immédiatement (StateFlow.value est thread-safe).
         _error.tryEmit(null)
@@ -313,7 +389,15 @@ class LibVlcPlayerEngine @Inject constructor(
                 if (resumeSeconds > 0L) {
                     media.addOption(":start-time=$resumeSeconds")
                 }
-                media.setHWDecoderEnabled(true, false)
+                // Réglage « Mode décodeur » + mise en cache. Avant, LibVLC
+                // forçait MediaCodec quel que soit le réglage (seul Media3 le
+                // respectait) → c2.mtk.avc.decoder même en « logiciel ».
+                val decoderMode = mediaDecoderOverride ?: requestedDecoderMode
+                val config = LibVlcMediaOptions.build(decoderMode)
+                media.setHWDecoderEnabled(config.hwDecoderEnabled, config.hwDecoderForced)
+                config.options.forEach(media::addOption)
+                activeDecoderMode = decoderMode
+                Log.i(TAG, "prepare gen=$gen decoder=$decoderMode options=${config.options}")
 
                 // Active la génération AVANT `player.media =` et `player.play()`.
                 // Pourquoi entre `stop()` et `media =` :
@@ -358,7 +442,7 @@ class LibVlcPlayerEngine @Inject constructor(
         // in [pendingResumeSeconds], consumed by [prepare]).
         pendingResumeSeconds = (_currentPosition.value / 1000L).coerceAtLeast(0L)
         Log.i(TAG, "restart url=${streamInfo.url} resumeSeconds=$pendingResumeSeconds")
-        prepare(streamInfo)
+        prepareInternal(streamInfo, decoderOverride = mediaDecoderOverride)
     }
 
     private fun classifyPrepareError(t: Throwable): PlayerError {
@@ -400,12 +484,14 @@ class LibVlcPlayerEngine @Inject constructor(
     override fun stopForBackground() = stop()
 
     override fun seekTo(positionMs: Long) {
+        resetFreezeDetector()
         postCmd("seekTo($positionMs)") {
             mediaPlayer?.time = positionMs
         }
     }
 
     override fun seekForward(ms: Long) {
+        resetFreezeDetector()
         postCmd("seekForward($ms)") {
             mediaPlayer?.let { player ->
                 val len = player.length
@@ -422,6 +508,7 @@ class LibVlcPlayerEngine @Inject constructor(
     }
 
     override fun seekBackward(ms: Long) {
+        resetFreezeDetector()
         postCmd("seekBackward($ms)") {
             mediaPlayer?.let { player ->
                 player.time = (player.time - ms).coerceAtLeast(0L)
@@ -628,9 +715,20 @@ class LibVlcPlayerEngine @Inject constructor(
     // ---- Stubs (POC) ------------------------------------------------------
 
     override fun setDecoderMode(mode: DecoderMode) {
-        // libVLC chooses HW/SW automatically given --avcodec-hw=any. We just
-        // remember the requested mode for a future iteration.
+        if (requestedDecoderMode == mode) return
         requestedDecoderMode = mode
+        // Comme Media3 : un changement en cours de lecture relance le média à
+        // la position courante pour qu'il prenne effet tout de suite. Seulement
+        // si un média joue réellement (le singleton garde lastStreamInfo de la
+        // session précédente : ne pas la relancer à l'ouverture du lecteur).
+        val streamInfo = lastStreamInfo ?: return
+        if (mediaPlayer == null || mediaDecoderOverride != null) return
+        val state = _playbackState.value
+        if (state != PlaybackState.READY && state != PlaybackState.BUFFERING) return
+        if (activeDecoderMode == mode) return
+        pendingResumeSeconds = (_currentPosition.value / 1000L).coerceAtLeast(0L)
+        Log.i(TAG, "decoder mode → $mode, relance à ${pendingResumeSeconds}s")
+        prepareInternal(streamInfo, decoderOverride = null)
     }
 
     override fun setMediaSessionEnabled(enabled: Boolean) {
