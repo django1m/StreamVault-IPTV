@@ -50,7 +50,7 @@ val officialSigningCertSha256 = computeOfficialSigningCertSha256()
 // They are decoupled rather than derived from one another because the mobile UI
 // is under active rework and iterates far faster than the TV product; sharing a
 // counter would burn TV version numbers on phone-only builds.
-val baseVersionCode = 538          // TV channel
+val baseVersionCode = 539          // TV channel
 val mobileVersionCodeOffset = 100_000
 val mobileBuildNumber = 535        // mobile channel
 
@@ -67,7 +67,7 @@ android {
         // downloaded-APK cache on versionName (see the mobile flavor comment
         // below). A beta shipping as plain "1.3.37" and then the stable "1.3.37"
         // would make the stable reuse the beta's downloaded file.
-        versionName = "1.3.37"
+        versionName = "1.3.38-beta1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "OFFICIAL_APPLICATION_ID", "\"com.streamvault.app\"")
         buildConfigField("String", "OFFICIAL_SIGNING_CERT_SHA256", "\"$officialSigningCertSha256\"")
